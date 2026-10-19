@@ -19,6 +19,7 @@ import { ChangelogPage } from './pages/ChangelogPage';
 import { FEATURED_GAMES, getGameById } from './services/games/catalog';
 import { Game } from './types';
 import { RomHeaderInfo } from './emulator/romParser';
+import { romStorage } from './services/roms/romStorage';
 
 export default function App() {
   // Navigation & View state
@@ -97,13 +98,14 @@ export default function App() {
     });
   };
 
-  const handleCustomRomLoaded = (customGame: Game, _romData: Uint8Array) => {
+  const handleCustomRomLoaded = (customGame: Game, romData: Uint8Array) => {
+    romStorage.saveRom(customGame.id, customGame.title, customGame.platform, romData);
     FEATURED_GAMES.unshift(customGame);
     setSelectedGameId(customGame.id);
     setActiveView('emulator');
   };
 
-  const handleLaunchRomFromVault = (_romData: Uint8Array, headerInfo: RomHeaderInfo) => {
+  const handleLaunchRomFromVault = (romData: Uint8Array, headerInfo: RomHeaderInfo) => {
     const customGame: Game = {
       id: `custom-${Date.now()}`,
       title: headerInfo.internalTitle || headerInfo.filename,
@@ -121,6 +123,7 @@ export default function App() {
       features: ['Client WASM', 'SRAM Battery', 'Raw Pixel Perfect'],
       compatibilityScore: 99
     };
+    romStorage.saveRom(customGame.id, headerInfo.filename, customGame.platform, romData);
     FEATURED_GAMES.unshift(customGame);
     setSelectedGameId(customGame.id);
     setActiveView('emulator');

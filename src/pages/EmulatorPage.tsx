@@ -10,6 +10,9 @@ import {
   VisualSettingsConfig,
   DisplayFilterType
 } from '../components/VisualSettingsModal';
+import { Nostalgist } from 'nostalgist';
+import { romStorage } from '../services/roms/romStorage';
+import { parseRom } from '../emulator/romParser';
 
 interface EmulatorPageProps {
   gameId: string;
@@ -26,8 +29,15 @@ export const EmulatorPage: React.FC<EmulatorPageProps> = ({
 }) => {
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
   const engineRef = useRef<RetroEmulatorEngine | null>(null);
+  const nostalgistRef = useRef<Nostalgist | null>(null);
+  const fileInputRef = useRef<HTMLInputElement | null>(null);
 
   const [game, setGame] = useState<Game>(() => getGameById(gameId) || FEATURED_GAMES[0]);
+  const [hasRom, setHasRom] = useState<boolean>(() => romStorage.hasRom(gameId));
+  const [isLoadingCore, setIsLoadingCore] = useState<boolean>(false);
+  const [coreLoadingStatus, setCoreLoadingStatus] = useState<string>('');
+  const [loadError, setLoadError] = useState<string | null>(null);
+
   const [isPaused, setIsPaused] = useState<boolean>(false);
   const [currentSlot, setCurrentSlot] = useState<number>(initialSlot);
   const [fastForwardSpeed, setFastForwardSpeed] = useState<number>(1);
@@ -92,6 +102,74 @@ export const EmulatorPage: React.FC<EmulatorPageProps> = ({
     setTimeout(() => setToastMessage(null), 2400);
   };
 
+  // Launch Nostalgist with a ROM
+  const launchRealEmulator = async (romData: Uint8Array, filename: string, targetPlatform: string) => {
+    if (!canvasRef.current) return;
+    setIsLoadingCore(true);
+    setLoadError(null);
+
+    const plat = (targetPlatform || 'NES').toUpperCase();
+    let core = 'fceumm';
+    if (plat === 'SNES' || plat.includes('SUPER')) core = 'snes9x';
+    else if (plat === 'GBA' || plat.includes('ADVANCE')) core = 'mgba';
+    else if (plat === 'GENESIS' || plat === 'MEGADRIVE') core = 'genesis_plus_gx';
+
+    setCoreLoadingStatus(`Đang tải core ${core} (RetroArch WebAssembly)...`);
+
+    try {
+      if (nostalgistRef.current) {
+        try { nostalgistRef.current.exit(); } catch {}
+        nostalgistRef.current = null;
+      }
+      if (engineRef.current) {
+        engineRef.current.dispose();
+        engineRef.current = null;
+      }
+
+      const instance = await Nostalgist.launch({
+        element: canvasRef.current,
+        core,
+        rom: {
+          fileName: filename,
+          fileContent: romData,
+        },
+      });
+
+      nostalgistRef.current = instance;
+      setIsLoadingCore(false);
+      setHasRom(true);
+      showToast(`Đã nạp ROM: ${filename}`);
+    } catch (err: any) {
+      console.error('Failed to launch Nostalgist:', err);
+      setIsLoadingCore(false);
+      setLoadError(err?.message || 'Không thể tải core giả lập. Vui lòng kiểm tra lại tệp ROM.');
+    }
+  };
+
+  const handleDirectRomFile = async (file: File) => {
+    try {
+      setIsLoadingCore(true);
+      setCoreLoadingStatus(`Đang đọc tệp "${file.name}"...`);
+      const buffer = await file.arrayBuffer();
+      const bytes = new Uint8Array(buffer);
+      const header = parseRom(bytes, file.name);
+      const detectedPlatform = header.platform === 'UNKNOWN' ? game.platform : header.platform;
+
+      romStorage.saveRom(game.id, file.name, detectedPlatform, bytes);
+      setGame(prev => ({
+        ...prev,
+        title: header.internalTitle || file.name,
+        platform: detectedPlatform
+      }));
+
+      await launchRealEmulator(bytes, file.name, detectedPlatform);
+    } catch (err: any) {
+      console.error(err);
+      setIsLoadingCore(false);
+      setLoadError('Lỗi đọc tệp ROM từ máy tính');
+    }
+  };
+
   // Detect mobile width on mount
   useEffect(() => {
     if (window.innerWidth < 768) {
@@ -105,26 +183,27 @@ export const EmulatorPage: React.FC<EmulatorPageProps> = ({
     const targetGame = getGameById(gameId) || FEATURED_GAMES[0];
     setGame(targetGame);
 
-    const engine = new RetroEmulatorEngine();
-    engineRef.current = engine;
-
-    if (canvasRef.current) {
-      engine.initialize(canvasRef.current);
-      engine.loadGame(targetGame);
-      engine.start();
+    const stored = romStorage.getRom(gameId);
+    if (stored && stored.data && stored.data.length > 0) {
+      setHasRom(true);
+      launchRealEmulator(stored.data, stored.filename, stored.platform || targetGame.platform);
+    } else {
+      setHasRom(false);
     }
 
-    // Interval to refresh telemetry
-    const telemetryInterval = setInterval(() => {
-      if (engineRef.current) {
-        setFpsDisplay(engineRef.current.telemetry.fps);
-      }
-    }, 500);
-
     return () => {
-      clearInterval(telemetryInterval);
-      engine.dispose();
-      engineRef.current = null;
+      if (nostalgistRef.current) {
+        try {
+          nostalgistRef.current.exit();
+        } catch (e) {
+          console.error(e);
+        }
+        nostalgistRef.current = null;
+      }
+      if (engineRef.current) {
+        engineRef.current.dispose();
+        engineRef.current = null;
+      }
     };
   }, [gameId]);
 
@@ -292,66 +371,86 @@ export const EmulatorPage: React.FC<EmulatorPageProps> = ({
   }, [isPaused]);
 
   const togglePlayPause = () => {
-    if (!engineRef.current) return;
-    if (isPaused) {
-      engineRef.current.resume();
-      setIsPaused(false);
-      showToast("Emulation Resumed");
-    } else {
-      engineRef.current.pause();
-      setIsPaused(true);
-      showToast("Emulation Paused");
+    if (nostalgistRef.current) {
+      if (isPaused) {
+        nostalgistRef.current.resume();
+        setIsPaused(false);
+        showToast("Tiếp tục chơi");
+      } else {
+        nostalgistRef.current.pause();
+        setIsPaused(true);
+        showToast("Đã tạm dừng");
+      }
     }
   };
 
   const triggerRewind = () => {
-    if (engineRef.current) {
-      engineRef.current.rewindSeconds(10);
-      showToast("Rewound 10 Seconds");
+    if (nostalgistRef.current) {
+      nostalgistRef.current.sendCommand('REWIND');
+      showToast("Tua lại");
     }
   };
 
   const cycleFastForward = () => {
     const nextSpeed = fastForwardSpeed === 1 ? 2 : fastForwardSpeed === 2 ? 4 : fastForwardSpeed === 4 ? 8 : 1;
     setFastForwardSpeed(nextSpeed);
-    if (engineRef.current) {
-      engineRef.current.setFastForward(nextSpeed);
+    if (nostalgistRef.current) {
+      nostalgistRef.current.sendCommand('FAST_FORWARD');
     }
-    showToast(`Fast Forward: ${nextSpeed}x`);
+    showToast(`Tua nhanh: ${nextSpeed}x`);
   };
 
-  const triggerQuickSave = () => {
-    if (engineRef.current) {
-      const stateData = engineRef.current.saveState(currentSlot);
-      saveManager.saveLocal({
-        id: `${game.id}-slot${currentSlot}`,
-        ownerUid: 'local-user',
-        gameId: game.id,
-        gameTitle: game.title,
-        platform: game.platform,
-        slot: currentSlot,
-        type: 'state',
-        locationName: currentSlot === 1 ? 'Sanctuary Crypt' : `Slot ${currentSlot} Checkpoint`,
-        sizeBytes: 524288,
-        checksum: 'a7f893b1',
-        rawBase64Data: stateData,
-        createdAt: new Date().toISOString(),
-        updatedAt: new Date().toISOString()
-      });
-      gamepadService.vibrate(0.3, 0.6, 150);
-      showToast(`State saved to Slot #${currentSlot} [F2 / Gamepad]`);
+  const triggerQuickSave = async () => {
+    if (nostalgistRef.current) {
+      try {
+        const { state } = await nostalgistRef.current.saveState();
+        const reader = new FileReader();
+        reader.onloadend = () => {
+          const base64 = reader.result as string;
+          saveManager.saveLocal({
+            id: `${game.id}-slot${currentSlot}`,
+            ownerUid: 'local-user',
+            gameId: game.id,
+            gameTitle: game.title,
+            platform: game.platform,
+            slot: currentSlot,
+            type: 'state',
+            locationName: `Bản lưu Slot ${currentSlot}`,
+            sizeBytes: state.size,
+            checksum: 'real-save',
+            rawBase64Data: base64,
+            createdAt: new Date().toISOString(),
+            updatedAt: new Date().toISOString()
+          });
+          gamepadService.vibrate(0.3, 0.6, 150);
+          showToast(`Đã lưu trạng thái Slot #${currentSlot}`);
+        };
+        reader.readAsDataURL(state);
+      } catch (e) {
+        console.error(e);
+        showToast(`Lỗi khi lưu trạng thái`);
+      }
     }
   };
 
-  const triggerQuickLoad = () => {
-    if (engineRef.current) {
+  const triggerQuickLoad = async () => {
+    if (nostalgistRef.current) {
       const allSaves = saveManager.getSavesForGame(game.id);
       const match = allSaves.find(s => s.slot === currentSlot);
       if (match && match.rawBase64Data) {
-        engineRef.current.loadState(match.rawBase64Data);
+        try {
+          const res = await fetch(match.rawBase64Data);
+          const blob = await res.blob();
+          await nostalgistRef.current.loadState(blob);
+          gamepadService.vibrate(0.5, 0.8, 180);
+          showToast(`Đã nạp lại bản lưu Slot #${currentSlot}`);
+        } catch (e) {
+          console.error(e);
+          showToast(`Lỗi khi nạp bản lưu`);
+        }
+      } else {
+        showToast(`Chưa có bản lưu cho Slot #${currentSlot}`);
       }
-      gamepadService.vibrate(0.5, 0.8, 180);
-      showToast(`Loaded State from Slot #${currentSlot} [F4 / Gamepad]`);
     }
   };
 
@@ -506,9 +605,80 @@ export const EmulatorPage: React.FC<EmulatorPageProps> = ({
               ref={canvasRef}
               width={256}
               height={224}
-              className={`w-full h-full object-contain ${visualSettings.filter === 'Pixelated' ? 'filter-pixelated' : '[image-rendering:pixelated]'}`}
+              className={`w-full h-full object-contain ${visualSettings.filter === 'Pixelated' ? 'filter-pixelated' : '[image-rendering:pixelated]'} ${!hasRom ? 'hidden' : 'block'}`}
               style={colorTintStyle}
             />
+
+            {/* Standby screen when no ROM cartridge is loaded */}
+            {!hasRom && (
+              <div className="absolute inset-0 bg-[#0c0e14] flex flex-col items-center justify-center p-6 text-center z-20">
+                <div className="w-16 h-16 rounded-2xl bg-[#4cd7f6]/10 border border-[#4cd7f6]/40 flex items-center justify-center mb-3 text-[#4cd7f6] shadow-lg shadow-[#4cd7f6]/10">
+                  <span className="material-symbols-outlined text-3xl">sports_esports</span>
+                </div>
+                <h3 className="text-base sm:text-lg font-bold text-white mb-1">
+                  {game.title}
+                </h3>
+                <div className="flex items-center gap-2 mb-3">
+                  <span className="px-2 py-0.5 rounded bg-indigo-500/20 text-indigo-300 border border-indigo-500/40 font-mono text-[11px]">
+                    Hệ máy {game.platform}
+                  </span>
+                  <span className="text-[#958ea0] font-mono text-[11px]">• Chờ nạp tệp ROM</span>
+                </div>
+                <p className="text-xs text-[#958ea0] max-w-md mb-6 leading-relaxed">
+                  Để trải nghiệm trò chơi thực tế, vui lòng chọn tệp ROM ({game.platform}: .nes, .smc, .sfc, .gba) từ máy tính của bạn.
+                </p>
+
+                <div className="flex flex-col sm:flex-row items-center gap-3">
+                  <button
+                    onClick={() => fileInputRef.current?.click()}
+                    className="px-5 py-2.5 rounded-xl bg-[#4cd7f6] hover:bg-[#70e0f8] text-[#003641] font-bold text-xs flex items-center gap-2 shadow-lg shadow-[#4cd7f6]/20 transition-all cursor-pointer"
+                  >
+                    <span className="material-symbols-outlined text-base">upload_file</span>
+                    <span>Chọn tệp ROM từ máy tính</span>
+                  </button>
+                  <button
+                    onClick={onExit}
+                    className="px-4 py-2.5 rounded-xl bg-[#1e1f26] hover:bg-[#282a30] text-[#cbc3d7] border border-[#494454]/40 text-xs transition-colors"
+                  >
+                    Quay lại
+                  </button>
+                </div>
+
+                <input
+                  ref={fileInputRef}
+                  type="file"
+                  accept=".nes,.smc,.sfc,.gba,.bin,.zip"
+                  className="hidden"
+                  onChange={(e) => {
+                    const file = e.target.files?.[0];
+                    if (file) handleDirectRomFile(file);
+                  }}
+                />
+              </div>
+            )}
+
+            {/* Loading WASM Core Overlay */}
+            {isLoadingCore && (
+              <div className="absolute inset-0 bg-[#0c0e14]/90 backdrop-blur-sm flex flex-col items-center justify-center gap-3 z-30">
+                <div className="w-12 h-12 rounded-full border-2 border-[#4cd7f6] border-t-transparent animate-spin"></div>
+                <p className="text-sm font-mono text-[#4cd7f6] font-bold">{coreLoadingStatus}</p>
+                <p className="text-xs font-mono text-[#958ea0]">Đang xử lý trong WebAssembly Sandbox</p>
+              </div>
+            )}
+
+            {/* Error Overlay */}
+            {loadError && (
+              <div className="absolute inset-0 bg-[#0c0e14]/95 flex flex-col items-center justify-center p-6 text-center z-30">
+                <span className="material-symbols-outlined text-rose-400 text-4xl mb-2">error</span>
+                <p className="text-sm text-rose-300 font-mono mb-4">{loadError}</p>
+                <button
+                  onClick={() => fileInputRef.current?.click()}
+                  className="px-4 py-2 rounded-lg bg-[#4cd7f6] text-[#003641] font-bold text-xs"
+                >
+                  Chọn tệp ROM khác
+                </button>
+              </div>
+            )}
 
             {/* Visual Overlays: CRT Scanlines, LCD Grid, Bilinear Smooth */}
             {visualSettings.filter === 'CRT Scanlines' && (
