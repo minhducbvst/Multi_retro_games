@@ -1,0 +1,141 @@
+{
+  "entities": {
+    "UserProfile": {
+      "title": "UserProfile",
+      "description": "User account profile and emulation preferences",
+      "type": "object",
+      "properties": {
+        "uid": { "type": "string", "maxLength": 128 },
+        "displayName": { "type": "string", "maxLength": 100 },
+        "email": { "type": "string", "maxLength": 254 },
+        "photoURL": { "type": "string", "maxLength": 1000 },
+        "level": { "type": "number" },
+        "xp": { "type": "number" },
+        "title": { "type": "string", "maxLength": 100 },
+        "preferredShader": { "type": "string", "maxLength": 50 },
+        "audioBuffer": { "type": "number" },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["uid", "displayName", "email"]
+    },
+    "GameMetadata": {
+      "title": "GameMetadata",
+      "description": "Metadata for games in library",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "maxLength": 128 },
+        "title": { "type": "string", "maxLength": 150 },
+        "platform": { "type": "string", "enum": ["NES", "SNES", "GBA", "GENESIS"] },
+        "description": { "type": "string", "maxLength": 2000 },
+        "boxArt": { "type": "string", "maxLength": 1000 },
+        "rating": { "type": "number" },
+        "releaseYear": { "type": "number" },
+        "multiplayerSupported": { "type": "boolean" },
+        "isFavorite": { "type": "boolean" },
+        "lastPlayed": { "type": "string", "format": "date-time" }
+      },
+      "required": ["id", "title", "platform"]
+    },
+    "SaveMetadata": {
+      "title": "SaveMetadata",
+      "description": "Cloud save state and battery SRAM metadata",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "maxLength": 128 },
+        "ownerUid": { "type": "string", "maxLength": 128 },
+        "gameId": { "type": "string", "maxLength": 128 },
+        "gameTitle": { "type": "string", "maxLength": 150 },
+        "platform": { "type": "string", "maxLength": 50 },
+        "slot": { "type": "number" },
+        "type": { "type": "string", "enum": ["sram", "state", "autosave"] },
+        "locationName": { "type": "string", "maxLength": 150 },
+        "checksum": { "type": "string", "maxLength": 128 },
+        "sizeBytes": { "type": "number" },
+        "stateData": { "type": "string" },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["id", "ownerUid", "gameId", "slot", "type"]
+    },
+    "MultiplayerRoom": {
+      "title": "MultiplayerRoom",
+      "description": "NetPlay lobby metadata and WebRTC signaling",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "maxLength": 128 },
+        "code": { "type": "string", "maxLength": 50 },
+        "hostUid": { "type": "string", "maxLength": 128 },
+        "hostName": { "type": "string", "maxLength": 100 },
+        "guestUid": { "type": "string", "maxLength": 128 },
+        "guestName": { "type": "string", "maxLength": 100 },
+        "gameId": { "type": "string", "maxLength": 128 },
+        "gameTitle": { "type": "string", "maxLength": 150 },
+        "platform": { "type": "string", "maxLength": 50 },
+        "status": { "type": "string", "enum": ["waiting", "ready", "playing", "closed"] },
+        "isPublic": { "type": "boolean" },
+        "hostReady": { "type": "boolean" },
+        "guestReady": { "type": "boolean" },
+        "pingMs": { "type": "number" },
+        "offer": { "type": "string", "maxLength": 50000 },
+        "answer": { "type": "string", "maxLength": 50000 },
+        "hostIceCandidates": { "type": "string", "maxLength": 20000 },
+        "guestIceCandidates": { "type": "string", "maxLength": 20000 },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["id", "code", "hostUid", "gameId", "status"]
+    },
+    "ChatMessage": {
+      "title": "ChatMessage",
+      "description": "In-room NetPlay chat message",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "maxLength": 128 },
+        "roomId": { "type": "string", "maxLength": 128 },
+        "senderUid": { "type": "string", "maxLength": 128 },
+        "senderName": { "type": "string", "maxLength": 100 },
+        "text": { "type": "string", "maxLength": 500 },
+        "timestamp": { "type": "string", "format": "date-time" }
+      },
+      "required": ["id", "roomId", "senderUid", "text"]
+    },
+    "SignalingMessage": {
+      "title": "SignalingMessage",
+      "description": "WebRTC SDP offer/answer or ICE candidate packet",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "maxLength": 128 },
+        "roomId": { "type": "string", "maxLength": 128 },
+        "senderUid": { "type": "string", "maxLength": 128 },
+        "targetUid": { "type": "string", "maxLength": 128 },
+        "type": { "type": "string", "enum": ["offer", "answer", "candidate"] },
+        "payload": { "type": "string", "maxLength": 50000 },
+        "createdAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["id", "roomId", "senderUid", "type", "payload"]
+    }
+  },
+  "firestore": {
+    "/users/{userId}": {
+      "schema": { "$ref": "#/entities/UserProfile" },
+      "description": "User profile document"
+    },
+    "/users/{userId}/saves/{saveId}": {
+      "schema": { "$ref": "#/entities/SaveMetadata" },
+      "description": "User game saves"
+    },
+    "/rooms/{roomId}": {
+      "schema": { "$ref": "#/entities/MultiplayerRoom" },
+      "description": "NetPlay lobby rooms"
+    },
+    "/rooms/{roomId}/messages/{messageId}": {
+      "schema": { "$ref": "#/entities/ChatMessage" },
+      "description": "NetPlay lobby chat messages"
+    },
+    "/rooms/{roomId}/signals/{signalId}": {
+      "schema": { "$ref": "#/entities/SignalingMessage" },
+      "description": "WebRTC peer signaling candidates"
+    }
+  }
+}

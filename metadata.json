@@ -1,0 +1,6 @@
+{
+  "name": "RetroVerse",
+  "description": "Full-Stack Retro Gaming Platform with in-browser NES, SNES, and GBA emulation, cloud save sync, and real-time WebRTC multiplayer.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

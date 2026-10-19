@@ -1,0 +1,86 @@
+rules_version = '2';
+
+service cloud.firestore {
+  match /databases/{database}/documents {
+    // Default Deny
+    match /{document=**} {
+      allow read, write: if false;
+    }
+
+    function isSignedIn() {
+      return request.auth != null;
+    }
+
+    function isOwner(userId) {
+      return isSignedIn() && request.auth.uid == userId;
+    }
+
+    function isValidId(id) {
+      return id is string && id.size() > 0 && id.size() <= 128 && id.matches('^[a-zA-Z0-9_\\-]+$');
+    }
+
+    function incoming() {
+      return request.resource.data;
+    }
+
+    function existing() {
+      return resource.data;
+    }
+
+    // User Profile
+    match /users/{userId} {
+      allow read: if isOwner(userId);
+      allow create: if isOwner(userId)
+        && incoming().uid == userId
+        && incoming().displayName is string && incoming().displayName.size() <= 100
+        && incoming().email is string && incoming().email.size() <= 254;
+      allow update: if isOwner(userId)
+        && incoming().uid == userId;
+      allow delete: if isOwner(userId);
+
+      // User Save States and Cartridge Battery saves
+      match /saves/{saveId} {
+        allow read: if isOwner(userId);
+        allow create, update: if isOwner(userId)
+          && incoming().ownerUid == userId
+          && incoming().gameId is string && incoming().gameId.size() <= 128
+          && incoming().type in ['sram', 'state', 'autosave'];
+        allow delete: if isOwner(userId);
+      }
+    }
+
+    // Multiplayer NetPlay Rooms
+    match /rooms/{roomId} {
+      allow get: if true;
+      allow list: if resource.data.isPublic == true || (isSignedIn() && (resource.data.hostUid == request.auth.uid || resource.data.guestUid == request.auth.uid));
+      allow create: if isSignedIn()
+        && isValidId(roomId)
+        && incoming().hostUid == request.auth.uid
+        && incoming().status in ['waiting', 'ready', 'playing', 'closed'];
+      allow update: if isSignedIn()
+        && (
+          existing().hostUid == request.auth.uid ||
+          existing().guestUid == request.auth.uid ||
+          (existing().guestUid == null && incoming().guestUid == request.auth.uid) ||
+          incoming().guestUid == null
+        );
+      allow delete: if isSignedIn() && existing().hostUid == request.auth.uid;
+
+      match /messages/{messageId} {
+        allow read: if true;
+        allow create: if isSignedIn()
+          && incoming().senderUid == request.auth.uid
+          && incoming().text is string && incoming().text.size() <= 500;
+        allow update, delete: if false;
+      }
+
+      match /signals/{signalId} {
+        allow read: if true;
+        allow create: if isSignedIn()
+          && incoming().senderUid == request.auth.uid
+          && incoming().payload is string && incoming().payload.size() <= 50000;
+        allow update, delete: if false;
+      }
+    }
+  }
+}
