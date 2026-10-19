@@ -567,41 +567,6 @@ export class RetroEmulatorEngine {
       ctx.stroke();
     }
 
-    // HUD Layer: Hearts, Magic Meter, Rupee, Bombs
-    // Top-left HUD box
-    ctx.fillStyle = 'rgba(0, 0, 0, 0.7)';
-    ctx.fillRect(8, 6, 90, 22);
-    ctx.strokeStyle = '#494454';
-    ctx.strokeRect(8, 6, 90, 22);
-
-    // Magic Meter bar
-    ctx.fillStyle = '#27ae60';
-    ctx.fillRect(12, 12, (this.player.magic / 100) * 80, 4);
-    ctx.strokeStyle = '#2ecc71';
-    ctx.strokeRect(12, 12, 80, 4);
-    ctx.fillStyle = '#a5b4fc';
-    ctx.font = '7px monospace';
-    ctx.fillText('MAGIC', 12, 10);
-
-    // Hearts top-right HUD
-    ctx.fillStyle = 'rgba(0, 0, 0, 0.7)';
-    ctx.fillRect(160, 6, 88, 22);
-    ctx.strokeStyle = '#494454';
-    ctx.strokeRect(160, 6, 88, 22);
-
-    for (let i = 0; i < 7; i++) {
-      ctx.fillStyle = (i < Math.ceil(this.player.hearts / 2)) ? '#e74c3c' : '#555';
-      ctx.fillRect(166 + i * 11, 10, 8, 7);
-    }
-    for (let i = 0; i < 7; i++) {
-      ctx.fillStyle = (i + 7 < Math.ceil(this.player.hearts / 2)) ? '#e74c3c' : '#555';
-      ctx.fillRect(166 + i * 11, 19, 8, 7);
-    }
-
-    // Rupee counter
-    ctx.fillStyle = '#ffb95f';
-    ctx.font = '8px monospace';
-    ctx.fillText(`R:${this.player.rupees.toString().padStart(3, '0')}`, 16, 22);
   }
 
   private gameLoop = (): void => {

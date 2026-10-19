@@ -425,33 +425,14 @@ export const EmulatorPage: React.FC<EmulatorPageProps> = ({
           </button>
         </div>
 
-        {/* Center Badges: Engine Metrics & Gamepad Status */}
-        <div className="hidden lg:flex items-center gap-3">
-          <div className="flex items-center gap-2 px-3 py-1 rounded bg-[#1e1f26] border border-[#494454]/40 text-xs font-mono">
-            <span className="h-2 w-2 rounded-full bg-emerald-400 animate-pulse"></span>
-            <span className="text-white font-bold">{fpsDisplay.toFixed(1)} FPS</span>
-            <span className="text-[#494454]">|</span>
-            <span className="text-[#958ea0]">{game.recommendedCore}</span>
-          </div>
-
-          <button
-            onClick={onOpenSettings}
-            className={`flex items-center gap-1.5 px-2.5 py-1 rounded border text-xs font-mono transition-all ${
-              connectedGamepad
-                ? 'bg-emerald-500/10 border-emerald-500/40 text-emerald-400 hover:bg-emerald-500/20 shadow-sm'
-                : 'bg-[#191b22] border-[#494454]/30 text-[#958ea0] hover:text-[#cbc3d7]'
-            }`}
-            title={connectedGamepad ? `Controller Active: ${connectedGamepad.id} (Click to calibrate)` : 'Connect USB or Bluetooth Gamepad (Plug & Play)'}
-          >
-            <span className="material-symbols-outlined text-xs text-[#4cd7f6]">sports_esports</span>
-            <span>{connectedGamepad ? `${connectedGamepad.id.substring(0, 16)}... (Port 1)` : 'Gamepad Ready'}</span>
-            {connectedGamepad && <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse"></span>}
-          </button>
-
-          <div className="flex items-center gap-1.5 px-2.5 py-1 rounded bg-[#191b22] border border-[#494454]/30 text-xs font-mono text-[#958ea0]">
-            <span className="material-symbols-outlined text-xs text-[#4cd7f6]">graphic_eq</span>
-            <span>44.1kHz DSP-1</span>
-          </div>
+        {/* Center: Game Platform Info */}
+        <div className="hidden lg:flex items-center gap-2">
+          {connectedGamepad && (
+            <div className="flex items-center gap-1.5 px-2.5 py-1 rounded bg-emerald-500/10 border border-emerald-500/30 text-xs font-mono text-emerald-400">
+              <span className="material-symbols-outlined text-xs">sports_esports</span>
+              <span>Tay cầm đã kết nối</span>
+            </div>
+          )}
         </div>
 
         {/* Right Cluster: Actions */}
@@ -555,13 +536,14 @@ export const EmulatorPage: React.FC<EmulatorPageProps> = ({
                 <span className="px-2 py-0.5 rounded bg-[#1e1f26]/80 backdrop-blur border border-[#494454]/40 font-mono text-xs text-white">
                   {game.title}
                 </span>
-                <span className="px-1.5 py-0.2 rounded bg-[#03b5d3]/20 border border-[#03b5d3]/40 text-[#4cd7f6] font-mono text-[10px]">
-                  60 FPS V-SYNC
+                <span className="px-1.5 py-0.5 rounded bg-[#03b5d3]/20 border border-[#03b5d3]/40 text-[#4cd7f6] font-mono text-[10px]">
+                  {game.platform}
                 </span>
               </div>
               <div className="flex items-center gap-2 font-mono text-xs">
-                <span className="text-emerald-400">JIT: 99.8%</span>
-                <span className="text-[#ffb95f]">SPEED: {fastForwardSpeed}x</span>
+                {fastForwardSpeed > 1 && (
+                  <span className="text-[#ffb95f]">SPEED: {fastForwardSpeed}x</span>
+                )}
               </div>
             </div>
 
@@ -820,26 +802,34 @@ export const EmulatorPage: React.FC<EmulatorPageProps> = ({
                         <span className="material-symbols-outlined text-[#4cd7f6] text-lg">gamepad</span>
                         <span className="text-white font-bold">Game Controller</span>
                       </div>
-                      <span className="px-2 py-0.5 rounded-full bg-emerald-500/10 text-emerald-400 border border-emerald-500/30 text-[10px] flex items-center gap-1">
-                        <span className="h-1.5 w-1.5 rounded-full bg-emerald-400 animate-ping"></span>
-                        Active
-                      </span>
+                      {connectedGamepad ? (
+                        <span className="px-2 py-0.5 rounded-full bg-emerald-500/10 text-emerald-400 border border-emerald-500/30 text-[10px] flex items-center gap-1">
+                          <span className="h-1.5 w-1.5 rounded-full bg-emerald-400"></span>
+                          Đã kết nối
+                        </span>
+                      ) : (
+                        <span className="px-2 py-0.5 rounded-full bg-[#33343b] text-[#958ea0] border border-[#494454]/30 text-[10px]">
+                          Chưa cắm tay cầm
+                        </span>
+                      )}
                     </div>
 
-                    <div className="bg-[#0c0e14] p-2.5 rounded-lg border border-[#494454]/20 space-y-1">
-                      <div className="flex justify-between text-[#e2e2eb]">
-                        <span>Xbox Wireless Controller</span>
-                        <span className="text-[#4cd7f6]">Port 1</span>
+                    {connectedGamepad ? (
+                      <div className="bg-[#0c0e14] p-2.5 rounded-lg border border-[#494454]/20 space-y-1">
+                        <div className="flex justify-between text-[#e2e2eb]">
+                          <span className="truncate max-w-[180px]">{connectedGamepad.id}</span>
+                          <span className="text-[#4cd7f6]">Port {connectedGamepad.index + 1}</span>
+                        </div>
                       </div>
-                      <div className="flex justify-between text-[#958ea0]">
-                        <span>Polling Rate: 0.8ms (1000Hz)</span>
-                        <span className="text-emerald-400">Low Jitter</span>
+                    ) : (
+                      <div className="bg-[#0c0e14] p-2.5 rounded-lg border border-[#494454]/20 text-[11px] text-[#958ea0]">
+                        <span>Dùng bàn phím máy tính hoặc phím ảo cảm ứng để điều khiển game.</span>
                       </div>
-                    </div>
+                    )}
 
                     {/* Active Signals Tester */}
                     <div>
-                      <span className="text-[#958ea0] text-[10px] uppercase block mb-1">Active Signals:</span>
+                      <span className="text-[#958ea0] text-[10px] uppercase block mb-1">Tín hiệu phím:</span>
                       <div className="grid grid-cols-6 gap-1 text-center text-[10px]">
                         {['UP', 'DOWN', 'B', 'A', 'Y', 'X'].map(sig => (
                           <span
@@ -860,31 +850,31 @@ export const EmulatorPage: React.FC<EmulatorPageProps> = ({
                   {/* Keybindings Table */}
                   <div className="p-3.5 rounded-xl bg-[#1e1f26] border border-[#494454]/30 space-y-2.5">
                     <div className="flex items-center justify-between">
-                      <span className="text-white font-bold">SNES Keybindings</span>
+                      <span className="text-white font-bold">{game.platform} Keybindings</span>
                       <button onClick={() => showToast("Reset default bindings")} className="text-[#4cd7f6] text-[10px] hover:underline">
-                        Reset Default
+                        Mặc định
                       </button>
                     </div>
 
                     <div className="space-y-1.5 text-[11px]">
                       <div className="flex items-center justify-between py-1 px-2 rounded bg-[#0c0e14]/60 border border-[#494454]/20">
-                        <span className="text-[#cbc3d7]">D-Pad Movement</span>
-                        <span className="px-1.5 py-0.5 rounded bg-[#33343b] text-white font-bold">Arrow Keys</span>
+                        <span className="text-[#cbc3d7]">Di chuyển (D-Pad)</span>
+                        <span className="px-1.5 py-0.5 rounded bg-[#33343b] text-white font-bold">Phím mũi tên</span>
                       </div>
                       <div className="flex items-center justify-between py-1 px-2 rounded bg-[#0c0e14]/60 border border-[#494454]/20">
-                        <span className="text-[#cbc3d7]">A Button (Dash/Talk)</span>
+                        <span className="text-[#cbc3d7]">Nút A (Tương tác / Nhảy)</span>
                         <span className="px-1.5 py-0.5 rounded bg-[#33343b] text-white font-bold">X</span>
                       </div>
                       <div className="flex items-center justify-between py-1 px-2 rounded bg-[#0c0e14]/60 border border-[#494454]/20">
-                        <span className="text-[#cbc3d7]">B Button (Attack)</span>
+                        <span className="text-[#cbc3d7]">Nút B (Tấn công / Chạy)</span>
                         <span className="px-1.5 py-0.5 rounded bg-[#33343b] text-white font-bold">Z</span>
                       </div>
                       <div className="flex items-center justify-between py-1 px-2 rounded bg-[#0c0e14]/60 border border-[#494454]/20">
-                        <span className="text-[#cbc3d7]">Y Button (Equipped Item)</span>
+                        <span className="text-[#cbc3d7]">Nút Y (Vật phẩm phụ)</span>
                         <span className="px-1.5 py-0.5 rounded bg-[#33343b] text-white font-bold">S</span>
                       </div>
                       <div className="flex items-center justify-between py-1 px-2 rounded bg-[#0c0e14]/60 border border-[#494454]/20">
-                        <span className="text-[#cbc3d7]">X Button (World Map)</span>
+                        <span className="text-[#cbc3d7]">Nút X (Bản đồ / Menu)</span>
                         <span className="px-1.5 py-0.5 rounded bg-[#33343b] text-white font-bold">A</span>
                       </div>
                     </div>
@@ -895,25 +885,19 @@ export const EmulatorPage: React.FC<EmulatorPageProps> = ({
               {inspectorTab === 'states' && (
                 <div className="p-3.5 rounded-xl bg-[#1e1f26] border border-[#494454]/30 space-y-3">
                   <div className="flex items-center justify-between">
-                    <span className="text-white font-bold">Active Slot #{currentSlot} Snapshot</span>
-                    <span className="text-[10px] text-emerald-400 flex items-center gap-1">
-                      <span className="material-symbols-outlined text-xs">cloud_done</span> Synced
-                    </span>
+                    <span className="text-white font-bold">Slot lưu #{currentSlot}</span>
                   </div>
 
-                  <div className="relative rounded-lg overflow-hidden border border-[#494454]/40">
-                    <img
-                      className="w-full h-28 object-cover"
-                      alt="Thumbnail"
-                      src="https://lh3.googleusercontent.com/aida-public/AB6AXuBIuaP3h1LTu8D0xLJ5_SBvdOPERU8LbEHmusl5AubWk_TgDaPVZROGdlpgPpMc4x6rOtz7mNrCrz7DHFfcuDqdG0LwcChV9GpXFVwbT4w87sPvJ-1mXetV0a6jd2rZgCRuRcPgpNFmYFgHXZEWWZbXVbTvA1zNsMwrCtc081Lwo7rKCx6RrBeGjir5IpOKvss9_x8TkAeKzPmlPp2ZV8Pnn4fDRJ-55jZT_hPXy3reHtJz6Rwva8wTag"
-                    />
-                    <div className="absolute inset-0 bg-gradient-to-t from-[#0c0e14] via-transparent to-transparent flex items-end p-2 justify-between">
-                      <div>
-                        <p className="text-white font-bold text-xs">Hyrule Castle Crypt</p>
-                        <p className="text-[#958ea0] text-[10px]">Today 14:22:15</p>
-                      </div>
-                      <span className="px-1.5 py-0.5 rounded bg-[#d0bcff]/20 text-[#d0bcff] text-[10px]">512 KB</span>
-                    </div>
+                  <div className="p-4 rounded-lg bg-[#0c0e14] border border-[#494454]/30 text-center space-y-2">
+                    <span className="material-symbols-outlined text-3xl text-[#958ea0]">save</span>
+                    <p className="text-xs text-[#cbc3d7]">
+                      {saveManager.getAllSaves().some(s => s.gameId === game.id && s.slot === currentSlot)
+                        ? `Đã có bản lưu cho Slot #${currentSlot}`
+                        : `Slot #${currentSlot} hiện đang trống`}
+                    </p>
+                    <p className="text-[10px] text-[#958ea0]">
+                      Nhấn "Lưu trạng thái" (F2) hoặc "Nạp lại" (F4) để ghi nhận tiến trình.
+                    </p>
                   </div>
 
                   <div className="grid grid-cols-2 gap-2 pt-1">
@@ -921,15 +905,15 @@ export const EmulatorPage: React.FC<EmulatorPageProps> = ({
                       onClick={triggerQuickSave}
                       className="py-2 px-3 rounded-lg bg-[#a078ff]/20 border border-[#a078ff]/40 text-[#d0bcff] hover:bg-[#a078ff] hover:text-[#340080] font-bold flex items-center justify-center gap-1 active:scale-95 transition-all"
                     >
-                      <span className="material-symbols-outlined text-sm">add_photo_alternate</span>
-                      <span>New State</span>
+                      <span className="material-symbols-outlined text-sm">save</span>
+                      <span>Lưu (F2)</span>
                     </button>
                     <button
                       onClick={triggerQuickLoad}
                       className="py-2 px-3 rounded-lg bg-[#33343b] border border-[#494454]/30 text-white hover:border-[#4cd7f6] hover:text-[#4cd7f6] flex items-center justify-center gap-1 active:scale-95 transition-all"
                     >
                       <span className="material-symbols-outlined text-sm">history</span>
-                      <span>Restore</span>
+                      <span>Nạp (F4)</span>
                     </button>
                   </div>
                 </div>
@@ -937,20 +921,22 @@ export const EmulatorPage: React.FC<EmulatorPageProps> = ({
 
               {inspectorTab === 'cheats' && (
                 <div className="p-3.5 rounded-xl bg-[#1e1f26] border border-[#494454]/30 space-y-3">
-                  <span className="text-white font-bold block">Game Genie / Pro Action Replay</span>
+                  <span className="text-white font-bold block">Game Genie / Action Replay</span>
+                  <p className="text-[11px] text-[#958ea0]">
+                    Nhập mã cheat tương thích để kích hoạt trong phiên chơi.
+                  </p>
                   <div className="space-y-2">
-                    <label className="flex items-center justify-between p-2 rounded bg-[#0c0e14] border border-[#494454]/20 cursor-pointer">
-                      <span>Infinite Health Hearts</span>
-                      <input type="checkbox" defaultChecked className="rounded text-[#4cd7f6] bg-[#33343b] border-[#494454]" />
-                    </label>
-                    <label className="flex items-center justify-between p-2 rounded bg-[#0c0e14] border border-[#494454]/20 cursor-pointer">
-                      <span>Infinite Magic Meter</span>
-                      <input type="checkbox" defaultChecked className="rounded text-[#4cd7f6] bg-[#33343b] border-[#494454]" />
-                    </label>
-                    <label className="flex items-center justify-between p-2 rounded bg-[#0c0e14] border border-[#494454]/20 cursor-pointer">
-                      <span>999 Rupee Max Cap</span>
-                      <input type="checkbox" className="rounded text-[#4cd7f6] bg-[#33343b] border-[#494454]" />
-                    </label>
+                    <input
+                      type="text"
+                      placeholder="Mã cheat (ví dụ: 7E001003 hoặc D020-0FAD)"
+                      className="w-full px-2.5 py-1.5 rounded bg-[#0c0e14] border border-[#494454]/40 text-xs text-white placeholder-[#958ea0]/50 uppercase font-mono"
+                    />
+                    <button
+                      onClick={() => showToast("Đã lưu mã cheat")}
+                      className="w-full py-1.5 rounded bg-[#4cd7f6]/20 border border-[#4cd7f6]/40 text-[#4cd7f6] font-bold text-xs hover:bg-[#4cd7f6]/30 transition-colors"
+                    >
+                      Áp dụng mã cheat
+                    </button>
                   </div>
                 </div>
               )}
@@ -961,13 +947,13 @@ export const EmulatorPage: React.FC<EmulatorPageProps> = ({
                     <div className="flex items-center justify-between">
                       <span className="text-white font-bold flex items-center gap-1.5">
                         <span className="material-symbols-outlined text-[#4cd7f6] text-base">display_settings</span>
-                        Display Filters
+                        Bộ lọc hiển thị
                       </span>
                       <button
                         onClick={() => setShowVisualSettingsModal(true)}
                         className="text-[10px] text-[#4cd7f6] hover:underline flex items-center gap-0.5"
                       >
-                        Advanced <span className="material-symbols-outlined text-xs">open_in_new</span>
+                        Nâng cao <span className="material-symbols-outlined text-xs">open_in_new</span>
                       </button>
                     </div>
 
@@ -994,7 +980,7 @@ export const EmulatorPage: React.FC<EmulatorPageProps> = ({
                     {/* Filter Intensity Slider */}
                     <div className="pt-2 border-t border-[#494454]/20">
                       <div className="flex justify-between text-[11px] mb-1">
-                        <span className="text-[#cbc3d7]">Filter Intensity</span>
+                        <span className="text-[#cbc3d7]">Cường độ bộ lọc</span>
                         <span className="text-[#4cd7f6] font-bold">{visualSettings.filterIntensity}%</span>
                       </div>
                       <input
@@ -1011,7 +997,7 @@ export const EmulatorPage: React.FC<EmulatorPageProps> = ({
                     {/* Curvature & Bloom */}
                     <div className="space-y-1.5 pt-2 border-t border-[#494454]/20 text-[11px]">
                       <label className="flex items-center justify-between p-1.5 rounded bg-[#0c0e14]/60 border border-[#494454]/20 cursor-pointer">
-                        <span className="text-[#cbc3d7]">CRT Tube Curvature</span>
+                        <span className="text-[#cbc3d7]">Độ cong bóng đèn CRT</span>
                         <input
                           type="checkbox"
                           checked={visualSettings.enableCurvature}
@@ -1020,7 +1006,7 @@ export const EmulatorPage: React.FC<EmulatorPageProps> = ({
                         />
                       </label>
                       <label className="flex items-center justify-between p-1.5 rounded bg-[#0c0e14]/60 border border-[#494454]/20 cursor-pointer">
-                        <span className="text-[#cbc3d7]">Phosphor Glow / Bloom</span>
+                        <span className="text-[#cbc3d7]">Phát quang Phosphor Glow</span>
                         <input
                           type="checkbox"
                           checked={visualSettings.enableBloom}
@@ -1032,7 +1018,7 @@ export const EmulatorPage: React.FC<EmulatorPageProps> = ({
 
                     {/* Aspect Ratio */}
                     <div className="pt-2 border-t border-[#494454]/20">
-                      <span className="text-[#958ea0] text-[10px] block mb-1.5">Aspect Ratio:</span>
+                      <span className="text-[#958ea0] text-[10px] block mb-1.5">Tỉ lệ khung hình:</span>
                       <div className="grid grid-cols-4 gap-1 text-center text-[10px]">
                         {(['4:3', '8:7', '16:9', '1:1'] as const).map((ar) => (
                           <button
@@ -1055,35 +1041,11 @@ export const EmulatorPage: React.FC<EmulatorPageProps> = ({
                       className="w-full py-2 rounded-lg bg-[#4cd7f6]/10 border border-[#4cd7f6]/40 text-[#4cd7f6] hover:bg-[#4cd7f6]/20 font-bold text-xs flex items-center justify-center gap-1.5 transition-colors"
                     >
                       <span className="material-symbols-outlined text-sm">tune</span>
-                      <span>Open Full Visual Settings Menu</span>
+                      <span>Mở bảng tinh chỉnh hình ảnh chi tiết</span>
                     </button>
                   </div>
                 </div>
               )}
-
-              {/* Real-time Telemetry Card */}
-              <div className="p-3.5 rounded-xl bg-[#1e1f26] border border-[#494454]/30 space-y-2">
-                <span className="text-white font-bold block">Core Telemetry</span>
-                <div className="space-y-1.5 text-[11px] text-[#cbc3d7]">
-                  <div>
-                    <div className="flex justify-between mb-1">
-                      <span>Buffer Health (Wasm JIT)</span>
-                      <span className="text-emerald-400">99.8%</span>
-                    </div>
-                    <div className="w-full bg-[#0c0e14] h-1.5 rounded-full overflow-hidden">
-                      <div className="bg-emerald-400 h-full w-[99.8%]"></div>
-                    </div>
-                  </div>
-                  <div className="flex justify-between py-1 border-t border-[#494454]/20">
-                    <span>WebAudio Latency:</span>
-                    <span className="text-[#4cd7f6] font-bold">8.2 ms</span>
-                  </div>
-                  <div className="flex justify-between py-1 border-t border-[#494454]/20">
-                    <span>Dropped Frames:</span>
-                    <span className="text-white">0 (0.00%)</span>
-                  </div>
-                </div>
-              </div>
             </div>
 
             {/* Panel Footer */}
