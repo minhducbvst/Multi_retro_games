@@ -209,7 +209,20 @@ export const NetPlayLobbyPage: React.FC<NetPlayLobbyPageProps> = ({
   const handleCreateRoom = async () => {
     setIsSubmitting(true);
     try {
-      const selectedGame = FEATURED_GAMES.find((g) => g.id === createGameId) || FEATURED_GAMES[0];
+      const fallbackNetGame: Game = {
+        id: 'custom-netplay',
+        title: 'Trò chơi nhiều người',
+        platform: createPlatform,
+        year: 1995,
+        developer: 'RetroVerse',
+        genre: 'Multiplayer',
+        rating: 5.0,
+        ratingCount: 1,
+        boxArt: '',
+        description: 'Phòng chơi NetPlay',
+        features: [],
+      };
+      const selectedGame = FEATURED_GAMES.find((g) => g.id === createGameId) || FEATURED_GAMES[0] || fallbackNetGame;
       const newRoom = await roomService.createRoom({
         gameId: selectedGame.id,
         gameTitle: selectedGame.title,
@@ -278,7 +291,21 @@ export const NetPlayLobbyPage: React.FC<NetPlayLobbyPageProps> = ({
   const isHost = !currentUser || !room || room.hostUid === currentUser.uid;
   const isGuest = currentUser && room && room.guestUid === currentUser.uid;
   const isSpectator = !isHost && !isGuest;
-  const activeGame = FEATURED_GAMES.find((g) => g.id === room?.gameId) || FEATURED_GAMES[0];
+  const activeGame =
+    FEATURED_GAMES.find((g) => g.id === room?.gameId) ||
+    FEATURED_GAMES[0] || {
+      id: 'custom-netplay',
+      title: room?.gameTitle || 'Phòng NetPlay',
+      platform: room?.platform || 'SNES',
+      year: 1995,
+      developer: 'RetroVerse',
+      genre: 'Multiplayer',
+      rating: 5,
+      ratingCount: 1,
+      boxArt: '',
+      description: '',
+      features: [],
+    };
   const bothPlayersReady = !!(room?.hostReady && room?.guestReady);
 
   return (

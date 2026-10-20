@@ -13,6 +13,7 @@ import {
 import { Nostalgist } from 'nostalgist';
 import { romStorage } from '../services/roms/romStorage';
 import { parseRom } from '../emulator/romParser';
+import { downloadDriveFile } from '../services/googleDriveService';
 
 interface EmulatorPageProps {
   gameId: string;
@@ -32,7 +33,21 @@ export const EmulatorPage: React.FC<EmulatorPageProps> = ({
   const nostalgistRef = useRef<Nostalgist | null>(null);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
 
-  const [game, setGame] = useState<Game>(() => getGameById(gameId) || FEATURED_GAMES[0]);
+  const fallbackGame: Game = {
+    id: 'custom-unloaded',
+    title: 'Chờ nạp ROM',
+    platform: 'NES',
+    year: 1995,
+    developer: 'Retro Cartridge',
+    genre: 'Retro',
+    rating: 5.0,
+    ratingCount: 1,
+    boxArt: '',
+    description: 'Vui lòng nạp tệp ROM để bắt đầu chơi.',
+    features: [],
+  };
+
+  const [game, setGame] = useState<Game>(() => getGameById(gameId) || FEATURED_GAMES[0] || fallbackGame);
   const [hasRom, setHasRom] = useState<boolean>(() => romStorage.hasRom(gameId));
   const [isLoadingCore, setIsLoadingCore] = useState<boolean>(false);
   const [coreLoadingStatus, setCoreLoadingStatus] = useState<string>('');
@@ -180,13 +195,27 @@ export const EmulatorPage: React.FC<EmulatorPageProps> = ({
 
   // Initialize and run emulator engine
   useEffect(() => {
-    const targetGame = getGameById(gameId) || FEATURED_GAMES[0];
+    const targetGame = getGameById(gameId) || FEATURED_GAMES[0] || fallbackGame;
     setGame(targetGame);
 
     const stored = romStorage.getRom(gameId);
     if (stored && stored.data && stored.data.length > 0) {
       setHasRom(true);
       launchRealEmulator(stored.data, stored.filename, stored.platform || targetGame.platform);
+    } else if (targetGame?.driveFileId) {
+      setIsLoadingCore(true);
+      setCoreLoadingStatus(`Đang tải ROM "${targetGame.romFilename || targetGame.title}" từ Google Drive...`);
+      downloadDriveFile(targetGame.driveFileId)
+        .then((buf) => {
+          const bytes = new Uint8Array(buf);
+          romStorage.saveRom(targetGame.id, targetGame.romFilename || targetGame.title, targetGame.platform, bytes);
+          setHasRom(true);
+          launchRealEmulator(bytes, targetGame.romFilename || targetGame.title, targetGame.platform);
+        })
+        .catch((err) => {
+          setIsLoadingCore(false);
+          setLoadError(`Không thể tải tệp từ Google Drive: ${err?.message || 'Lỗi kết nối'}. Vui lòng thử nạp lại.`);
+        });
     } else {
       setHasRom(false);
     }

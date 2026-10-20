@@ -1,7 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { AVAILABLE_TROPHIES, AVAILABLE_SPEEDRUNS, DEFAULT_USER_STATS } from '../services/user/profileData';
 import { saveManager } from '../services/saves/saveManager';
-import { FEATURED_GAMES } from '../services/games/catalog';
+import { useLibraryStore } from '../services/games/libraryStore';
 import { auth, loginWithGoogle, logoutUser } from '../services/firebase';
 import { User, onAuthStateChanged } from 'firebase/auth';
 
@@ -15,6 +15,7 @@ export const ProfilePage: React.FC<ProfilePageProps> = ({ onBack, onPlayGame }) 
   const [activeTab, setActiveTab] = useState<'overview' | 'trophies' | 'speedruns' | 'rig'>('overview');
   const [toastMessage, setToastMessage] = useState<string | null>(null);
   const [saveCount, setSaveCount] = useState<number>(() => saveManager.getAllSaves().length);
+  const games = useLibraryStore();
 
   useEffect(() => {
     const unsub = onAuthStateChanged(auth, (usr) => {
@@ -152,7 +153,7 @@ export const ProfilePage: React.FC<ProfilePageProps> = ({ onBack, onPlayGame }) 
           <div className="grid grid-cols-2 sm:grid-cols-4 gap-4">
             <div className="p-4 bg-[#1e1f26] rounded-xl border border-[#494454]/30">
               <span className="text-[11px] font-mono text-[#958ea0]">Tựa Game Sẵn Sàng</span>
-              <h3 className="text-2xl font-bold font-mono text-white mt-1">{FEATURED_GAMES.length}</h3>
+              <h3 className="text-2xl font-bold font-mono text-white mt-1">{games.length}</h3>
               <p className="text-[10px] font-mono text-emerald-400 mt-1">NES, SNES, GBA</p>
             </div>
 

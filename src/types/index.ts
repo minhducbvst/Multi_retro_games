@@ -35,6 +35,9 @@ export interface Game {
   md5?: string;
   crc32?: string;
   sha1?: string;
+  source?: 'local' | 'drive';
+  driveFileId?: string;
+  uploadedAt?: string;
 }
 
 export type SaveType = 'battery' | 'sram' | 'state' | 'autosave';

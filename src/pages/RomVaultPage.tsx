@@ -2,6 +2,8 @@ import React, { useState, useRef } from 'react';
 import { parseRom, RomHeaderInfo } from '../emulator/romParser';
 import { GoogleDriveRomPicker } from '../components/GoogleDriveRomPicker';
 import { Game } from '../types';
+import { libraryStore, getCartridgeCoverArt } from '../services/games/libraryStore';
+import { romStorage } from '../services/roms/romStorage';
 
 interface RomVaultPageProps {
   onLaunchRom: (romData: Uint8Array, headerInfo: RomHeaderInfo) => void;
@@ -144,19 +146,20 @@ export const RomVaultPage: React.FC<RomVaultPageProps> = ({
 
   const handleSaveToLibrary = () => {
     if (!analyzedRom) return;
+    const plat = analyzedRom.info.platform === 'UNKNOWN' ? 'NES' : analyzedRom.info.platform;
+    const title = analyzedRom.info.internalTitle || analyzedRom.info.filename;
     const customGame: Game = {
       id: `custom-${Date.now()}-${Math.floor(Math.random() * 1000)}`,
-      title: analyzedRom.info.internalTitle || analyzedRom.info.filename,
-      platform: analyzedRom.info.platform === 'UNKNOWN' ? 'NES' : analyzedRom.info.platform,
+      title,
+      platform: plat,
       year: 1995,
-      developer: sourceMode === 'drive' ? 'Google Drive Cloud Storage' : 'Local Backup',
-      genre: 'Custom / Homebrew',
+      developer: sourceMode === 'drive' ? 'Google Drive Cloud Storage' : 'Tải lên từ máy tính',
+      genre: 'Custom / Backup',
       rating: 5.0,
       ratingCount: 1,
-      boxArt: 'https://images.unsplash.com/photo-1550745165-9bc0b252726f?w=600&auto=format&fit=crop&q=80',
-      artwork: 'https://images.unsplash.com/photo-1550745165-9bc0b252726f?w=1200&auto=format&fit=crop&q=80',
-      description: `Imported ROM cartridge: ${analyzedRom.info.filename}. Source: ${
-        sourceMode === 'drive' ? 'Google Drive' : 'Local Computer'
+      boxArt: getCartridgeCoverArt(title, plat),
+      description: `Tệp ROM: ${analyzedRom.info.filename}. Nguồn: ${
+        sourceMode === 'drive' ? 'Google Drive' : 'Máy tính'
       }. Checksum: ${analyzedRom.info.crc32}.`,
       players: '1-2 Players',
       releaseDate: 'Physical Backup',
@@ -166,14 +169,50 @@ export const RomVaultPage: React.FC<RomVaultPageProps> = ({
       compatibility: 100,
       crc32: analyzedRom.info.crc32,
       md5: analyzedRom.info.md5,
+      source: sourceMode === 'drive' ? 'drive' : 'local',
+      romFilename: analyzedRom.info.filename,
     };
+
+    romStorage.saveRom(customGame.id, analyzedRom.info.filename, plat, analyzedRom.bytes);
+    libraryStore.addGame(customGame);
 
     if (onAddCustomGame) {
       onAddCustomGame(customGame, analyzedRom.bytes);
-      showToast(`Added "${customGame.title}" to library!`);
-    } else {
-      onLaunchRom(analyzedRom.bytes, analyzedRom.info);
     }
+    showToast(`Đã lưu "${customGame.title}" vào thư viện!`);
+  };
+
+  const handleSaveAllToLibrary = () => {
+    if (detectedFolderRoms.length === 0) return;
+    const gamesToAdd: Game[] = [];
+
+    detectedFolderRoms.forEach((rom) => {
+      const plat = rom.info.platform === 'UNKNOWN' ? 'NES' : rom.info.platform;
+      const title = rom.info.internalTitle || rom.filename;
+      const game: Game = {
+        id: `custom-${Date.now()}-${Math.floor(Math.random() * 100000)}`,
+        title,
+        platform: plat,
+        year: 1995,
+        developer: sourceMode === 'drive' ? 'Google Drive Cloud Storage' : 'Tải lên từ máy tính',
+        genre: 'Custom / Backup',
+        rating: 5.0,
+        ratingCount: 1,
+        boxArt: getCartridgeCoverArt(title, plat),
+        description: `Tệp ROM: ${rom.filename}. Checksum: ${rom.info.crc32}.`,
+        features: ['WASM Client', 'SRAM Battery', rom.info.coProcessor],
+        batterySave: rom.info.hasBattery,
+        source: 'local',
+        romFilename: rom.filename,
+        crc32: rom.info.crc32,
+      };
+
+      gamesToAdd.push(game);
+      romStorage.saveRom(game.id, rom.filename, plat, rom.bytes);
+    });
+
+    libraryStore.addGames(gamesToAdd);
+    showToast(`Đã thêm thành công ${gamesToAdd.length} tựa game vào thư viện!`);
   };
 
   return (
@@ -324,12 +363,20 @@ export const RomVaultPage: React.FC<RomVaultPageProps> = ({
               {/* Detected Folder ROMs List */}
               {detectedFolderRoms.length > 0 && (
                 <div className="p-4 bg-[#1e1f26] border border-[#494454]/30 rounded-2xl space-y-3">
-                  <div className="flex items-center justify-between pb-2 border-b border-[#494454]/20">
+                  <div className="flex flex-wrap items-center justify-between pb-2 border-b border-[#494454]/20 gap-2">
                     <div className="flex items-center gap-2 text-xs font-bold text-white font-mono">
                       <span className="material-symbols-outlined text-sm text-[#4cd7f6]">folder</span>
-                      <span>Detected ROMs in Folder ({detectedFolderRoms.length})</span>
+                      <span>Đã tìm thấy ({detectedFolderRoms.length}) tệp ROM trong thư mục</span>
                     </div>
-                    <span className="text-[10px] font-mono text-[#958ea0]">Click any cartridge to inspect</span>
+                    <div className="flex items-center gap-2">
+                      <button
+                        onClick={handleSaveAllToLibrary}
+                        className="px-3 py-1 rounded bg-[#a078ff]/20 hover:bg-[#a078ff]/30 text-[#d0bcff] border border-[#a078ff]/40 text-xs font-mono font-bold flex items-center gap-1 transition-colors"
+                      >
+                        <span className="material-symbols-outlined text-xs">bookmark_add</span>
+                        <span>Lưu tất cả vào thư viện ({detectedFolderRoms.length})</span>
+                      </button>
+                    </div>
                   </div>
 
                   <div className="max-h-52 overflow-y-auto space-y-1.5 divide-y divide-[#494454]/20 pr-1">

@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { FEATURED_GAMES } from '../services/games/catalog';
+import { useLibraryStore } from '../services/games/libraryStore';
 import { Game } from '../types';
 
 interface SearchModalProps {
@@ -15,6 +15,7 @@ export const SearchModal: React.FC<SearchModalProps> = ({
   onSelectGame,
   onPlayGame
 }) => {
+  const games = useLibraryStore();
   const [query, setQuery] = useState('');
   const [platformFilter, setPlatformFilter] = useState<'ALL' | 'NES' | 'SNES' | 'GBA'>('ALL');
   const inputRef = useRef<HTMLInputElement | null>(null);
@@ -40,7 +41,7 @@ export const SearchModal: React.FC<SearchModalProps> = ({
 
   if (!isOpen) return null;
 
-  const filteredGames = FEATURED_GAMES.filter((g) => {
+  const filteredGames = games.filter((g) => {
     const matchesQuery =
       g.title.toLowerCase().includes(query.toLowerCase()) ||
       g.genre.toLowerCase().includes(query.toLowerCase()) ||

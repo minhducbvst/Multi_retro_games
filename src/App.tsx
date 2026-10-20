@@ -21,11 +21,13 @@ import { Game } from './types';
 import { RomHeaderInfo } from './emulator/romParser';
 import { romStorage } from './services/roms/romStorage';
 
+import { libraryStore, useLibraryStore, getCartridgeCoverArt } from './services/games/libraryStore';
+
 export default function App() {
-  // Navigation & View state
+  const libraryGames = useLibraryStore();
   const [currentTab, setCurrentTab] = useState<string>('browse');
   const [activeView, setActiveView] = useState<'main' | 'game-detail' | 'emulator' | 'netplay'>('main');
-  const [selectedGameId, setSelectedGameId] = useState<string>('zelda-alttp');
+  const [selectedGameId, setSelectedGameId] = useState<string>(() => libraryStore.getGames()[0]?.id || '');
   const [activeSaveSlot, setActiveSaveSlot] = useState<number>(1);
   const [searchModalOpen, setSearchModalOpen] = useState<boolean>(false);
   const [searchQuery, setSearchQuery] = useState<string>('');
@@ -100,31 +102,35 @@ export default function App() {
 
   const handleCustomRomLoaded = (customGame: Game, romData: Uint8Array) => {
     romStorage.saveRom(customGame.id, customGame.title, customGame.platform, romData);
-    FEATURED_GAMES.unshift(customGame);
+    libraryStore.addGame(customGame);
     setSelectedGameId(customGame.id);
     setActiveView('emulator');
   };
 
   const handleLaunchRomFromVault = (romData: Uint8Array, headerInfo: RomHeaderInfo) => {
+    const plat = headerInfo.platform === 'UNKNOWN' ? 'NES' : headerInfo.platform;
+    const title = headerInfo.internalTitle || headerInfo.filename;
     const customGame: Game = {
       id: `custom-${Date.now()}`,
-      title: headerInfo.internalTitle || headerInfo.filename,
-      platform: headerInfo.platform === 'UNKNOWN' ? 'NES' : headerInfo.platform,
+      title,
+      platform: plat,
       year: 1995,
-      developer: 'Imported Cartridge',
-      genre: 'Custom / Homebrew',
+      developer: 'Tải lên từ máy tính',
+      genre: 'Custom / Backup',
       rating: 5.0,
       ratingCount: 1,
-      boxArt: 'https://images.unsplash.com/photo-1550745165-9bc0b252726f?w=600&auto=format&fit=crop&q=80',
-      artwork: 'https://images.unsplash.com/photo-1550745165-9bc0b252726f?w=1200&auto=format&fit=crop&q=80',
-      description: `Locally loaded ROM file: ${headerInfo.filename}. Type: ${headerInfo.romSpeedAndType}, Checksum: ${headerInfo.crc32}. Running client-side via WebAssembly sandbox.`,
+      boxArt: getCartridgeCoverArt(title, plat),
+      description: `Tệp ROM: ${headerInfo.filename}. Checksum: ${headerInfo.crc32}. Chạy trực tiếp trong WebAssembly sandbox.`,
       players: '1-2 Players',
       releaseDate: 'Physical Backup',
-      features: ['Client WASM', 'SRAM Battery', 'Raw Pixel Perfect'],
-      compatibilityScore: 99
+      features: ['Client WASM', 'SRAM Battery', headerInfo.coProcessor],
+      batterySave: headerInfo.hasBattery,
+      source: 'local',
+      romFilename: headerInfo.filename,
+      compatibilityScore: 100
     };
-    romStorage.saveRom(customGame.id, headerInfo.filename, customGame.platform, romData);
-    FEATURED_GAMES.unshift(customGame);
+    romStorage.saveRom(customGame.id, headerInfo.filename, plat, romData);
+    libraryStore.addGame(customGame);
     setSelectedGameId(customGame.id);
     setActiveView('emulator');
   };
@@ -180,8 +186,8 @@ export default function App() {
               currentTab={activeView === 'netplay' ? 'rooms' : currentTab}
               onNavigate={handleNavigate}
               favoriteCount={favorites.length}
-              totalGameCount={128}
-              saveCount={5}
+              totalGameCount={libraryGames.length}
+              saveCount={recentGames.length}
               onCustomRomLoaded={handleCustomRomLoaded}
             />
           </aside>

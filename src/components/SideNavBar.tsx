@@ -1,6 +1,8 @@
 import React, { useRef } from 'react';
 import { parseRom } from '../emulator/romParser';
 import { Game } from '../types';
+import { getCartridgeCoverArt } from '../services/games/libraryStore';
+import { gamepadService } from '../services/input/gamepadService';
 
 interface SideNavBarProps {
   currentTab: string;
@@ -41,7 +43,7 @@ export const SideNavBar: React.FC<SideNavBarProps> = ({
           genre: 'Action / Custom ROM',
           rating: 5.0,
           ratingCount: 1,
-          boxArt: 'https://lh3.googleusercontent.com/aida-public/AB6AXuC1Y66_lszNOrXaQ8kQ942-BW_Zfwc-Dk08JvtkkIoe3ViPELNQKJQ2PaZ-qYhi85OelGjLQB4nYmS6SJTjlv3IAWfJL-D_xC6FVTciYqsYc2eOpJ1rJ3135G7_UtzNo2ja_Pc2_Kap03O58u7kva1an4_dzjhia2CrKap35tbHtkMud9MLUxBEKXg-7QtZunIfmjcnUPPzXFm79KUhAS7D11wwhZR9l8cYdxse_YsgiZe8OlSGEwAcxw',
+          boxArt: getCartridgeCoverArt(header.internalTitle || file.name, header.platform),
           description: `Loaded from local file: ${file.name}. Header: ${header.romSpeedAndType}, Checksum: ${header.crc32}`,
           features: ['Battery SRAM', 'Save State Ready', header.coProcessor],
           batterySave: header.hasBattery,
@@ -246,11 +248,13 @@ export const SideNavBar: React.FC<SideNavBarProps> = ({
           </div>
           <div className="flex flex-col flex-1 overflow-hidden">
             <span className="font-mono text-[11px] text-[#e2e2eb] font-semibold truncate">
-              Xbox Wireless (USB)
+              {gamepadService.getPrimaryController()?.id || 'Bàn phím & Cảm ứng'}
             </span>
             <div className="flex items-center gap-1.5">
-              <span className="w-1.5 h-1.5 rounded-full bg-emerald-400"></span>
-              <span className="font-mono text-[9px] text-[#958ea0]">P1 • 0.8ms Poll</span>
+              <span className={`w-1.5 h-1.5 rounded-full ${gamepadService.getPrimaryController() ? 'bg-emerald-400' : 'bg-[#958ea0]'}`}></span>
+              <span className="font-mono text-[9px] text-[#958ea0]">
+                {gamepadService.getPrimaryController() ? 'Tay cầm đã kết nối' : 'Phím ảo / Bàn phím'}
+              </span>
             </div>
           </div>
         </div>

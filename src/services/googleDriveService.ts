@@ -209,3 +209,63 @@ export function extractDriveFolderIdFromUrl(input: string): string | null {
   }
   return null;
 }
+
+/**
+ * Clean a ROM filename into a human-friendly title
+ * e.g. "Super Mario World (USA) [!].smc" -> "Super Mario World"
+ */
+export function cleanRomTitle(filename: string): string {
+  return filename
+    .replace(/\.(nes|smc|sfc|gba|bin|zip|7z)$/i, '')
+    .replace(/[\[\(].*?[\]\)]/g, '')
+    .replace(/_/g, ' ')
+    .trim() || filename;
+}
+
+/**
+ * High-speed scan across user's Google Drive to locate all compatible retro ROM cartridges
+ */
+export async function scanAllDriveRoms(tokenOverride?: string): Promise<DriveItem[]> {
+  const token = tokenOverride || getCachedAccessToken();
+  if (!token) {
+    throw new Error('Google Drive access token is required. Please sign in with Google first.');
+  }
+
+  // Find all retro ROM files across the entire drive
+  const q = `trashed = false and (name contains '.nes' or name contains '.smc' or name contains '.sfc' or name contains '.gba' or name contains '.bin')`;
+  const url = new URL('https://www.googleapis.com/drive/v3/files');
+  url.searchParams.set('q', q);
+  url.searchParams.set('fields', 'files(id, name, mimeType, size, modifiedTime, iconLink, webViewLink)');
+  url.searchParams.set('pageSize', '100');
+  url.searchParams.set('orderBy', 'name');
+
+  const res = await fetch(url.toString(), {
+    headers: {
+      Authorization: `Bearer ${token}`,
+    },
+  });
+
+  if (!res.ok) {
+    const errText = await res.text();
+    throw new Error(`Google Drive scan failed (${res.status}): ${errText}`);
+  }
+
+  const data = await res.json();
+  const rawFiles: any[] = data.files || [];
+
+  return rawFiles
+    .filter((f) => isRomFilename(f.name))
+    .map((f) => ({
+      id: f.id,
+      name: f.name,
+      mimeType: f.mimeType,
+      size: f.size,
+      modifiedTime: f.modifiedTime,
+      iconLink: f.iconLink,
+      webViewLink: f.webViewLink,
+      isFolder: false,
+      isRom: true,
+      romPlatform: detectPlatformFromFilename(f.name),
+    }));
+}
+

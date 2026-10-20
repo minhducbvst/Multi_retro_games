@@ -22,12 +22,28 @@ export const GameDetailPage: React.FC<GameDetailPageProps> = ({
   const [activeTab, setActiveTab] = useState<'overview' | 'states' | 'controls' | 'manual' | 'speedruns'>('overview');
   const [toastMessage, setToastMessage] = useState<string | null>(null);
 
-  const game = getGameById(gameId) || FEATURED_GAMES[0];
+  const game = getGameById(gameId);
 
   const showToast = (msg: string) => {
     setToastMessage(msg);
     setTimeout(() => setToastMessage(null), 2500);
   };
+
+  if (!game) {
+    return (
+      <div className="max-w-[800px] mx-auto py-16 text-center space-y-4">
+        <span className="material-symbols-outlined text-4xl text-[#958ea0]">search_off</span>
+        <h2 className="text-xl font-bold text-white">Không tìm thấy thông tin trò chơi</h2>
+        <p className="text-xs font-mono text-[#958ea0]">Trò chơi này có thể đã bị xóa khỏi danh mục.</p>
+        <button
+          onClick={onBack}
+          className="px-4 py-2 rounded-lg bg-[#4cd7f6] text-[#003641] font-bold font-mono text-xs hover:bg-[#70e0f8] transition-colors"
+        >
+          Quay lại Thư viện
+        </button>
+      </div>
+    );
+  }
 
   return (
     <div className="max-w-[1400px] mx-auto flex flex-col gap-6 select-none">
@@ -586,26 +602,29 @@ export const GameDetailPage: React.FC<GameDetailPageProps> = ({
             </div>
 
             <div className="flex flex-col gap-2.5">
-              {FEATURED_GAMES.slice(1, 4).map(rec => (
+              {FEATURED_GAMES.filter((g) => g.id !== game.id).slice(0, 3).map((rec) => (
                 <div
                   key={rec.id}
                   onClick={() => onPlayGame(rec.id)}
                   className="flex items-center justify-between p-2 rounded-lg bg-[#0c0e14] border border-[#494454]/20 hover:border-[#4cd7f6] transition-all group cursor-pointer"
                 >
                   <div className="flex items-center gap-2.5">
-                    <img className="w-10 h-10 rounded object-cover" alt={rec.title} src={rec.boxArt} />
+                    <img className="w-10 h-10 rounded object-contain bg-[#111319] p-0.5" alt={rec.title} src={rec.boxArt} />
                     <div>
-                      <div className="text-xs font-bold text-white group-hover:text-[#4cd7f6] transition-colors">
+                      <div className="text-xs font-bold text-white group-hover:text-[#4cd7f6] transition-colors truncate max-w-[140px]">
                         {rec.title}
                       </div>
                       <div className="text-[10px] font-mono text-[#958ea0]">{rec.platform} • {rec.developer}</div>
                     </div>
                   </div>
                   <button className="px-2 py-1 rounded text-[11px] font-mono bg-[#282a30] text-[#4cd7f6] hover:bg-[#4cd7f6] hover:text-[#001f26] transition-colors">
-                    Launch
+                    Chơi
                   </button>
                 </div>
               ))}
+              {FEATURED_GAMES.filter((g) => g.id !== game.id).length === 0 && (
+                <p className="text-[11px] font-mono text-[#958ea0] py-2">Chưa có trò chơi nào khác trong thư viện.</p>
+              )}
             </div>
           </div>
         </div>

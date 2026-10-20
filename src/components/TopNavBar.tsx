@@ -72,7 +72,7 @@ export const TopNavBar: React.FC<TopNavBarProps> = ({
           </div>
           <input
             className="w-full pl-9 pr-12 py-1.5 rounded-lg bg-[#191b22] border border-[#494454]/40 text-[#e2e2eb] placeholder:text-[#958ea0] font-mono text-xs focus:outline-none focus:border-[#4cd7f6] focus:ring-1 focus:ring-[#4cd7f6]/50 transition-all duration-150"
-            placeholder="Search 128+ retro classics... (Ctrl+K)"
+            placeholder="Tìm kiếm trò chơi trong thư viện... (Ctrl+K)"
             type="text"
             value={searchQuery}
             onChange={(e) => onSearchChange(e.target.value)}
@@ -147,39 +147,40 @@ export const TopNavBar: React.FC<TopNavBarProps> = ({
           {showNotifications && (
             <div className="absolute right-0 mt-2 w-72 rounded-xl bg-[#1e1f26] border border-[#494454] shadow-2xl p-3 z-50 text-xs">
               <div className="flex items-center justify-between pb-2 border-b border-[#494454]/40 font-bold text-white">
-                <span>Alerts & Activity</span>
-                <span className="text-[10px] text-[#4cd7f6] font-mono">2 NEW</span>
+                <span>Thông báo hệ thống</span>
+                <span className="text-[10px] text-[#4cd7f6] font-mono">0 MỚI</span>
               </div>
-              <div className="space-y-2 mt-2">
-                <div className="p-2 rounded bg-[#0c0e14] border border-[#494454]/30">
-                  <p className="text-white font-medium">⚡ PixelSamurai invited you</p>
-                  <p className="text-[#958ea0] text-[10px]">Super Mario Kart 150cc Co-Op Room #7402</p>
-                </div>
-                <div className="p-2 rounded bg-[#0c0e14] border border-[#494454]/30">
-                  <p className="text-[#ffb95f] font-medium">⚠️ Save Sync Notice</p>
-                  <p className="text-[#958ea0] text-[10px]">Zelda: ALTTP has 1 pending conflict on cloud</p>
-                </div>
+              <div className="py-4 text-center text-[#958ea0] font-mono text-xs">
+                Không có thông báo mới
               </div>
             </div>
           )}
         </div>
 
-        {/* Account Profile Pill (Alex Carter / Google Auth) */}
+        {/* Account Profile Pill */}
         <div className="relative">
           <div
             onClick={() => setShowProfileMenu(!showProfileMenu)}
             className="flex items-center gap-2.5 pl-2 py-1 pr-3 rounded-full bg-[#191b22] border border-[#494454]/40 hover:border-[#958ea0] transition-colors cursor-pointer"
           >
-            <img
-              className="w-7 h-7 rounded-full object-cover border border-[#d0bcff]/40"
-              alt="Avatar"
-              src={currentUser?.photoURL || "https://lh3.googleusercontent.com/aida-public/AB6AXuAbh7jmR36pPImLgfvuTuT8wl4E0rHcsXP6yJok_6Dppmk1bvV5y6wQC-GtxF1PfTr2dDCef3qkOGzJKUSFLnIBlhf1ajfvh4PfUYWN3CB7JOCU2y1nEP4gqp_HYJ1d38v0cv8gd93rnS-fe6hLvPB2ZLa7t_0uVCbniB16a0RBSZR3r_8GozFJT_9oz7pI8L6yFXHKpqFp8snjDuK2-KArOxVEK_M3YHVKwxXLKxMiXAw4idZkd3hTKQ"}
-            />
+            {currentUser?.photoURL ? (
+              <img
+                className="w-7 h-7 rounded-full object-cover border border-[#4cd7f6]/40"
+                alt="Avatar"
+                src={currentUser.photoURL}
+              />
+            ) : (
+              <div className="w-7 h-7 rounded-full bg-[#4cd7f6]/20 text-[#4cd7f6] flex items-center justify-center font-bold text-xs">
+                {currentUser?.displayName ? currentUser.displayName.charAt(0).toUpperCase() : 'G'}
+              </div>
+            )}
             <div className="hidden md:flex flex-col text-left">
-              <span className="text-[13px] leading-tight text-[#e2e2eb] font-semibold">
-                {currentUser?.displayName || "Alex Carter"}
+              <span className="text-[13px] leading-tight text-[#e2e2eb] font-semibold truncate max-w-[120px]">
+                {currentUser?.displayName || "Đăng nhập Google"}
               </span>
-              <span className="font-mono text-[10px] text-[#ffb95f]">LVL 42 Arcade Master</span>
+              <span className="font-mono text-[10px] text-[#4cd7f6]">
+                {currentUser ? "Tài khoản Google" : "Nhấn để liên kết"}
+              </span>
             </div>
             <span className="material-symbols-outlined text-[#958ea0] text-sm">expand_more</span>
           </div>

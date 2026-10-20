@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { saveManager } from '../services/saves/saveManager';
-import { FEATURED_GAMES, getGameById } from '../services/games/catalog';
+import { getGameById } from '../services/games/catalog';
 import { SaveMetadata, SaveConflict } from '../types';
 
 interface SavesPageProps {
