@@ -10,6 +10,79 @@
     <meta property="og:type" content="website" />
     <meta name="twitter:card" content="summary_large_image" />
 
+    <!-- Safe WakeLock Polyfill for Emscripten / Nostalgist in iframe environments -->
+    <script>
+      (function() {
+        function createSentinel(type) {
+          return {
+            released: false,
+            type: type || 'screen',
+            release: function() { this.released = true; return Promise.resolve(); },
+            addEventListener: function() {},
+            removeEventListener: function() {},
+            dispatchEvent: function() { return false; },
+            onrelease: null
+          };
+        }
+        try {
+          if (typeof window !== 'undefined' && window.WakeLock && window.WakeLock.prototype) {
+            var origProtoReq = window.WakeLock.prototype.request;
+            window.WakeLock.prototype.request = function(t) {
+              try {
+                var res = origProtoReq ? origProtoReq.call(this, t) : null;
+                if (res && typeof res.catch === 'function') {
+                  return res.catch(function() { return createSentinel(t); });
+                }
+                return Promise.resolve(createSentinel(t));
+              } catch(e) {
+                return Promise.resolve(createSentinel(t));
+              }
+            };
+          }
+        } catch(e) {}
+        try {
+          if (typeof navigator !== 'undefined') {
+            if ('wakeLock' in navigator && navigator.wakeLock) {
+              var origReq = navigator.wakeLock.request;
+              navigator.wakeLock.request = function(t) {
+                try {
+                  var p = origReq ? origReq.call(navigator.wakeLock, t) : null;
+                  if (p && typeof p.catch === 'function') {
+                    return p.catch(function() { return createSentinel(t); });
+                  }
+                  return Promise.resolve(createSentinel(t));
+                } catch(e) {
+                  return Promise.resolve(createSentinel(t));
+                }
+              };
+            }
+          }
+        } catch(e) {}
+        if (typeof window !== 'undefined') {
+          window.addEventListener('unhandledrejection', function(ev) {
+            try {
+              var r = ev && ev.reason;
+              var name = String(r && r.name || '');
+              var msg = String(r && r.message || r || '').toLowerCase();
+              if (name === 'NotAllowedError' || name === 'SecurityError' || msg.indexOf('wakelock') !== -1 || msg.indexOf('wake lock') !== -1 || msg.indexOf('permissions policy') !== -1) {
+                ev.preventDefault();
+                if (typeof ev.stopImmediatePropagation === 'function') ev.stopImmediatePropagation();
+              }
+            } catch(e) {}
+          }, true);
+          window.addEventListener('error', function(ev) {
+            try {
+              var msg = String(ev && ev.message || '').toLowerCase();
+              if (msg.indexOf('wakelock') !== -1 || msg.indexOf('wake lock') !== -1 || msg.indexOf('permissions policy') !== -1) {
+                ev.preventDefault();
+                if (typeof ev.stopImmediatePropagation === 'function') ev.stopImmediatePropagation();
+              }
+            } catch(e) {}
+          }, true);
+        }
+      })();
+    </script>
+
     <!-- Google Fonts -->
     <link rel="preconnect" href="https://fonts.googleapis.com" />
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />

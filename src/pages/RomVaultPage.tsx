@@ -30,7 +30,7 @@ export const RomVaultPage: React.FC<RomVaultPageProps> = ({
   const [dragActive, setDragActive] = useState<boolean>(false);
   const [analyzedRom, setAnalyzedRom] = useState<{ info: RomHeaderInfo; bytes: Uint8Array } | null>(null);
   const [detectedFolderRoms, setDetectedFolderRoms] = useState<LoadedCartridgeItem[]>([]);
-  const [userAcknowledgedLegal, setUserAcknowledgedLegal] = useState<boolean>(false);
+  const [userAcknowledgedLegal, setUserAcknowledgedLegal] = useState<boolean>(true);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
   const [toastMessage, setToastMessage] = useState<string | null>(null);
 
@@ -137,10 +137,8 @@ export const RomVaultPage: React.FC<RomVaultPageProps> = ({
 
   const handleLaunch = () => {
     if (!analyzedRom) return;
-    if (!userAcknowledgedLegal) {
-      showToast('Please confirm legal ownership acknowledgement before executing ROM.');
-      return;
-    }
+    setUserAcknowledgedLegal(true);
+    handleSaveToLibrary();
     onLaunchRom(analyzedRom.bytes, analyzedRom.info);
   };
 
@@ -454,45 +452,45 @@ export const RomVaultPage: React.FC<RomVaultPageProps> = ({
               <div className="space-y-3 font-mono text-xs">
                 <div className="grid grid-cols-2 gap-3">
                   <div className="p-3 bg-[#111319] rounded-lg border border-[#494454]/20">
-                    <span className="text-[#958ea0] text-[10px] block">INTERNAL GAME TITLE</span>
-                    <span className="text-white font-bold truncate block">
+                    <span className="text-[#958ea0] text-[10px] block font-bold">TÊN TRÒ CHƠI (GAME TITLE)</span>
+                    <span className="text-white font-bold truncate block text-sm mt-0.5">
                       {analyzedRom.info.internalTitle || analyzedRom.info.filename}
                     </span>
                   </div>
                   <div className="p-3 bg-[#111319] rounded-lg border border-[#494454]/20">
-                    <span className="text-[#958ea0] text-[10px] block">TARGET PLATFORM</span>
-                    <span className="text-[#4cd7f6] font-bold">{analyzedRom.info.platform}</span>
+                    <span className="text-[#958ea0] text-[10px] block font-bold">HỆ MÁY (PLATFORM)</span>
+                    <span className="text-[#4cd7f6] font-bold text-sm mt-0.5">{analyzedRom.info.platform}</span>
                   </div>
                 </div>
 
                 <div className="grid grid-cols-2 gap-3">
                   <div className="p-3 bg-[#111319] rounded-lg border border-[#494454]/20">
-                    <span className="text-[#958ea0] text-[10px] block">ROM SIZE</span>
+                    <span className="text-[#958ea0] text-[10px] block font-bold">DUNG LƯỢNG (ROM SIZE)</span>
                     <span className="text-[#cbc3d7]">{(analyzedRom.info.sizeBytes / 1024).toFixed(1)} KB</span>
                   </div>
                   <div className="p-3 bg-[#111319] rounded-lg border border-[#494454]/20">
-                    <span className="text-[#958ea0] text-[10px] block">SRAM BATTERY</span>
+                    <span className="text-[#958ea0] text-[10px] block font-bold">BỘ NHỚ PIN (SRAM BATTERY)</span>
                     <span className="text-emerald-400">
-                      {analyzedRom.info.hasBattery ? 'Yes (Battery Backed)' : 'No'}
+                      {analyzedRom.info.hasBattery ? 'Có (Lưu Save Pin)' : 'Không có'}
                     </span>
                   </div>
                 </div>
 
                 <div className="p-3 bg-[#111319] rounded-lg border border-[#494454]/20 space-y-1">
-                  <span className="text-[#958ea0] text-[10px] block">HARDWARE CO-PROCESSOR / MAPPER</span>
-                  <span className="text-white font-bold">{analyzedRom.info.coProcessor || 'Standard ASIC'}</span>
-                  <p className="text-[10px] text-[#958ea0]">ROM Speed / Mapping: {analyzedRom.info.romSpeedAndType || 'FastROM'}</p>
+                  <span className="text-[#958ea0] text-[10px] block font-bold">CHIP MỞ RỘNG (CO-PROCESSOR / MAPPER)</span>
+                  <span className="text-white font-bold">{analyzedRom.info.coProcessor || 'Standard'}</span>
+                  <p className="text-[10px] text-[#958ea0]">Định dạng: {analyzedRom.info.romSpeedAndType || 'FastROM'}</p>
                 </div>
 
                 <div className="p-3 bg-[#111319] rounded-lg border border-[#494454]/20 space-y-1">
-                  <span className="text-[#958ea0] text-[10px] block">CRYPTO CHECKSUMS</span>
+                  <span className="text-[#958ea0] text-[10px] block font-bold">MÃ KIỂM TRA (CHECKSUMS)</span>
                   <div className="flex justify-between text-[11px]">
                     <span className="text-[#958ea0]">CRC32:</span>
                     <span className="text-[#4cd7f6]">{analyzedRom.info.crc32}</span>
                   </div>
                   <div className="flex justify-between text-[11px]">
                     <span className="text-[#958ea0]">MD5:</span>
-                    <span className="text-[#d0bcff]">{analyzedRom.info.md5}</span>
+                    <span className="text-[#d0bcff] truncate max-w-[200px]">{analyzedRom.info.md5}</span>
                   </div>
                 </div>
 
@@ -505,16 +503,16 @@ export const RomVaultPage: React.FC<RomVaultPageProps> = ({
                     className="mt-0.5 accent-[#4cd7f6]"
                   />
                   <span className="text-[11px] font-mono text-[#cbc3d7] leading-tight">
-                    I certify that I am the rightful legal owner of the physical cartridge backing this ROM dump and will use it in accordance with applicable laws.
+                    Tôi xác nhận tệp ROM này thuộc quyền sở hữu/sử dụng hợp pháp của tôi và dùng theo quy định.
                   </span>
                 </label>
               </div>
             ) : (
               <div className="py-16 text-center text-[#958ea0] font-mono text-xs flex flex-col items-center justify-center">
                 <span className="material-symbols-outlined text-4xl text-[#494454] mb-2">developer_board</span>
-                <p>No ROM loaded in inspector.</p>
+                <p>Chưa có tệp ROM nào được chọn.</p>
                 <p className="text-[11px] text-[#494454] mt-1">
-                  Pick a file from your computer or choose from Google Drive to inspect.
+                  Chọn tệp từ máy tính hoặc Google Drive để kiểm tra và khởi chạy.
                 </p>
               </div>
             )}
@@ -524,12 +522,12 @@ export const RomVaultPage: React.FC<RomVaultPageProps> = ({
             <button
               onClick={() => {
                 setAnalyzedRom(null);
-                setUserAcknowledgedLegal(false);
+                setUserAcknowledgedLegal(true);
               }}
               disabled={!analyzedRom}
               className="px-3 py-1.5 rounded-lg bg-[#111319] hover:bg-[#282a30] text-[#958ea0] hover:text-[#cbc3d7] font-mono text-xs disabled:opacity-30 transition-colors"
             >
-              Clear Cartridge
+              Xóa Tệp Nạp
             </button>
 
             <div className="flex items-center gap-2">
@@ -537,19 +535,19 @@ export const RomVaultPage: React.FC<RomVaultPageProps> = ({
                 onClick={handleSaveToLibrary}
                 disabled={!analyzedRom}
                 className="px-3 py-2 rounded-lg bg-[#282a30] hover:bg-[#34373f] text-[#cbc3d7] hover:text-white font-mono text-xs disabled:opacity-30 transition-colors flex items-center gap-1.5"
-                title="Save game metadata to personal library"
+                title="Lưu trò chơi vào thư viện cá nhân"
               >
                 <span className="material-symbols-outlined text-sm">bookmark_add</span>
-                <span>Add to Library</span>
+                <span>Lưu Vào Thư Viện</span>
               </button>
 
               <button
                 onClick={handleLaunch}
-                disabled={!analyzedRom || !userAcknowledgedLegal}
+                disabled={!analyzedRom}
                 className="px-5 py-2 rounded-lg bg-[#4cd7f6] hover:bg-[#70e0f8] text-[#003641] font-mono font-bold text-xs disabled:opacity-30 disabled:pointer-events-none shadow-lg shadow-[#4cd7f6]/20 flex items-center gap-2 transition-all cursor-pointer"
               >
                 <span className="material-symbols-outlined text-base">sports_esports</span>
-                <span>Launch Emulator</span>
+                <span>Khởi Động Giả Lập Ngay</span>
               </button>
             </div>
           </div>

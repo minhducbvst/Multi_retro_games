@@ -96,30 +96,100 @@ export function parseRom(arg1: string | ArrayBuffer | Uint8Array, arg2?: string 
       dumpStatus: 'GoodNES Verified'
     };
   } else if (ext === 'sfc' || ext === 'smc') {
-    // SNES Header inspection (Check 0x7FC0 LoROM, 0x0000 + 512 SMC header check)
+    // Robust SNES Header detection: LoROM, HiROM, ExHiROM with 512-byte SMC header support
     const hasSmcHeader = (sizeBytes % 1024) === 512;
-    const offset = hasSmcHeader ? 512 + 0x7fc0 : 0x7fc0;
-    let title = '';
-    if (sizeBytes > offset + 21) {
+    const smcOffset = hasSmcHeader ? 512 : 0;
+
+    // Potential SNES header offsets (Title is located at offset + 0 to + 20)
+    const candidateOffsets = [
+      smcOffset + 0x7fc0,    // LoROM ($00:7FC0)
+      smcOffset + 0xffc0,    // HiROM ($00:FFC0)
+      smcOffset + 0x40ffc0,  // ExHiROM ($40:FFC0)
+      smcOffset + 0x407fc0,  // ExLoROM ($40:7FC0)
+    ];
+
+    let bestOffset = candidateOffsets[0];
+    let bestTitle = '';
+    let bestScore = -1;
+    let isHiRom = false;
+    let detectedCoProcessor = 'None (LoROM Standard)';
+    let hasBattery = true;
+
+    for (const offset of candidateOffsets) {
+      if (sizeBytes < offset + 32) continue;
+
+      const complement = bytes[offset + 28] | (bytes[offset + 29] << 8);
+      const checksum = bytes[offset + 30] | (bytes[offset + 31] << 8);
+      const isChecksumValid = (complement + checksum) === 0xffff;
+
+      let candidateTitle = '';
+      let alphanumericCount = 0;
       for (let i = 0; i < 21; i++) {
         const c = bytes[offset + i];
-        if (c >= 32 && c <= 126) title += String.fromCharCode(c);
+        if (c >= 32 && c <= 126) {
+          candidateTitle += String.fromCharCode(c);
+          if ((c >= 48 && c <= 57) || (c >= 65 && c <= 90) || (c >= 97 && c <= 122)) {
+            alphanumericCount++;
+          }
+        }
+      }
+
+      let score = alphanumericCount;
+      if (isChecksumValid) score += 50;
+
+      const mapMode = bytes[offset + 21];
+      if ((mapMode & 0x0f) === 0 || (mapMode & 0x0f) === 1 || (mapMode & 0x0f) === 5) {
+        score += 10;
+      }
+
+      if (score > bestScore) {
+        bestScore = score;
+        bestOffset = offset;
+        bestTitle = candidateTitle.trim();
+        isHiRom = offset === smcOffset + 0xffc0 || offset === smcOffset + 0x40ffc0;
+
+        // Detect co-processor
+        const romType = bytes[offset + 22];
+        if (romType === 0x03 || romType === 0x04 || romType === 0x05) {
+          detectedCoProcessor = 'DSP-1 / DSP-4';
+        } else if (romType === 0x13 || romType === 0x14 || romType === 0x15) {
+          detectedCoProcessor = 'Super FX (GSU-1/2)';
+        } else if (romType === 0x34 || romType === 0x35) {
+          detectedCoProcessor = 'SA-1 Co-Processor';
+        } else if (romType === 0x43 || romType === 0x45) {
+          detectedCoProcessor = 'S-DD1 Decompression';
+        } else if (romType === 0x25) {
+          detectedCoProcessor = 'OBC-1';
+        } else {
+          detectedCoProcessor = isHiRom ? 'None (HiROM Standard)' : 'None (LoROM Standard)';
+        }
+
+        hasBattery = (romType === 0x02 || romType === 0x05 || romType === 0x06 || romType === 0x15 || romType === 0x25 || romType === 0x35 || romType === 0x45);
       }
     }
-    if (!title.trim()) title = filename.replace(/\.[^/.]+$/, '').toUpperCase().slice(0, 21);
+
+    // Sanitize title: if garbled or fewer than 3 alphanumeric chars, use clean filename
+    const cleanAlpha = bestTitle.replace(/[^a-zA-Z0-9]/g, '');
+    const cleanFromFilename = filename
+      .replace(/\.(nes|smc|sfc|gba|bin|zip|7z)$/i, '')
+      .replace(/[\[\(].*?[\]\)]/g, '')
+      .replace(/[_\-]+/g, ' ')
+      .trim();
+
+    const finalTitle = cleanAlpha.length >= 3 ? bestTitle : cleanFromFilename || 'Super Nintendo Game';
 
     return {
       filename,
       sizeBytes,
       platform: 'SNES',
-      internalTitle: title.trim() || 'SUPER NINTENDO ROM',
-      romSpeedAndType: 'FastROM (120ns) LoROM',
-      sramSize: '64 Kbit (8 KB Save)',
-      hasBattery: true,
-      coProcessor: 'None (LoROM Standard)',
+      internalTitle: finalTitle,
+      romSpeedAndType: isHiRom ? 'FastROM (120ns) HiROM' : 'FastROM (120ns) LoROM',
+      sramSize: hasBattery ? '64 Kbit (8 KB Save)' : 'No Battery',
+      hasBattery,
+      coProcessor: detectedCoProcessor,
       videoStandard: 'NTSC 60Hz (240p Mode 7)',
-      region: 'USA / Canada ($01)',
-      headerOffset: hasSmcHeader ? '0x000200 + 0x7FC0' : '0x007FC0',
+      region: 'USA / World',
+      headerOffset: `0x${bestOffset.toString(16).toUpperCase().padStart(6, '0')}`,
       md5,
       sha1,
       crc32,
@@ -135,13 +205,20 @@ export function parseRom(arg1: string | ArrayBuffer | Uint8Array, arg2?: string 
         if (c >= 32 && c <= 126) title += String.fromCharCode(c);
       }
     }
-    if (!title.trim()) title = filename.replace(/\.[^/.]+$/, '').toUpperCase().slice(0, 12);
+    const cleanAlpha = title.replace(/[^a-zA-Z0-9]/g, '');
+    const cleanFromFilename = filename
+      .replace(/\.(nes|smc|sfc|gba|bin|zip|7z)$/i, '')
+      .replace(/[\[\(].*?[\]\)]/g, '')
+      .replace(/[_\-]+/g, ' ')
+      .trim();
+
+    const finalTitle = cleanAlpha.length >= 3 ? title.trim() : cleanFromFilename || 'Game Boy Advance';
 
     return {
       filename,
       sizeBytes,
       platform: 'GBA',
-      internalTitle: title.trim() || 'GAMEBOY ADVANCE',
+      internalTitle: finalTitle,
       romSpeedAndType: '32-Bit ARM7TDMI 16.78MHz',
       sramSize: '128 KB Flash RAM + RTC',
       hasBattery: true,
