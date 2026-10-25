@@ -99,17 +99,43 @@ export const EmulatorPage: React.FC<EmulatorPageProps> = ({
         : 'portrait'
       : orientationMode;
 
-  const cycleOrientation = () => {
+  // Virtual CSS rotation when landscape mode is selected on a portrait phone
+  const isVirtualRotated =
+    isHandheldTouchMode && effectiveOrientation === 'landscape' && !isWindowLandscape;
+
+  const [rotationAngleDeg, setRotationAngleDeg] = useState<number>(90);
+  const activeRotationDeg = isVirtualRotated ? rotationAngleDeg : 0;
+
+  const cycleOrientation = async () => {
+    let next: 'auto' | 'portrait' | 'landscape';
     if (orientationMode === 'auto') {
-      const next = effectiveOrientation === 'portrait' ? 'landscape' : 'portrait';
-      setOrientationMode(next);
-      showToast(`Đã cố định: ${next === 'landscape' ? 'Màn hình ngang' : 'Màn hình dọc'}`);
+      next = effectiveOrientation === 'portrait' ? 'landscape' : 'portrait';
     } else if (orientationMode === 'portrait') {
-      setOrientationMode('landscape');
-      showToast('Đã chuyển sang màn hình ngang');
+      next = 'landscape';
     } else {
-      setOrientationMode('auto');
-      showToast('Tự động xoay theo màn hình');
+      next = 'auto';
+    }
+    setOrientationMode(next);
+
+    // Try native Screen Orientation API lock if supported
+    try {
+      if (typeof screen !== 'undefined' && screen.orientation) {
+        if (next === 'landscape' && 'lock' in screen.orientation) {
+          await (screen.orientation as any).lock('landscape').catch(() => {});
+        } else if (next === 'portrait' && 'lock' in screen.orientation) {
+          await (screen.orientation as any).lock('portrait').catch(() => {});
+        } else if (next === 'auto' && 'unlock' in screen.orientation) {
+          screen.orientation.unlock();
+        }
+      }
+    } catch {}
+
+    if (next === 'landscape') {
+      showToast('Đã xoay toàn bộ giao diện sang màn hình ngang (90°)');
+    } else if (next === 'portrait') {
+      showToast('Đã chuyển về màn hình dọc');
+    } else {
+      showToast('Tự động xoay theo cảm biến máy');
     }
   };
 
@@ -760,10 +786,18 @@ export const EmulatorPage: React.FC<EmulatorPageProps> = ({
     }
   };
 
-  const triggerRewind = () => {
+  const triggerRewind = (seconds: number = 10) => {
     if (nostalgistRef.current) {
       nostalgistRef.current.sendCommand('REWIND');
-      showToast("Tua lại");
+      const pulses = seconds <= 5 ? 2 : seconds <= 10 ? 4 : 7;
+      for (let i = 1; i < pulses; i++) {
+        setTimeout(() => {
+          try { nostalgistRef.current?.sendCommand('REWIND'); } catch {}
+        }, i * 140);
+      }
+      showToast(`Đã tua lại ${seconds} giây`);
+    } else {
+      showToast(`Tua lại ${seconds} giây`);
     }
   };
 
@@ -830,6 +864,15 @@ export const EmulatorPage: React.FC<EmulatorPageProps> = ({
     }
   };
 
+  const cycleSlot = () => {
+    const nextSlot = currentSlot >= 5 ? 1 : currentSlot + 1;
+    setCurrentSlot(nextSlot);
+    showToast(`Đã chọn Khe lưu Slot #${nextSlot}`);
+    try {
+      gamepadService.vibrate(0.2, 0.4, 100);
+    } catch {}
+  };
+
   const cycleShader = () => {
     const filters: DisplayFilterType[] = ['CRT Scanlines', 'Pixelated', 'LCD Grid', 'Bilinear Smooth'];
     const currentIdx = filters.indexOf(visualSettings.filter);
@@ -869,8 +912,26 @@ export const EmulatorPage: React.FC<EmulatorPageProps> = ({
     visualSettings.colorTint === 'dmg-green' ? { filter: 'sepia(0.8) hue-rotate(65deg) saturate(2.5)' } :
     undefined;
 
+  const rootStyle: React.CSSProperties = isVirtualRotated
+    ? {
+        position: 'fixed',
+        width: `${windowDimensions.height}px`,
+        height: `${windowDimensions.width}px`,
+        top: '50%',
+        left: '50%',
+        transform: `translate(-50%, -50%) rotate(${activeRotationDeg}deg)`,
+        transformOrigin: 'center center',
+        overflow: 'hidden',
+        maxWidth: `${windowDimensions.height}px`,
+        maxHeight: `${windowDimensions.width}px`,
+      }
+    : {};
+
   return (
-    <div className="fixed inset-0 top-0 left-0 w-screen h-screen bg-[#0c0e14] text-[#e2e2eb] flex flex-col z-50 overflow-hidden select-none">
+    <div
+      className={`fixed ${isVirtualRotated ? 'overflow-hidden' : 'inset-0 top-0 left-0 w-screen h-screen'} bg-[#0c0e14] text-[#e2e2eb] flex flex-col z-50 overflow-hidden select-none transition-transform duration-300 ease-out`}
+      style={rootStyle}
+    >
       {/* ================= TOP HEADER (Docked - hidden in landscape touch mode for max screen area) ================= */}
       {!(isHandheldTouchMode && effectiveOrientation === 'landscape') && (
         <header className="bg-[#0c0e14]/90 backdrop-blur-md w-full px-2 sm:px-4 lg:px-6 flex items-center justify-between h-12 sm:h-14 border-b border-[#494454]/30 z-40 flex-shrink-0 max-w-full overflow-hidden">
@@ -1219,7 +1280,7 @@ export const EmulatorPage: React.FC<EmulatorPageProps> = ({
                 </button>
 
                 <button
-                  onClick={triggerRewind}
+                  onClick={() => triggerRewind(10)}
                   className="h-8 px-2.5 rounded-lg bg-[#1e1f26] border border-[#494454]/30 text-[#cbc3d7] hover:text-[#4cd7f6] hover:border-[#4cd7f6] flex items-center gap-1 active:scale-95 transition-all font-mono text-xs"
                   title="Rewind 10s (Backspace)"
                 >
@@ -1378,50 +1439,13 @@ export const EmulatorPage: React.FC<EmulatorPageProps> = ({
                 isPaused={isPaused}
                 fastForwardSpeed={fastForwardSpeed}
                 currentSlot={currentSlot}
+                rotationAngle={activeRotationDeg}
+                onCycleSlot={cycleSlot}
+                onSelectSlot={(slot) => {
+                  setCurrentSlot(slot);
+                  showToast(`Đã chọn Khe lưu Slot #${slot}`);
+                }}
               />
-            </div>
-          )}
-
-          {/* LANDSCAPE MINIMAL TOP HUD PILL */}
-          {isHandheldTouchMode && effectiveOrientation === 'landscape' && (
-            <div className="absolute top-2.5 left-1/2 -translate-x-1/2 z-40 flex items-center gap-2 bg-[#12141c]/85 backdrop-blur-md px-3.5 py-1 rounded-full border border-[#494454]/40 shadow-xl pointer-events-auto">
-              <button
-                onClick={onExit}
-                className="text-xs text-[#cbc3d7] hover:text-white flex items-center gap-1 font-mono transition-colors"
-                title="Thoát trò chơi"
-              >
-                <span className="material-symbols-outlined text-sm">arrow_back</span>
-                <span className="truncate max-w-[120px]">{game.title}</span>
-              </button>
-              <div className="w-px h-3.5 bg-[#494454]/40"></div>
-              <button
-                onClick={cycleOrientation}
-                className="text-[#4cd7f6] text-[11px] font-mono flex items-center gap-0.5 hover:text-white transition-colors"
-                title="Đổi hướng màn hình (Dọc / Ngang / Tự động)"
-              >
-                <span className="material-symbols-outlined text-xs">
-                  {orientationMode === 'auto'
-                    ? 'screen_rotation'
-                    : 'stay_current_landscape'}
-                </span>
-                <span>{orientationMode === 'auto' ? 'Auto' : 'Ngang'}</span>
-              </button>
-              <div className="w-px h-3.5 bg-[#494454]/40"></div>
-              <button
-                onClick={() => setShowVisualSettingsModal(true)}
-                className="text-[#d0bcff] text-[11px] font-mono flex items-center gap-0.5 hover:text-white transition-colors"
-                title="Bộ lọc hình ảnh CRT / Pixel"
-              >
-                <span className="material-symbols-outlined text-xs">display_settings</span>
-              </button>
-              <div className="w-px h-3.5 bg-[#494454]/40"></div>
-              <button
-                onClick={() => setIsHandheldTouchMode(false)}
-                className="text-[#cbc3d7] text-[11px] font-mono flex items-center gap-0.5 hover:text-white transition-colors"
-                title="Chuyển sang chế độ PC"
-              >
-                <span className="material-symbols-outlined text-xs">computer</span>
-              </button>
             </div>
           )}
 
@@ -1440,6 +1464,26 @@ export const EmulatorPage: React.FC<EmulatorPageProps> = ({
                 isPaused={isPaused}
                 fastForwardSpeed={fastForwardSpeed}
                 currentSlot={currentSlot}
+                rotationAngle={activeRotationDeg}
+                gameTitle={game.title}
+                onExit={onExit}
+                orientationMode={orientationMode}
+                onCycleOrientation={cycleOrientation}
+                isVirtualRotated={isVirtualRotated}
+                rotationAngleDeg={rotationAngleDeg}
+                onToggleRotationAngle={() => {
+                  const next = rotationAngleDeg === 90 ? -90 : 90;
+                  setRotationAngleDeg(next);
+                  showToast(`Đã đảo chiều xoay (${next === 90 ? '90°' : '270°'})`);
+                }}
+                onOpenVisualSettings={() => setShowVisualSettingsModal(true)}
+                onTogglePCMode={() => setIsHandheldTouchMode(false)}
+                onToggleFullscreen={toggleFullscreen}
+                onCycleSlot={cycleSlot}
+                onSelectSlot={(slot) => {
+                  setCurrentSlot(slot);
+                  showToast(`Đã chọn Khe lưu Slot #${slot}`);
+                }}
               />
             </div>
           )}

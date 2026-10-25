@@ -13,12 +13,25 @@ interface VirtualGamepadProps {
   layout?: 'portrait' | 'landscape';
   onTriggerQuickSave?: () => void;
   onTriggerQuickLoad?: () => void;
-  onTriggerRewind?: () => void;
+  onTriggerRewind?: (seconds?: number) => void;
   onCycleFastForward?: () => void;
   onTogglePause?: () => void;
   isPaused?: boolean;
   fastForwardSpeed?: number;
   currentSlot?: number;
+  rotationAngle?: number;
+  gameTitle?: string;
+  onExit?: () => void;
+  orientationMode?: 'auto' | 'portrait' | 'landscape';
+  onCycleOrientation?: () => void;
+  isVirtualRotated?: boolean;
+  rotationAngleDeg?: number;
+  onToggleRotationAngle?: () => void;
+  onOpenVisualSettings?: () => void;
+  onTogglePCMode?: () => void;
+  onToggleFullscreen?: () => void;
+  onCycleSlot?: () => void;
+  onSelectSlot?: (slot: number) => void;
 }
 
 export const VirtualGamepad: React.FC<VirtualGamepadProps> = ({
@@ -33,6 +46,19 @@ export const VirtualGamepad: React.FC<VirtualGamepadProps> = ({
   isPaused = false,
   fastForwardSpeed = 1,
   currentSlot = 1,
+  rotationAngle = 0,
+  gameTitle,
+  onExit,
+  orientationMode = 'auto',
+  onCycleOrientation,
+  isVirtualRotated = false,
+  rotationAngleDeg = 90,
+  onToggleRotationAngle,
+  onOpenVisualSettings,
+  onTogglePCMode,
+  onToggleFullscreen,
+  onCycleSlot,
+  onSelectSlot,
 }) => {
   // Load persistent gamepad config
   const [config, setConfig] = useState<MobileGamepadConfig>(() => {
@@ -44,6 +70,7 @@ export const VirtualGamepad: React.FC<VirtualGamepadProps> = ({
   });
 
   const [isSettingsOpen, setIsSettingsOpen] = useState<boolean>(false);
+  const [isDropdownOpen, setIsDropdownOpen] = useState<boolean>(false);
 
   // Active Auto-fire timers
   const autoIntervalsRef = useRef<{ a: number | null; b: number | null }>({ a: null, b: null });
@@ -211,91 +238,401 @@ export const VirtualGamepad: React.FC<VirtualGamepadProps> = ({
         style={{ opacity: config.opacity / 100 }}
         className="w-full h-full flex flex-col justify-between select-none pointer-events-none transition-opacity duration-200"
       >
-        {/* Top Floating Mini Bar */}
-        <div className="w-full flex items-center justify-between px-4 py-2 pointer-events-auto">
+        {/* Backdrop overlay to close dropdown menu on tap outside */}
+        {isDropdownOpen && (
+          <div
+            className="fixed inset-0 z-40 bg-black/30 pointer-events-auto"
+            onClick={() => setIsDropdownOpen(false)}
+          />
+        )}
+
+        {/* Top Floating Unified System & Triggers Bar */}
+        <div className="w-full flex items-center justify-between px-3 sm:px-5 py-2 pointer-events-auto relative z-50">
           {/* Left: Shoulder L */}
-          {config.showShoulders && (
+          {config.showShoulders ? (
             <button
               onPointerDown={(e) => handlePress('l', e)}
               onPointerUp={(e) => handleRelease('l', e)}
               onPointerCancel={(e) => handleRelease('l', e)}
-              className={`h-9 px-5 rounded-xl bg-[#171922]/80 border border-[#494454]/60 text-white font-mono font-bold text-xs flex items-center gap-2 active:bg-[#4cd7f6] active:text-[#003641] shadow-lg backdrop-blur-md active:scale-95 transition-all ${
+              className={`h-9 px-3.5 sm:px-5 rounded-xl bg-[#171922]/90 border border-[#494454]/70 text-white font-mono font-bold text-xs flex items-center gap-1.5 active:bg-[#4cd7f6] active:text-[#003641] shadow-lg backdrop-blur-md active:scale-95 transition-all shrink-0 ${
                 isNES ? 'opacity-30 pointer-events-none' : ''
               }`}
             >
-              <span className="text-[#4cd7f6] text-sm">L</span>
+              <span className="text-[#4cd7f6] text-sm font-bold">L</span>
               <span className="text-[10px] text-[#958ea0]">TRIG</span>
             </button>
+          ) : (
+            <div className="w-12 shrink-0"></div>
           )}
 
-          {/* Center: System & Controls Bar */}
-          <div className="flex items-center gap-2 bg-[#12141c]/80 backdrop-blur-md px-3 py-1 rounded-full border border-[#494454]/40 shadow-lg">
-            {/* Movement switcher */}
-            <button
-              onClick={() => {
-                handleUpdateConfig({
-                  movementType: config.movementType === 'dpad' ? 'joystick' : 'dpad',
-                });
-                triggerHaptic(20);
-              }}
-              className="px-2 py-0.5 rounded text-[11px] font-mono text-[#4cd7f6] bg-[#1e202c] hover:bg-[#282a3a] border border-[#4cd7f6]/30 flex items-center gap-1 transition-colors"
-            >
-              <span className="material-symbols-outlined text-sm">
-                {config.movementType === 'dpad' ? 'drag_indicator' : 'control_camera'}
-              </span>
-              <span>{config.movementType === 'dpad' ? 'D-Pad' : 'Joystick'}</span>
-            </button>
-
-            {/* Select & Start */}
-            {config.showSystemButtons && (
-              <div className="flex items-center gap-2 border-x border-[#494454]/30 px-2">
-                <button
-                  onPointerDown={(e) => handlePress('select', e)}
-                  onPointerUp={(e) => handleRelease('select', e)}
-                  onPointerCancel={(e) => handleRelease('select', e)}
-                  className="px-2 py-0.5 rounded bg-[#252733] border border-[#494454]/50 text-[10px] font-mono text-[#cbc3d7] active:bg-[#4cd7f6] active:text-[#003641]"
-                >
-                  SELECT
-                </button>
-                <button
-                  onPointerDown={(e) => handlePress('start', e)}
-                  onPointerUp={(e) => handleRelease('start', e)}
-                  onPointerCancel={(e) => handleRelease('start', e)}
-                  className="px-2 py-0.5 rounded bg-[#252733] border border-[#4cd7f6]/50 text-[10px] font-mono text-[#4cd7f6] font-bold active:bg-[#4cd7f6] active:text-[#003641]"
-                >
-                  START
-                </button>
-              </div>
+          {/* Center: Sleek Unified Floating HUD Capsule with Direct Action Buttons & Dropdown Menu */}
+          <div className="relative flex items-center gap-1 sm:gap-1.5 bg-[#12141c]/90 backdrop-blur-md px-2.5 sm:px-3 py-1 rounded-full border border-[#494454]/50 shadow-xl max-w-[85vw] overflow-visible">
+            {/* 1. Back button & Title */}
+            {onExit && (
+              <button
+                type="button"
+                onClick={onExit}
+                className="text-xs text-[#cbc3d7] hover:text-[#4cd7f6] flex items-center gap-1 font-mono transition-colors shrink-0 pr-0.5"
+                title="Thoát trò chơi"
+              >
+                <span className="material-symbols-outlined text-sm">arrow_back</span>
+                <span className="truncate max-w-[70px] xs:max-w-[110px] sm:max-w-[140px] font-bold">
+                  {gameTitle || 'RetroVerse'}
+                </span>
+              </button>
             )}
 
-            {/* Quick Settings */}
-            <button
-              onClick={() => setIsSettingsOpen(true)}
-              className="p-1 rounded text-[#cbc3d7] hover:text-[#4cd7f6] transition-colors"
-              title="Tùy chỉnh tay cầm"
-            >
-              <span className="material-symbols-outlined text-base">tune</span>
-            </button>
+            <div className="w-px h-3.5 bg-[#494454]/40 shrink-0"></div>
+
+            {/* 2. NÚT CHỌN KHE LƯU (Thay cho nút tạm dừng theo yêu cầu của người dùng) */}
+            {onCycleSlot && (
+              <button
+                type="button"
+                onClick={onCycleSlot}
+                className="h-7 px-2 sm:px-2.5 rounded-full bg-[#1e202e] border border-amber-500/50 text-amber-300 hover:bg-amber-500/20 hover:border-amber-400 flex items-center gap-1 font-mono text-xs font-bold transition-all active:scale-95 shrink-0 shadow-sm"
+                title={`Chạm để đổi khe lưu (Hiện tại: Slot #${currentSlot})`}
+              >
+                <span className="material-symbols-outlined text-sm text-amber-400">bookmark</span>
+                <span>Slot {currentSlot}</span>
+              </button>
+            )}
+
+            <div className="w-px h-3.5 bg-[#494454]/40 shrink-0"></div>
+
+            {/* 3. Quick Save Button (Đưa ra ngoài theo yêu cầu) */}
+            {onTriggerQuickSave && (
+              <button
+                type="button"
+                onClick={onTriggerQuickSave}
+                className="h-7 px-2 sm:px-2.5 rounded-full bg-emerald-500/15 border border-emerald-500/40 text-emerald-300 hover:bg-emerald-500/25 flex items-center gap-1 font-mono text-xs font-bold transition-all active:scale-95 shrink-0"
+                title={`Lưu nhanh trạng thái game vào Khe #${currentSlot}`}
+              >
+                <span className="material-symbols-outlined text-sm text-emerald-400">save</span>
+                <span className="hidden xs:inline">Lưu</span>
+              </button>
+            )}
+
+            {/* 4. Quick Load Button (Đưa ra ngoài theo yêu cầu) */}
+            {onTriggerQuickLoad && (
+              <button
+                type="button"
+                onClick={onTriggerQuickLoad}
+                className="h-7 px-2 sm:px-2.5 rounded-full bg-[#4cd7f6]/15 border border-[#4cd7f6]/40 text-[#4cd7f6] hover:bg-[#4cd7f6]/25 flex items-center gap-1 font-mono text-xs font-bold transition-all active:scale-95 shrink-0"
+                title={`Tải nhanh bản lưu từ Khe #${currentSlot}`}
+              >
+                <span className="material-symbols-outlined text-sm">file_open</span>
+                <span className="hidden xs:inline">Tải</span>
+              </button>
+            )}
+
+            <div className="w-px h-3.5 bg-[#494454]/40 shrink-0"></div>
+
+            {/* 5. Fullscreen Mode Button (Đưa ra ngoài theo yêu cầu) */}
+            {onToggleFullscreen && (
+              <button
+                type="button"
+                onClick={onToggleFullscreen}
+                className="h-7 px-2 sm:px-2.5 rounded-full bg-[#1e202e] border border-[#494454]/50 text-[#d0bcff] hover:text-white hover:border-[#d0bcff]/50 flex items-center gap-1 font-mono text-xs transition-all active:scale-95 shrink-0"
+                title="Chế độ chơi toàn màn hình (F11)"
+              >
+                <span className="material-symbols-outlined text-sm">fullscreen</span>
+                <span className="hidden sm:inline text-[11px]">Toàn màn hình</span>
+              </button>
+            )}
+
+            <div className="w-px h-3.5 bg-[#494454]/40 shrink-0"></div>
+
+            {/* 6. DROPDOWN MENU TRIGGER BUTTON */}
+            <div className="relative shrink-0">
+              <button
+                type="button"
+                onClick={() => setIsDropdownOpen(!isDropdownOpen)}
+                className={`h-7 px-2.5 rounded-full flex items-center gap-1 font-mono text-xs font-bold transition-all shadow-md ${
+                  isDropdownOpen
+                    ? 'bg-[#4cd7f6] text-[#003641] shadow-[0_0_12px_#4cd7f6]'
+                    : 'bg-[#252837] text-[#4cd7f6] hover:bg-[#32364a] border border-[#4cd7f6]/40'
+                }`}
+                title="Danh sách chức năng & cài đặt phím"
+              >
+                <span className="material-symbols-outlined text-sm">tune</span>
+                <span>Menu</span>
+                <span className="material-symbols-outlined text-xs">
+                  {isDropdownOpen ? 'expand_less' : 'expand_more'}
+                </span>
+              </button>
+
+              {/* DROPDOWN MENU LIST POPUP */}
+              {isDropdownOpen && (
+                <div className="absolute top-9 right-0 sm:right-auto sm:left-1/2 sm:-translate-x-1/2 w-72 bg-[#141622]/95 backdrop-blur-xl border border-[#494454]/60 rounded-2xl shadow-2xl p-2.5 z-50 flex flex-col gap-1.5 text-xs select-none max-h-[82vh] overflow-y-auto">
+                  <div className="text-[10px] font-mono uppercase text-[#958ea0] px-1 pb-1 border-b border-[#494454]/30 flex items-center justify-between">
+                    <span>Công cụ & Cài đặt</span>
+                    <span className="text-amber-400 font-bold">Slot #{currentSlot}</span>
+                  </div>
+
+                  {/* 0. CHỌN KHE LƯU TRỰC TIẾP TRONG MENU */}
+                  <div className="py-1.5 px-2.5 bg-[#1e202e] rounded-xl border border-[#494454]/40 flex flex-col gap-1.5">
+                    <div className="flex items-center justify-between font-mono text-[11px] text-[#cbc3d7]">
+                      <span className="flex items-center gap-1.5">
+                        <span className="material-symbols-outlined text-sm text-amber-400">bookmark</span>
+                        <span>Chọn khe lưu (Save Slot):</span>
+                      </span>
+                      <span className="text-amber-400 font-bold">Slot #{currentSlot}</span>
+                    </div>
+                    <div className="grid grid-cols-5 gap-1">
+                      {[1, 2, 3, 4, 5].map((s) => (
+                        <button
+                          key={s}
+                          type="button"
+                          onClick={() => {
+                            if (onSelectSlot) {
+                              onSelectSlot(s);
+                            } else if (onCycleSlot) {
+                              onCycleSlot();
+                            }
+                            setIsDropdownOpen(false);
+                          }}
+                          className={`py-1 rounded-lg font-mono text-xs font-bold transition-all active:scale-95 flex items-center justify-center ${
+                            currentSlot === s
+                              ? 'bg-amber-500 text-[#141622] shadow-[0_0_8px_rgba(245,158,11,0.5)]'
+                              : 'bg-[#27293b] text-[#cbc3d7] hover:bg-amber-500/20 hover:text-amber-300 border border-[#494454]/40'
+                          }`}
+                        >
+                          #{s}
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+
+                  {/* 0.1 TẠM DỪNG / TIẾP TỤC TRONG MENU */}
+                  {onTogglePause && (
+                    <button
+                      type="button"
+                      onClick={() => {
+                        onTogglePause();
+                        setIsDropdownOpen(false);
+                      }}
+                      className="w-full py-1.5 px-2.5 rounded-xl bg-[#1e202e] hover:bg-[#282a3c] border border-[#494454]/40 text-[#cbc3d7] hover:text-white flex items-center justify-between font-mono text-[11px] transition-colors"
+                      title={isPaused ? "Tiếp tục trò chơi" : "Tạm dừng trò chơi"}
+                    >
+                      <span className="flex items-center gap-1.5">
+                        <span className="material-symbols-outlined text-sm text-[#d0bcff]">
+                          {isPaused ? 'play_arrow' : 'pause'}
+                        </span>
+                        <span>{isPaused ? 'Tiếp tục trò chơi' : 'Tạm dừng trò chơi'}</span>
+                      </span>
+                      <span className="px-2 py-0.5 rounded bg-[#32364a] text-[#d0bcff] font-bold text-[10px]">
+                        Space
+                      </span>
+                    </button>
+                  )}
+
+                  {/* 1. ĐƯA NÚT HƯỚNG MÀN HÌNH VÀO DANH SÁCH THẢ XUỐNG */}
+                  {onCycleOrientation && (
+                    <button
+                      type="button"
+                      onClick={onCycleOrientation}
+                      className="w-full py-1.5 px-2.5 rounded-xl bg-[#1e202e] hover:bg-[#282a3c] border border-[#494454]/40 text-[#cbc3d7] flex items-center justify-between font-mono text-[11px] transition-colors"
+                      title="Đổi hướng hiển thị màn hình (Dọc / Ngang / Tự động)"
+                    >
+                      <span className="flex items-center gap-1.5">
+                        <span className="material-symbols-outlined text-sm text-[#4cd7f6]">
+                          {orientationMode === 'auto'
+                            ? 'screen_rotation'
+                            : orientationMode === 'landscape'
+                            ? 'stay_current_landscape'
+                            : 'stay_current_portrait'}
+                        </span>
+                        <span>Hướng màn hình</span>
+                      </span>
+                      <span className="px-2 py-0.5 rounded bg-[#4cd7f6]/20 text-[#4cd7f6] font-bold text-[10px]">
+                        {orientationMode === 'auto'
+                          ? 'Tự động (Auto)'
+                          : orientationMode === 'landscape'
+                          ? 'Ngang (Landscape)'
+                          : 'Dọc (Portrait)'}
+                      </span>
+                    </button>
+                  )}
+
+                  {/* 2. ĐƯA NÚT XOAY 90 ĐỘ / 270 ĐỘ VÀO DANH SÁCH THẢ XUỐNG */}
+                  {onToggleRotationAngle && (
+                    <button
+                      type="button"
+                      onClick={onToggleRotationAngle}
+                      className="w-full py-1.5 px-2.5 rounded-xl bg-[#1e202e] hover:bg-[#282a3c] border border-[#494454]/40 text-[#cbc3d7] flex items-center justify-between font-mono text-[11px] transition-colors"
+                      title="Đảo chiều góc xoay màn hình (90° / 270°)"
+                    >
+                      <span className="flex items-center gap-1.5">
+                        <span className="material-symbols-outlined text-sm text-[#958ea0]">
+                          {rotationAngleDeg === 90 ? 'rotate_90_degrees_cw' : 'rotate_90_degrees_ccw'}
+                        </span>
+                        <span>Đảo góc xoay</span>
+                      </span>
+                      <span className="px-2 py-0.5 rounded bg-[#2a2c3d] text-[#cbc3d7] font-bold text-[10px]">
+                        {rotationAngleDeg === 90 ? '90°' : '270°'}
+                      </span>
+                    </button>
+                  )}
+
+                  {/* 3. NÚT TUA LẠI VỚI TÙY CHỌN 5s, 10s, 15s */}
+                  <div className="py-1.5 px-2.5 bg-[#1e202e] rounded-xl border border-[#494454]/40 flex flex-col gap-1.5">
+                    <div className="flex items-center justify-between font-mono text-[11px] text-[#cbc3d7]">
+                      <span className="flex items-center gap-1.5">
+                        <span className="material-symbols-outlined text-sm text-indigo-400">replay</span>
+                        <span>Tua lại thời gian:</span>
+                      </span>
+                      <span className="text-[10px] text-[#958ea0]">Chọn thời lượng</span>
+                    </div>
+                    <div className="grid grid-cols-3 gap-1.5">
+                      {[5, 10, 15].map((sec) => (
+                        <button
+                          key={sec}
+                          type="button"
+                          onClick={() => {
+                            onTriggerRewind?.(sec);
+                            setIsDropdownOpen(false);
+                          }}
+                          className="py-1.5 px-2 rounded-lg bg-[#27293b] hover:bg-indigo-600/30 border border-[#494454]/40 hover:border-indigo-400 text-indigo-300 font-mono text-[11px] font-bold flex items-center justify-center gap-1 transition-all active:scale-95 shadow-sm"
+                          title={`Tua lại trò chơi ${sec} giây`}
+                        >
+                          <span className="material-symbols-outlined text-xs">
+                            {sec === 5 ? 'replay_5' : sec === 10 ? 'replay_10' : 'replay'}
+                          </span>
+                          <span>{sec}s</span>
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+
+                  {/* 4. Speed Cycle */}
+                  {onCycleFastForward && (
+                    <button
+                      type="button"
+                      onClick={onCycleFastForward}
+                      className="w-full py-1.5 px-2.5 rounded-xl bg-[#1e202e] border border-[#494454]/40 text-[#cbc3d7] hover:text-[#4cd7f6] flex items-center justify-between font-mono text-[11px] transition-colors active:scale-95"
+                      title="Chỉnh tốc độ tua nhanh game"
+                    >
+                      <span className="flex items-center gap-1.5">
+                        <span className="material-symbols-outlined text-sm text-[#4cd7f6]">fast_forward</span>
+                        <span>Tốc độ tua nhanh</span>
+                      </span>
+                      <span className="px-2 py-0.5 rounded bg-[#03b5d3]/20 text-[#4cd7f6] font-bold text-[10px]">
+                        {fastForwardSpeed}x
+                      </span>
+                    </button>
+                  )}
+
+                  {/* 5. Movement Mode Switcher (D-Pad / Joystick) */}
+                  <button
+                    type="button"
+                    onClick={() => {
+                      handleUpdateConfig({
+                        movementType: config.movementType === 'dpad' ? 'joystick' : 'dpad',
+                      });
+                      triggerHaptic(20);
+                    }}
+                    className="w-full py-1.5 px-2.5 rounded-xl bg-[#1e202e] hover:bg-[#282a3c] border border-[#494454]/40 text-[#cbc3d7] flex items-center justify-between font-mono text-[11px] transition-colors"
+                  >
+                    <span className="flex items-center gap-1.5">
+                      <span className="material-symbols-outlined text-sm text-[#4cd7f6]">
+                        {config.movementType === 'dpad' ? 'drag_indicator' : 'control_camera'}
+                      </span>
+                      <span>Kiểu nút di chuyển</span>
+                    </span>
+                    <span className="px-2 py-0.5 rounded bg-[#4cd7f6]/20 text-[#4cd7f6] font-bold text-[10px]">
+                      {config.movementType === 'dpad' ? 'D-Pad' : 'Joystick'}
+                    </span>
+                  </button>
+
+                  {/* 6. Detailed Gamepad Modal Trigger (Opacity, Hide/Show Buttons, Haptics) */}
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setIsSettingsOpen(true);
+                      setIsDropdownOpen(false);
+                    }}
+                    className="w-full py-1.5 px-2.5 rounded-xl bg-[#4cd7f6]/10 hover:bg-[#4cd7f6]/20 border border-[#4cd7f6]/40 text-[#4cd7f6] flex items-center justify-between font-mono text-[11px] font-bold transition-colors"
+                  >
+                    <span className="flex items-center gap-1.5">
+                      <span className="material-symbols-outlined text-sm">tune</span>
+                      <span>Tùy chỉnh phím (ẩn/hiện, độ rung...)</span>
+                    </span>
+                    <span className="material-symbols-outlined text-xs">chevron_right</span>
+                  </button>
+
+                  {/* 7. Quick Opacity Slider */}
+                  <div className="py-1 px-2.5 bg-[#0e1017] rounded-xl border border-[#494454]/30 flex items-center justify-between text-[10px] font-mono text-[#958ea0]">
+                    <span>Độ mờ phím:</span>
+                    <div className="flex items-center gap-2">
+                      <input
+                        type="range"
+                        min="25"
+                        max="100"
+                        value={config.opacity}
+                        onChange={(e) => handleUpdateConfig({ opacity: Number(e.target.value) })}
+                        className="w-16 h-1 accent-[#4cd7f6] cursor-pointer"
+                      />
+                      <span className="text-[#4cd7f6] font-bold w-7 text-right">{config.opacity}%</span>
+                    </div>
+                  </div>
+
+                  {/* 8. Visual CRT Filters */}
+                  {onOpenVisualSettings && (
+                    <button
+                      type="button"
+                      onClick={() => {
+                        onOpenVisualSettings();
+                        setIsDropdownOpen(false);
+                      }}
+                      className="w-full py-1.5 px-2.5 rounded-xl bg-[#1e202e] hover:bg-[#282a3c] border border-[#494454]/40 text-[#cbc3d7] flex items-center justify-between font-mono text-[11px] transition-colors"
+                    >
+                      <span className="flex items-center gap-1.5">
+                        <span className="material-symbols-outlined text-sm text-[#d0bcff]">display_settings</span>
+                        <span>Bộ lọc màn hình CRT / Pixel</span>
+                      </span>
+                      <span className="text-[10px] text-[#958ea0] font-mono">F8</span>
+                    </button>
+                  )}
+
+                  {/* 9. PC Mode Toggle */}
+                  {onTogglePCMode && (
+                    <button
+                      type="button"
+                      onClick={() => {
+                        onTogglePCMode();
+                        setIsDropdownOpen(false);
+                      }}
+                      className="w-full py-1.5 px-2.5 rounded-xl bg-[#1e202e] hover:bg-[#282a3c] border border-[#494454]/40 text-[#958ea0] hover:text-white flex items-center gap-1.5 font-mono text-[11px] transition-colors"
+                    >
+                      <span className="material-symbols-outlined text-sm">computer</span>
+                      <span>Chuyển về giao diện PC</span>
+                    </button>
+                  )}
+                </div>
+              )}
+            </div>
           </div>
 
           {/* Right: Shoulder R */}
-          {config.showShoulders && (
+          {config.showShoulders ? (
             <button
               onPointerDown={(e) => handlePress('r', e)}
               onPointerUp={(e) => handleRelease('r', e)}
               onPointerCancel={(e) => handleRelease('r', e)}
-              className={`h-9 px-5 rounded-xl bg-[#171922]/80 border border-[#494454]/60 text-white font-mono font-bold text-xs flex items-center gap-2 active:bg-[#4cd7f6] active:text-[#003641] shadow-lg backdrop-blur-md active:scale-95 transition-all ${
+              className={`h-9 px-3.5 sm:px-5 rounded-xl bg-[#171922]/90 border border-[#494454]/70 text-white font-mono font-bold text-xs flex items-center gap-1.5 active:bg-[#4cd7f6] active:text-[#003641] shadow-lg backdrop-blur-md active:scale-95 transition-all shrink-0 ${
                 isNES ? 'opacity-30 pointer-events-none' : ''
               }`}
             >
               <span className="text-[10px] text-[#958ea0]">TRIG</span>
-              <span className="text-[#4cd7f6] text-sm">R</span>
+              <span className="text-[#4cd7f6] text-sm font-bold">R</span>
             </button>
+          ) : (
+            <div className="w-12 shrink-0"></div>
           )}
         </div>
 
-        {/* Bottom Clusters: Left Thumb (Movement) & Right Thumb (Actions) */}
-        <div className="w-full flex items-end justify-between px-6 pb-4">
+        {/* Bottom Clusters: Left Thumb (Movement), Center Bottom (Select & Start), Right Thumb (Actions) */}
+        <div className="w-full flex items-end justify-between px-4 sm:px-6 pb-3 sm:pb-4 pointer-events-none">
           {/* LEFT THUMB ZONE */}
           <div className="pointer-events-auto flex flex-col items-center">
             {config.showMovement && (
@@ -305,6 +642,7 @@ export const VirtualGamepad: React.FC<VirtualGamepadProps> = ({
                     onDirectionChange={handleJoystickDirections}
                     size={140}
                     onHaptic={triggerHaptic}
+                    rotationAngle={rotationAngle}
                   />
                 ) : (
                   <DPadCluster onInput={onInput} onHaptic={triggerHaptic} />
@@ -313,8 +651,41 @@ export const VirtualGamepad: React.FC<VirtualGamepadProps> = ({
             )}
           </div>
 
+          {/* CENTER BOTTOM: SELECT & START PILLS */}
+          {config.showSystemButtons && (
+            <div className="pointer-events-auto flex items-center gap-2.5 sm:gap-4 bg-[#12141c]/90 backdrop-blur-md px-3.5 sm:px-4 py-1.5 rounded-full border border-[#494454]/50 shadow-2xl mb-1">
+              <div className="flex flex-col items-center">
+                <button
+                  type="button"
+                  onPointerDown={(e) => handlePress('select', e)}
+                  onPointerUp={(e) => handleRelease('select', e)}
+                  onPointerCancel={(e) => handleRelease('select', e)}
+                  className="w-11 h-4 sm:w-13 sm:h-4.5 rounded-full bg-[#252733] border border-[#494454]/80 -rotate-12 active:bg-[#4cd7f6] active:scale-95 transition-all shadow-md"
+                  title="SELECT"
+                ></button>
+                <span className="font-mono text-[9px] text-[#958ea0] tracking-wider uppercase mt-1">
+                  Select
+                </span>
+              </div>
+
+              <div className="flex flex-col items-center">
+                <button
+                  type="button"
+                  onPointerDown={(e) => handlePress('start', e)}
+                  onPointerUp={(e) => handleRelease('start', e)}
+                  onPointerCancel={(e) => handleRelease('start', e)}
+                  className="w-11 h-4 sm:w-13 sm:h-4.5 rounded-full bg-[#252733] border border-[#4cd7f6]/60 -rotate-12 active:bg-[#4cd7f6] active:scale-95 transition-all shadow-md"
+                  title="START"
+                ></button>
+                <span className="font-mono text-[9px] text-[#4cd7f6] font-bold tracking-wider uppercase mt-1">
+                  Start
+                </span>
+              </div>
+            </div>
+          )}
+
           {/* RIGHT THUMB ZONE */}
-          <div className="pointer-events-auto flex flex-col items-end gap-3">
+          <div className="pointer-events-auto flex flex-col items-end gap-2 sm:gap-3">
             {/* Auto Buttons Row (Auto-A & Auto-B) */}
             {config.showAutoButtons && (
               <div className="flex items-center gap-2 mb-1">
@@ -371,8 +742,6 @@ export const VirtualGamepad: React.FC<VirtualGamepadProps> = ({
     );
   }
 
-  // =========================================================================
-  // =========================================================================
   // RENDER: PORTRAIT HANDHELD CONSOLE BODY DECK
   // =========================================================================
   return (
@@ -553,6 +922,7 @@ export const VirtualGamepad: React.FC<VirtualGamepadProps> = ({
                 onDirectionChange={handleJoystickDirections}
                 size={116}
                 onHaptic={triggerHaptic}
+                rotationAngle={rotationAngle}
               />
             ) : (
               <DPadCluster onInput={onInput} onHaptic={triggerHaptic} />

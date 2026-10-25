@@ -5,6 +5,7 @@ interface VirtualJoystickProps {
   size?: number; // Outer diameter in px (default 140)
   disabled?: boolean;
   onHaptic?: (ms: number) => void;
+  rotationAngle?: number;
 }
 
 export const VirtualJoystick: React.FC<VirtualJoystickProps> = ({
@@ -12,6 +13,7 @@ export const VirtualJoystick: React.FC<VirtualJoystickProps> = ({
   size = 140,
   disabled = false,
   onHaptic,
+  rotationAngle = 0,
 }) => {
   const containerRef = useRef<HTMLDivElement | null>(null);
   const activePointerIdRef = useRef<number | null>(null);
@@ -124,8 +126,20 @@ export const VirtualJoystick: React.FC<VirtualJoystickProps> = ({
     const centerX = rect.left + rect.width / 2;
     const centerY = rect.top + rect.height / 2;
 
-    let dx = e.clientX - centerX;
-    let dy = e.clientY - centerY;
+    const screenDx = e.clientX - centerX;
+    const screenDy = e.clientY - centerY;
+
+    let dx = screenDx;
+    let dy = screenDy;
+
+    if (rotationAngle) {
+      const rad = (rotationAngle * Math.PI) / 180;
+      const cos = Math.cos(rad);
+      const sin = Math.sin(rad);
+      dx = screenDx * cos + screenDy * sin;
+      dy = -screenDx * sin + screenDy * cos;
+    }
+
     const dist = Math.sqrt(dx * dx + dy * dy);
 
     if (dist > maxRadius) {
@@ -149,8 +163,20 @@ export const VirtualJoystick: React.FC<VirtualJoystickProps> = ({
     const centerX = rect.left + rect.width / 2;
     const centerY = rect.top + rect.height / 2;
 
-    let dx = e.clientX - centerX;
-    let dy = e.clientY - centerY;
+    const screenDx = e.clientX - centerX;
+    const screenDy = e.clientY - centerY;
+
+    let dx = screenDx;
+    let dy = screenDy;
+
+    if (rotationAngle) {
+      const rad = (rotationAngle * Math.PI) / 180;
+      const cos = Math.cos(rad);
+      const sin = Math.sin(rad);
+      dx = screenDx * cos + screenDy * sin;
+      dy = -screenDx * sin + screenDy * cos;
+    }
+
     const dist = Math.sqrt(dx * dx + dy * dy);
 
     if (dist > maxRadius) {
