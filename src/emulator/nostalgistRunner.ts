@@ -38,6 +38,21 @@ export async function launchRetroEmulator(
         fileName: storedRom.filename || `${gameId}.rom`,
         fileContent: storedRom.data,
       },
+      retroarchConfig: {
+        input_player1_analog_dpad_mode: 1,
+        input_player1_up: 'up',
+        input_player1_down: 'down',
+        input_player1_left: 'left',
+        input_player1_right: 'right',
+        input_player1_a: 'x',
+        input_player1_b: 'z',
+        input_player1_x: 's',
+        input_player1_y: 'a',
+        input_player1_l: 'q',
+        input_player1_r: 'w',
+        input_player1_start: 'enter',
+        input_player1_select: 'rshift',
+      },
     };
 
     if (isCanvas) {

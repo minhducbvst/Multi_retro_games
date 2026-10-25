@@ -1,4 +1,5 @@
 import { EmulatorInputState } from '../../emulator/engine';
+import { inputConfigService, TargetSystem } from './inputConfigService';
 
 export interface GamepadMappingConfig {
   up: number | string; // Button index or axis direction
@@ -198,7 +199,7 @@ export class GamepadService {
   }
 
   // Poll current frame inputs from gamepad
-  public poll(inputState: EmulatorInputState): {
+  public poll(inputState: EmulatorInputState, system: TargetSystem = 'SNES'): {
     inputs: EmulatorInputState;
     rawButtons: boolean[];
     activeAxes: number[];
@@ -230,51 +231,72 @@ export class GamepadService {
       activeAxes[i] = Math.abs(val) > this.deadzone ? val : 0;
     }
 
-    // Helper to check button index
-    const isBtnPressed = (idx?: number | string): boolean => {
-      if (typeof idx === 'number') {
-        return !!rawButtons[idx];
+    // Get configured gamepad mapping for current system
+    const systemMap = inputConfigService.getSystemConfig(system)?.gamepad;
+
+    // Helper to check button index from custom config with fallback to default mapping
+    const isBtnPressed = (btnIndex?: number | string): boolean => {
+      if (typeof btnIndex === 'number' && btnIndex >= 0 && btnIndex < rawButtons.length) {
+        return !!rawButtons[btnIndex];
       }
       return false;
     };
+
+    const upIdx = systemMap?.up?.buttonIndex !== undefined && systemMap.up.buttonIndex >= 0 ? systemMap.up.buttonIndex : this.mapping.up;
+    const downIdx = systemMap?.down?.buttonIndex !== undefined && systemMap.down.buttonIndex >= 0 ? systemMap.down.buttonIndex : this.mapping.down;
+    const leftIdx = systemMap?.left?.buttonIndex !== undefined && systemMap.left.buttonIndex >= 0 ? systemMap.left.buttonIndex : this.mapping.left;
+    const rightIdx = systemMap?.right?.buttonIndex !== undefined && systemMap.right.buttonIndex >= 0 ? systemMap.right.buttonIndex : this.mapping.right;
+    const aIdx = systemMap?.a?.buttonIndex !== undefined && systemMap.a.buttonIndex >= 0 ? systemMap.a.buttonIndex : this.mapping.a;
+    const bIdx = systemMap?.b?.buttonIndex !== undefined && systemMap.b.buttonIndex >= 0 ? systemMap.b.buttonIndex : this.mapping.b;
+    const xIdx = systemMap?.x?.buttonIndex !== undefined && systemMap.x.buttonIndex >= 0 ? systemMap.x.buttonIndex : this.mapping.x;
+    const yIdx = systemMap?.y?.buttonIndex !== undefined && systemMap.y.buttonIndex >= 0 ? systemMap.y.buttonIndex : this.mapping.y;
+    const lIdx = systemMap?.l?.buttonIndex !== undefined && systemMap.l.buttonIndex >= 0 ? systemMap.l.buttonIndex : this.mapping.l;
+    const rIdx = systemMap?.r?.buttonIndex !== undefined && systemMap.r.buttonIndex >= 0 ? systemMap.r.buttonIndex : this.mapping.r;
+    const startIdx = systemMap?.start?.buttonIndex !== undefined && systemMap.start.buttonIndex >= 0 ? systemMap.start.buttonIndex : this.mapping.start;
+    const selectIdx = systemMap?.select?.buttonIndex !== undefined && systemMap.select.buttonIndex >= 0 ? systemMap.select.buttonIndex : this.mapping.select;
 
     // Calculate D-Pad from digital buttons + analog left stick
     const stickX = activeAxes[0];
     const stickY = activeAxes[1];
 
-    const upPressed = isBtnPressed(this.mapping.up) || stickY < -this.deadzone;
-    const downPressed = isBtnPressed(this.mapping.down) || stickY > this.deadzone;
-    const leftPressed = isBtnPressed(this.mapping.left) || stickX < -this.deadzone;
-    const rightPressed = isBtnPressed(this.mapping.right) || stickX > this.deadzone;
+    const upPressed = isBtnPressed(upIdx) || stickY < -this.deadzone;
+    const downPressed = isBtnPressed(downIdx) || stickY > this.deadzone;
+    const leftPressed = isBtnPressed(leftIdx) || stickX < -this.deadzone;
+    const rightPressed = isBtnPressed(rightIdx) || stickX > this.deadzone;
 
     const updated: EmulatorInputState = {
       up: inputState.up || upPressed,
       down: inputState.down || downPressed,
       left: inputState.left || leftPressed,
       right: inputState.right || rightPressed,
-      a: inputState.a || isBtnPressed(this.mapping.a),
-      b: inputState.b || isBtnPressed(this.mapping.b),
-      x: inputState.x || isBtnPressed(this.mapping.x),
-      y: inputState.y || isBtnPressed(this.mapping.y),
-      l: inputState.l || isBtnPressed(this.mapping.l),
-      r: inputState.r || isBtnPressed(this.mapping.r),
-      start: inputState.start || isBtnPressed(this.mapping.start),
-      select: inputState.select || isBtnPressed(this.mapping.select)
+      a: inputState.a || isBtnPressed(aIdx),
+      b: inputState.b || isBtnPressed(bIdx),
+      x: inputState.x || isBtnPressed(xIdx),
+      y: inputState.y || isBtnPressed(yIdx),
+      l: inputState.l || isBtnPressed(lIdx),
+      r: inputState.r || isBtnPressed(rIdx),
+      start: inputState.start || isBtnPressed(startIdx),
+      select: inputState.select || isBtnPressed(selectIdx)
     };
 
-    // Check special hotkey triggers on edges (just pressed)
-    if (this.mapping.hotkeySave !== undefined && isBtnPressed(this.mapping.hotkeySave) && !this.lastButtonStates[this.mapping.hotkeySave]) {
+    // Hotkeys from system map
+    const hotkeySaveIdx = systemMap?.quickSave?.buttonIndex ?? this.mapping.hotkeySave;
+    const hotkeyLoadIdx = systemMap?.quickLoad?.buttonIndex ?? this.mapping.hotkeyLoad;
+    const hotkeyRewindIdx = systemMap?.rewind?.buttonIndex ?? this.mapping.hotkeyRewind;
+    const hotkeyFfIdx = systemMap?.fastForward?.buttonIndex ?? this.mapping.hotkeyFastForward;
+
+    if (hotkeySaveIdx !== undefined && hotkeySaveIdx >= 0 && isBtnPressed(hotkeySaveIdx) && !this.lastButtonStates[hotkeySaveIdx]) {
       this.notifyAction('save');
       this.vibrate(50, 100, 150);
     }
-    if (this.mapping.hotkeyLoad !== undefined && isBtnPressed(this.mapping.hotkeyLoad) && !this.lastButtonStates[this.mapping.hotkeyLoad]) {
+    if (hotkeyLoadIdx !== undefined && hotkeyLoadIdx >= 0 && isBtnPressed(hotkeyLoadIdx) && !this.lastButtonStates[hotkeyLoadIdx]) {
       this.notifyAction('load');
       this.vibrate(80, 50, 150);
     }
-    if (this.mapping.hotkeyRewind !== undefined && isBtnPressed(this.mapping.hotkeyRewind)) {
+    if (hotkeyRewindIdx !== undefined && hotkeyRewindIdx >= 0 && isBtnPressed(hotkeyRewindIdx)) {
       this.notifyAction('rewind');
     }
-    if (this.mapping.hotkeyFastForward !== undefined && isBtnPressed(this.mapping.hotkeyFastForward)) {
+    if (hotkeyFfIdx !== undefined && hotkeyFfIdx >= 0 && isBtnPressed(hotkeyFfIdx)) {
       this.notifyAction('fastforward');
     }
 

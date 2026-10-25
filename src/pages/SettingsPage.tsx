@@ -6,6 +6,8 @@ import {
   XBOX_LAYOUT_MAPPING
 } from '../services/input/gamepadService';
 import { saveManager } from '../services/saves/saveManager';
+import { InputMappingPanel } from '../components/InputMappingPanel';
+import { inputConfigService } from '../services/input/inputConfigService';
 
 interface SettingsPageProps {
   onBack: () => void;
@@ -14,45 +16,16 @@ interface SettingsPageProps {
 
 export const SettingsPage: React.FC<SettingsPageProps> = ({ onBack }) => {
   const [activeTab, setActiveTab] = useState<'controller' | 'video' | 'audio' | 'system' | 'bios'>('controller');
-  const [selectedProfile, setSelectedProfile] = useState<string>('SNES 8BitDo Pro 2');
-  const [deadzone, setDeadzone] = useState<number>(() => gamepadService.getDeadzone());
-  const [rumbleIntensity, setRumbleIntensity] = useState<number>(80);
-  const [turboRate, setTurboRate] = useState<number>(15); // Hz
   const [videoFilter, setVideoFilter] = useState<string>('CRT Trinitron Scanlines');
   const [aspectRatio, setAspectRatio] = useState<string>('4:3 CRT Square Pixels');
   const [audioLatency, setAudioLatency] = useState<number>(16); // ms
   const [enableDsp, setEnableDsp] = useState<boolean>(true);
-  const [activeRemapButton, setActiveRemapButton] = useState<string | null>(null);
   const [toastMessage, setToastMessage] = useState<string | null>(null);
 
-  // Live Gamepad API state
+  // Live Gamepad connection state
   const [connectedControllers, setConnectedControllers] = useState<ConnectedGamepadInfo[]>(() =>
     gamepadService.getConnectedControllers()
   );
-  const [selectedGamepadIndex, setSelectedGamepadIndex] = useState<number>(0);
-  const [liveGamepadButtons, setLiveGamepadButtons] = useState<boolean[]>([]);
-  const [liveAxes, setLiveAxes] = useState<number[]>([0, 0, 0, 0]);
-
-  // Button mapping state
-  const [buttonMappings, setButtonMappings] = useState<{ [key: string]: string }>({
-    'D-PAD UP': 'D-Pad Up / Axis Y- (ArrowUp)',
-    'D-PAD DOWN': 'D-Pad Down / Axis Y+ (ArrowDown)',
-    'D-PAD LEFT': 'D-Pad Left / Axis X- (ArrowLeft)',
-    'D-PAD RIGHT': 'D-Pad Right / Axis X+ (ArrowRight)',
-    'BUTTON A': 'Gamepad Btn 1 (B / A)',
-    'BUTTON B': 'Gamepad Btn 0 (A / B)',
-    'BUTTON X': 'Gamepad Btn 3 (Y / X)',
-    'BUTTON Y': 'Gamepad Btn 2 (X / Y)',
-    'SHOULDER L': 'Gamepad Btn 4 (L1 / LB)',
-    'SHOULDER R': 'Gamepad Btn 5 (R1 / RB)',
-    'TRIGGER L2': 'Gamepad Btn 6 (L2 Rewind)',
-    'TRIGGER R2': 'Gamepad Btn 7 (R2 Fast-Fwd)',
-    'SELECT': 'Gamepad Btn 8 (Select / Share)',
-    'START': 'Gamepad Btn 9 (Start / Options)',
-    'HOTKEY SAVE': 'Gamepad Btn 10 (L3 Stick Click)',
-    'HOTKEY LOAD': 'Gamepad Btn 11 (R3 Stick Click)',
-    'HOTKEY REWIND': 'Gamepad Btn 6 (Trigger L2)',
-  });
 
   const [showResetModal, setShowResetModal] = useState<boolean>(false);
 
@@ -99,126 +72,10 @@ export const SettingsPage: React.FC<SettingsPageProps> = ({ onBack }) => {
     };
   }, []);
 
-  // Poll connected gamepad state to animate blueprint vector in real-time
-  useEffect(() => {
-    let animId: number;
-    const pollLoop = () => {
-      if (activeTab === 'controller') {
-        const dummyInput = {
-          up: false, down: false, left: false, right: false,
-          a: false, b: false, x: false, y: false,
-          l: false, r: false, start: false, select: false
-        };
-        const { rawButtons, activeAxes } = gamepadService.poll(dummyInput);
-        setLiveGamepadButtons(rawButtons);
-        setLiveAxes(activeAxes);
-
-        // Check if currently remapping a button from physical gamepad
-        if (activeRemapButton) {
-          const pressedIdx = rawButtons.findIndex(b => b === true);
-          if (pressedIdx !== -1) {
-            setButtonMappings(prev => ({
-              ...prev,
-              [activeRemapButton]: `Gamepad Button ${pressedIdx}`
-            }));
-            showToast(`Mapped ${activeRemapButton} to Gamepad Button #${pressedIdx}`);
-            setActiveRemapButton(null);
-            gamepadService.vibrate(0.3, 0.6, 120);
-          }
-        }
-      }
-      animId = requestAnimationFrame(pollLoop);
-    };
-
-    animId = requestAnimationFrame(pollLoop);
-    return () => cancelAnimationFrame(animId);
-  }, [activeTab, activeRemapButton]);
-
-  const handleRemap = (btn: string) => {
-    setActiveRemapButton(btn);
-    showToast(`Press any keyboard key OR press any button on your physical controller for ${btn}...`);
-
-    const handleKeyDown = (e: KeyboardEvent) => {
-      e.preventDefault();
-      setButtonMappings((prev) => ({
-        ...prev,
-        [btn]: `${e.code} (${e.key.toUpperCase()})`
-      }));
-      setActiveRemapButton(null);
-      showToast(`Mapped ${btn} to ${e.key.toUpperCase()}`);
-      window.removeEventListener('keydown', handleKeyDown);
-    };
-
-    window.addEventListener('keydown', handleKeyDown, { once: true });
-  };
-
-  const handleTestHaptics = async () => {
-    const success = await gamepadService.vibrate(0.5, 0.9, 350);
-    if (success) {
-      showToast('Dual-rumble haptic vibration pulse sent to controller!');
-    } else {
-      showToast('No vibration actuator found on this device or gamepad is idle');
-    }
-  };
-
-  const handleApplyPreset = (presetName: string) => {
-    setSelectedProfile(presetName);
-    if (presetName === 'Xbox / Modern PC Controller') {
-      gamepadService.setMapping(XBOX_LAYOUT_MAPPING);
-      setButtonMappings({
-        'D-PAD UP': 'D-Pad Up (ArrowUp)',
-        'D-PAD DOWN': 'D-Pad Down (ArrowDown)',
-        'D-PAD LEFT': 'D-Pad Left (ArrowLeft)',
-        'D-PAD RIGHT': 'D-Pad Right (ArrowRight)',
-        'BUTTON A': 'Gamepad Btn 0 (Xbox A)',
-        'BUTTON B': 'Gamepad Btn 1 (Xbox B)',
-        'BUTTON X': 'Gamepad Btn 2 (Xbox X)',
-        'BUTTON Y': 'Gamepad Btn 3 (Xbox Y)',
-        'SHOULDER L': 'Gamepad Btn 4 (LB)',
-        'SHOULDER R': 'Gamepad Btn 5 (RB)',
-        'TRIGGER L2': 'Gamepad Btn 6 (LT Rewind)',
-        'TRIGGER R2': 'Gamepad Btn 7 (RT Fast-Fwd)',
-        'SELECT': 'Gamepad Btn 8 (View / Back)',
-        'START': 'Gamepad Btn 9 (Menu / Start)',
-        'HOTKEY SAVE': 'Gamepad Btn 10 (Left Stick Click)',
-        'HOTKEY LOAD': 'Gamepad Btn 11 (Right Stick Click)',
-        'HOTKEY REWIND': 'Gamepad Btn 6 (LT)',
-      });
-      showToast('Applied Xbox / Modern PC standard layout');
-    } else {
-      gamepadService.setMapping(STANDARD_SNES_GAMEPAD_MAPPING);
-      setButtonMappings({
-        'D-PAD UP': 'D-Pad Up (ArrowUp)',
-        'D-PAD DOWN': 'D-Pad Down (ArrowDown)',
-        'D-PAD LEFT': 'D-Pad Left (ArrowLeft)',
-        'D-PAD RIGHT': 'D-Pad Right (ArrowRight)',
-        'BUTTON A': 'Gamepad Btn 1 (SNES A / Right)',
-        'BUTTON B': 'Gamepad Btn 0 (SNES B / Bottom)',
-        'BUTTON X': 'Gamepad Btn 3 (SNES X / Top)',
-        'BUTTON Y': 'Gamepad Btn 2 (SNES Y / Left)',
-        'SHOULDER L': 'Gamepad Btn 4 (L1)',
-        'SHOULDER R': 'Gamepad Btn 5 (R1)',
-        'TRIGGER L2': 'Gamepad Btn 6 (L2 Rewind)',
-        'TRIGGER R2': 'Gamepad Btn 7 (R2 Fast-Fwd)',
-        'SELECT': 'Gamepad Btn 8 (Select)',
-        'START': 'Gamepad Btn 9 (Start)',
-        'HOTKEY SAVE': 'Gamepad Btn 10 (L3)',
-        'HOTKEY LOAD': 'Gamepad Btn 11 (R3)',
-        'HOTKEY REWIND': 'Gamepad Btn 6 (L2)',
-      });
-      showToast('Applied SNES 8BitDo Pro 2 authentic diamond layout');
-    }
-  };
-
   const handleResetDefaults = () => {
-    handleApplyPreset('SNES 8BitDo Pro 2');
-    setDeadzone(20);
-    gamepadService.setDeadzone(20);
-    setRumbleIntensity(80);
-    showToast('Input settings reset to factory defaults');
+    inputConfigService.resetAll();
+    showToast('Đã khôi phục toàn bộ cấu hình điều khiển về mặc định!');
   };
-
-  const activeController = connectedControllers[selectedGamepadIndex] || connectedControllers[0];
 
   return (
     <div className="max-w-[1400px] mx-auto flex flex-col gap-6 select-none font-sans">
@@ -279,7 +136,7 @@ export const SettingsPage: React.FC<SettingsPageProps> = ({ onBack }) => {
           }`}
         >
           <span className="material-symbols-outlined text-base">sports_esports</span>
-          Gamepad & Controllers ({connectedControllers.length})
+          Nút ảo & Tay cầm (NES / SNES / GBA)
         </button>
         <button
           onClick={() => setActiveTab('video')}
@@ -329,203 +186,7 @@ export const SettingsPage: React.FC<SettingsPageProps> = ({ onBack }) => {
 
       {/* Tab 1: Gamepad & Controls */}
       {activeTab === 'controller' && (
-        <div className="grid grid-cols-1 lg:grid-cols-12 gap-6">
-          {/* Left Column: Visual Controller Blueprint */}
-          <div className="lg:col-span-7 bg-[#1e1f26] border border-[#494454]/30 rounded-xl p-6 flex flex-col items-center">
-            <div className="w-full flex flex-col sm:flex-row sm:items-center justify-between gap-3 mb-4">
-              <div>
-                <h3 className="font-headline font-bold text-sm text-white">Interactive Blueprint Remapping</h3>
-                <p className="text-[11px] font-mono text-[#958ea0]">
-                  Press any physical button on your USB or Bluetooth controller to see real-time highlight
-                </p>
-              </div>
-
-              {/* Connected Gamepads Selector */}
-              <div className="flex items-center gap-2">
-                {connectedControllers.length > 0 ? (
-                  <select
-                    value={selectedGamepadIndex}
-                    onChange={(e) => {
-                      const idx = Number(e.target.value);
-                      setSelectedGamepadIndex(idx);
-                      gamepadService.setActiveGamepadIndex(idx);
-                    }}
-                    className="bg-[#111319] border border-emerald-500/40 text-emerald-400 font-mono text-xs rounded-lg px-2.5 py-1 focus:outline-none"
-                  >
-                    {connectedControllers.map((c) => (
-                      <option key={c.index} value={c.index}>
-                        Port {c.index + 1}: {c.id.substring(0, 24)}
-                      </option>
-                    ))}
-                  </select>
-                ) : (
-                  <span className="text-[10px] font-mono text-amber-300 flex items-center gap-1 bg-amber-500/10 px-2.5 py-1 rounded border border-amber-500/30">
-                    <span className="w-1.5 h-1.5 rounded-full bg-amber-400 animate-pulse"></span>
-                    Connect any USB / Bluetooth Controller
-                  </span>
-                )}
-              </div>
-            </div>
-
-            {/* Layout Preset Chips */}
-            <div className="w-full flex items-center gap-2 pb-2 border-b border-[#494454]/20 text-xs font-mono">
-              <span className="text-[#958ea0] text-[11px]">Controller Preset:</span>
-              <button
-                onClick={() => handleApplyPreset('SNES 8BitDo Pro 2')}
-                className={`px-2.5 py-1 rounded text-[11px] transition-colors ${
-                  selectedProfile === 'SNES 8BitDo Pro 2'
-                    ? 'bg-[#4cd7f6] text-[#003641] font-bold'
-                    : 'bg-[#282a30] text-[#cbc3d7]'
-                }`}
-              >
-                SNES 8BitDo Pro 2
-              </button>
-              <button
-                onClick={() => handleApplyPreset('Xbox / Modern PC Controller')}
-                className={`px-2.5 py-1 rounded text-[11px] transition-colors ${
-                  selectedProfile === 'Xbox / Modern PC Controller'
-                    ? 'bg-[#4cd7f6] text-[#003641] font-bold'
-                    : 'bg-[#282a30] text-[#cbc3d7]'
-                }`}
-              >
-                Xbox / PC Wireless
-              </button>
-            </div>
-
-            {/* Vector Blueprint SVG Controller with LIVE button glow */}
-            <div className="relative w-full max-w-[500px] my-6 flex items-center justify-center p-4 bg-[#111319]/80 rounded-xl border border-[#494454]/40">
-              <svg viewBox="0 0 460 220" className="w-full h-auto text-[#4cd7f6] drop-shadow-[0_0_12px_rgba(76,215,246,0.3)]">
-                {/* Controller outline body */}
-                <rect x="50" y="40" width="360" height="140" rx="40" fill="#1b1c22" stroke="#4cd7f6" strokeWidth="2" strokeDasharray="3 3" />
-                
-                {/* D-Pad Cross */}
-                <path d="M 110 80 L 130 80 L 130 100 L 150 100 L 150 120 L 130 120 L 130 140 L 110 140 L 110 120 L 90 120 L 90 100 L 110 100 Z" fill="#282a30" stroke="#4cd7f6" strokeWidth="1.5" />
-                
-                {/* D-Pad Directional Pins with live highlight */}
-                <circle cx="120" cy="90" r="4" fill={liveGamepadButtons[12] || liveAxes[1] < -deadzone / 100 ? '#4cd7f6' : '#282a30'} stroke="#4cd7f6" />
-                <circle cx="120" cy="130" r="4" fill={liveGamepadButtons[13] || liveAxes[1] > deadzone / 100 ? '#4cd7f6' : '#282a30'} stroke="#4cd7f6" />
-                <circle cx="100" cy="110" r="4" fill={liveGamepadButtons[14] || liveAxes[0] < -deadzone / 100 ? '#4cd7f6' : '#282a30'} stroke="#4cd7f6" />
-                <circle cx="140" cy="110" r="4" fill={liveGamepadButtons[15] || liveAxes[0] > deadzone / 100 ? '#4cd7f6' : '#282a30'} stroke="#4cd7f6" />
-
-                {/* ABXY Diamond Buttons with live highlight */}
-                {/* Button A (Right) - Index 1 */}
-                <circle cx="340" cy="110" r="14" fill={liveGamepadButtons[1] ? '#f472b6' : '#282a30'} stroke="#f472b6" strokeWidth="2" />
-                <text x="340" y="114" fill={liveGamepadButtons[1] ? '#111319' : '#f472b6'} fontSize="10" fontWeight="bold" textAnchor="middle" fontFamily="Space Mono">A</text>
-
-                {/* Button B (Bottom) - Index 0 */}
-                <circle cx="310" cy="135" r="14" fill={liveGamepadButtons[0] ? '#e879f9' : '#282a30'} stroke="#e879f9" strokeWidth="2" />
-                <text x="310" y="139" fill={liveGamepadButtons[0] ? '#111319' : '#e879f9'} fontSize="10" fontWeight="bold" textAnchor="middle" fontFamily="Space Mono">B</text>
-
-                {/* Button X (Top) - Index 3 */}
-                <circle cx="310" cy="85" r="14" fill={liveGamepadButtons[3] ? '#38bdf8' : '#282a30'} stroke="#38bdf8" strokeWidth="2" />
-                <text x="310" y="89" fill={liveGamepadButtons[3] ? '#111319' : '#38bdf8'} fontSize="10" fontWeight="bold" textAnchor="middle" fontFamily="Space Mono">X</text>
-
-                {/* Button Y (Left) - Index 2 */}
-                <circle cx="280" cy="110" r="14" fill={liveGamepadButtons[2] ? '#a78bfa' : '#282a30'} stroke="#a78bfa" strokeWidth="2" />
-                <text x="280" y="114" fill={liveGamepadButtons[2] ? '#111319' : '#a78bfa'} fontSize="10" fontWeight="bold" textAnchor="middle" fontFamily="Space Mono">Y</text>
-
-                {/* Select / Start Pills */}
-                <rect x="190" y="115" width="28" height="10" rx="5" fill={liveGamepadButtons[8] ? '#4cd7f6' : '#3b3d45'} stroke="#958ea0" strokeWidth="1" transform="rotate(-25 204 120)" />
-                <text x="204" y="138" fill={liveGamepadButtons[8] ? '#4cd7f6' : '#958ea0'} fontSize="8" textAnchor="middle" fontFamily="Space Mono">SELECT</text>
-
-                <rect x="236" y="115" width="28" height="10" rx="5" fill={liveGamepadButtons[9] ? '#4cd7f6' : '#3b3d45'} stroke="#958ea0" strokeWidth="1" transform="rotate(-25 250 120)" />
-                <text x="250" y="138" fill={liveGamepadButtons[9] ? '#4cd7f6' : '#958ea0'} fontSize="8" textAnchor="middle" fontFamily="Space Mono">START</text>
-
-                {/* Shoulder Buttons L1 & R1 */}
-                <rect x="90" y="26" width="60" height="12" rx="4" fill={liveGamepadButtons[4] ? '#4cd7f6' : '#282a30'} stroke="#4cd7f6" strokeWidth="1.5" />
-                <text x="120" y="35" fill={liveGamepadButtons[4] ? '#111319' : '#4cd7f6'} fontSize="8" textAnchor="middle" fontFamily="Space Mono">L1 (Btn 4)</text>
-
-                <rect x="310" y="26" width="60" height="12" rx="4" fill={liveGamepadButtons[5] ? '#4cd7f6' : '#282a30'} stroke="#4cd7f6" strokeWidth="1.5" />
-                <text x="340" y="35" fill={liveGamepadButtons[5] ? '#111319' : '#4cd7f6'} fontSize="8" textAnchor="middle" fontFamily="Space Mono">R1 (Btn 5)</text>
-              </svg>
-            </div>
-
-            {/* Calibration & Analog Deadzones */}
-            <div className="w-full grid grid-cols-1 md:grid-cols-2 gap-4 mt-2">
-              <div className="p-3 bg-[#111319] rounded-lg border border-[#494454]/20 space-y-2">
-                <div className="flex justify-between items-center text-xs font-mono">
-                  <span className="text-[#cbc3d7]">Stick Deadzone</span>
-                  <span className="text-[#4cd7f6] font-bold">{deadzone}%</span>
-                </div>
-                <input
-                  type="range"
-                  min="0"
-                  max="40"
-                  value={deadzone}
-                  onChange={(e) => {
-                    const val = Number(e.target.value);
-                    setDeadzone(val);
-                    gamepadService.setDeadzone(val);
-                  }}
-                  className="w-full accent-[#4cd7f6] cursor-pointer"
-                />
-                <p className="text-[10px] font-mono text-[#958ea0]">
-                  Filters analog stick drift. Current axes: X={liveAxes[0].toFixed(2)}, Y={liveAxes[1].toFixed(2)}
-                </p>
-              </div>
-
-              <div className="p-3 bg-[#111319] rounded-lg border border-[#494454]/20 space-y-2">
-                <div className="flex justify-between items-center text-xs font-mono">
-                  <span className="text-[#cbc3d7]">Turbo Autofire Rate</span>
-                  <span className="text-[#ffb3bc] font-bold">{turboRate} Hz</span>
-                </div>
-                <input
-                  type="range"
-                  min="5"
-                  max="30"
-                  value={turboRate}
-                  onChange={(e) => setTurboRate(Number(e.target.value))}
-                  className="w-full accent-[#ffb3bc] cursor-pointer"
-                />
-                <p className="text-[10px] font-mono text-[#958ea0]">Autofire pulse speed for shooter & platformer cartridges</p>
-              </div>
-            </div>
-          </div>
-
-          {/* Right Column: Keybinding Table & Gamepad Info */}
-          <div className="lg:col-span-5 bg-[#1e1f26] border border-[#494454]/30 rounded-xl p-5 flex flex-col justify-between">
-            <div>
-              <div className="flex items-center justify-between pb-3 border-b border-[#494454]/20 mb-3">
-                <h3 className="font-headline font-bold text-sm text-white">Active Mapping Table</h3>
-                <span className="text-[11px] font-mono text-[#4cd7f6]">{selectedProfile}</span>
-              </div>
-
-              <div className="space-y-1.5 max-h-[460px] overflow-y-auto pr-1">
-                {Object.entries(buttonMappings).map(([btnName, boundKey]) => (
-                  <div
-                    key={btnName}
-                    className="flex items-center justify-between p-2 rounded bg-[#111319] border border-[#494454]/20 hover:border-[#4cd7f6]/50 transition-colors"
-                  >
-                    <span className="font-mono text-xs text-[#cbc3d7] font-medium">{btnName}</span>
-                    <button
-                      onClick={() => handleRemap(btnName)}
-                      className={`px-3 py-1 rounded text-xs font-mono transition-all ${
-                        activeRemapButton === btnName
-                          ? 'bg-[#4cd7f6] text-[#003641] font-bold animate-pulse'
-                          : 'bg-[#282a30] hover:bg-[#34373f] text-[#4cd7f6] border border-[#4cd7f6]/30'
-                      }`}
-                    >
-                      {activeRemapButton === btnName ? 'Listening...' : boundKey}
-                    </button>
-                  </div>
-                ))}
-              </div>
-            </div>
-
-            <div className="pt-4 border-t border-[#494454]/20 mt-4 flex items-center justify-between">
-              <span className="text-[11px] font-mono text-[#958ea0]">
-                {activeController ? `Connected: ${activeController.id.substring(0, 20)}...` : 'Standard W3C Polling @ 120Hz'}
-              </span>
-              <button
-                onClick={handleTestHaptics}
-                className="px-3.5 py-1.5 text-xs font-mono rounded-lg bg-[#282a30] hover:bg-[#34373f] text-[#cbc3d7] hover:text-white border border-[#494454]/30 transition-colors flex items-center gap-1.5 shadow-sm"
-              >
-                <span className="material-symbols-outlined text-sm text-purple-400">vibration</span>
-                Test Haptics
-              </button>
-            </div>
-          </div>
-        </div>
+        <InputMappingPanel onShowToast={showToast} />
       )}
 
       {/* Tab 2: Display & CRT Shaders */}

@@ -53,6 +53,11 @@ export default function App() {
     }
   });
 
+  // Initialize IndexedDB ROM storage on mount
+  useEffect(() => {
+    romStorage.init();
+  }, []);
+
   // Global ⌘K / Ctrl+K keyboard shortcut listener for Search
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {

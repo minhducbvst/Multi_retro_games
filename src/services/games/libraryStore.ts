@@ -111,10 +111,16 @@ function truncateTitle(str: string, max: number): string {
 
 class LibraryStore {
   private games: Game[] = [];
+  private snapshot: Game[] = [];
   private listeners: Array<(games: Game[]) => void> = [];
 
   constructor() {
     this.loadFromStorage();
+    this.updateSnapshot();
+  }
+
+  private updateSnapshot(): void {
+    this.snapshot = [...this.games];
   }
 
   private loadFromStorage(): void {
@@ -162,6 +168,7 @@ class LibraryStore {
   }
 
   private saveToStorage(): void {
+    this.updateSnapshot();
     try {
       localStorage.setItem(STORAGE_KEY, JSON.stringify(this.games));
     } catch (e) {
@@ -171,7 +178,7 @@ class LibraryStore {
   }
 
   public getGames(): Game[] {
-    return [...this.games];
+    return this.snapshot;
   }
 
   public getGameById(id: string): Game | undefined {
@@ -220,7 +227,6 @@ class LibraryStore {
 
   public subscribe(callback: (games: Game[]) => void): () => void {
     this.listeners.push(callback);
-    callback(this.getGames());
     return () => {
       this.listeners = this.listeners.filter((cb) => cb !== callback);
     };

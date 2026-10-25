@@ -138,7 +138,6 @@ export const RomVaultPage: React.FC<RomVaultPageProps> = ({
   const handleLaunch = () => {
     if (!analyzedRom) return;
     setUserAcknowledgedLegal(true);
-    handleSaveToLibrary();
     onLaunchRom(analyzedRom.bytes, analyzedRom.info);
   };
 

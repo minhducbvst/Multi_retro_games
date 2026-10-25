@@ -1,5 +1,5 @@
 /**
- * Safe WakeLock Polyfill for Emscripten & Nostalgist WebAssembly cores running inside iframes
+ * Bulletproof Safe WakeLock Polyfill for Emscripten, RetroArch & Nostalgist WebAssembly
  * Prevents:
  * NotAllowedError: Failed to execute 'request' on 'WakeLock': Access to Screen Wake Lock features is disallowed by permissions policy
  */
@@ -29,55 +29,56 @@ function createDummySentinel(type: 'screen' = 'screen'): WakeLockSentinel {
 export function initWakeLockPolyfill(): void {
   if (typeof window === 'undefined') return;
 
-  // 1. Monkey-patch WakeLock prototype if available
-  try {
-    const nav = window.navigator as any;
-    const win = window as any;
-    if (typeof win.WakeLock !== 'undefined' && win.WakeLock.prototype) {
-      const proto = win.WakeLock.prototype;
-      const origProtoReq = proto.request;
-      proto.request = async function (type: 'screen' = 'screen') {
-        try {
-          if (origProtoReq) {
-            return await origProtoReq.call(this, type);
-          }
-        } catch {
-          // Fall through to dummy sentinel
-        }
-        return createDummySentinel(type);
-      };
-    }
+  const dummyWakeLock = {
+    request: async (type: 'screen' = 'screen') => {
+      return createDummySentinel(type);
+    },
+  };
 
-    // 2. Wrap navigator.wakeLock directly
-    if (nav && 'wakeLock' in nav && nav.wakeLock) {
-      const origRequest = nav.wakeLock.request;
-      nav.wakeLock.request = async function (type: 'screen' = 'screen') {
-        try {
-          if (typeof origRequest === 'function') {
-            return await origRequest.call(nav.wakeLock, type);
-          }
-        } catch {
-          // Silently suppress permissions policy denial and return safe dummy sentinel
-        }
-        return createDummySentinel(type);
-      };
-    } else if (nav) {
-      // Define a dummy wakeLock if missing or blocked
-      try {
-        Object.defineProperty(nav, 'wakeLock', {
-          configurable: true,
-          enumerable: true,
-          get: () => ({
-            request: async (type: 'screen' = 'screen') => createDummySentinel(type),
-          }),
-        });
-      } catch {}
+  // 1. Override Navigator.prototype.wakeLock directly
+  try {
+    if (typeof Navigator !== 'undefined' && Navigator.prototype) {
+      Object.defineProperty(Navigator.prototype, 'wakeLock', {
+        configurable: true,
+        enumerable: true,
+        get: () => dummyWakeLock,
+      });
     }
   } catch (e) {
-    console.warn('Could not wrap navigator.wakeLock', e);
+    console.warn('Could not override Navigator.prototype.wakeLock', e);
   }
 
-  // 3. Capture any unhandled rejection or error from workers, blob scripts, or Emscripten
+  // 2. Override window.navigator.wakeLock directly
+  try {
+    if (typeof window.navigator !== 'undefined') {
+      Object.defineProperty(window.navigator, 'wakeLock', {
+        configurable: true,
+        enumerable: true,
+        get: () => dummyWakeLock,
+      });
+    }
+  } catch (e) {
+    console.warn('Could not override window.navigator.wakeLock', e);
+  }
+
+  // 3. Override WakeLock.prototype.request if class exists
+  try {
+    const win = window as any;
+    if (typeof win.WakeLock !== 'undefined' && win.WakeLock.prototype) {
+      Object.defineProperty(win.WakeLock.prototype, 'request', {
+        configurable: true,
+        enumerable: true,
+        writable: true,
+        value: async function (type: 'screen' = 'screen') {
+          return createDummySentinel(type);
+        },
+      });
+    }
+  } catch (e) {
+    console.warn('Could not override WakeLock.prototype.request', e);
+  }
+
+  // 4. Capture any unhandled rejection from Emscripten blob workers or async tasks
   window.addEventListener(
     'unhandledrejection',
     (event) => {
@@ -101,6 +102,7 @@ export function initWakeLockPolyfill(): void {
     true
   );
 
+  // 5. Capture any unhandled error event
   window.addEventListener(
     'error',
     (event) => {

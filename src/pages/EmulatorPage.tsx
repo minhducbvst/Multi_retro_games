@@ -1,4 +1,4 @@
-import React, { useEffect, useRef, useState } from 'react';
+import React, { useEffect, useRef, useState, useCallback } from 'react';
 import { Game } from '../types';
 import { getGameById, FEATURED_GAMES } from '../services/games/catalog';
 import { RetroEmulatorEngine, EmulatorInputState } from '../emulator/engine';
@@ -14,6 +14,22 @@ import { Nostalgist } from 'nostalgist';
 import { romStorage } from '../services/roms/romStorage';
 import { parseRom } from '../emulator/romParser';
 import { downloadDriveFile } from '../services/googleDriveService';
+import { inputConfigService, TargetSystem } from '../services/input/inputConfigService';
+import { libraryStore } from '../services/games/libraryStore';
+
+const FALLBACK_GAME: Game = {
+  id: 'custom-unloaded',
+  title: 'Chờ nạp ROM',
+  platform: 'NES',
+  year: 1995,
+  developer: 'Retro Cartridge',
+  genre: 'Retro',
+  rating: 5.0,
+  ratingCount: 1,
+  boxArt: '',
+  description: 'Vui lòng nạp tệp ROM để bắt đầu chơi.',
+  features: [],
+};
 
 interface EmulatorPageProps {
   gameId: string;
@@ -33,21 +49,7 @@ export const EmulatorPage: React.FC<EmulatorPageProps> = ({
   const nostalgistRef = useRef<Nostalgist | null>(null);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
 
-  const fallbackGame: Game = {
-    id: 'custom-unloaded',
-    title: 'Chờ nạp ROM',
-    platform: 'NES',
-    year: 1995,
-    developer: 'Retro Cartridge',
-    genre: 'Retro',
-    rating: 5.0,
-    ratingCount: 1,
-    boxArt: '',
-    description: 'Vui lòng nạp tệp ROM để bắt đầu chơi.',
-    features: [],
-  };
-
-  const [game, setGame] = useState<Game>(() => getGameById(gameId) || FEATURED_GAMES[0] || fallbackGame);
+  const [game, setGame] = useState<Game>(() => getGameById(gameId) || FEATURED_GAMES[0] || FALLBACK_GAME);
   const [hasRom, setHasRom] = useState<boolean>(() => romStorage.hasRom(gameId));
   const [isLoadingCore, setIsLoadingCore] = useState<boolean>(false);
   const [coreLoadingStatus, setCoreLoadingStatus] = useState<string>('');
@@ -62,7 +64,55 @@ export const EmulatorPage: React.FC<EmulatorPageProps> = ({
   const [inspectorTab, setInspectorTab] = useState<'controls' | 'states' | 'visuals' | 'cheats'>('controls');
   const [showVisualSettingsModal, setShowVisualSettingsModal] = useState<boolean>(false);
   const [toastMessage, setToastMessage] = useState<string | null>(null);
-  const [isHandheldTouchMode, setIsHandheldTouchMode] = useState<boolean>(false);
+  const [isHandheldTouchMode, setIsHandheldTouchMode] = useState<boolean>(() => {
+    if (typeof window !== 'undefined') {
+      return window.innerWidth < 840 || ('ontouchstart' in window) || (navigator.maxTouchPoints > 0);
+    }
+    return false;
+  });
+  const [windowDimensions, setWindowDimensions] = useState(() => ({
+    width: typeof window !== 'undefined' ? window.innerWidth : 1024,
+    height: typeof window !== 'undefined' ? window.innerHeight : 768,
+  }));
+  const [orientationMode, setOrientationMode] = useState<'auto' | 'portrait' | 'landscape'>('auto');
+
+  useEffect(() => {
+    const handleResize = () => {
+      setWindowDimensions({
+        width: window.innerWidth,
+        height: window.innerHeight,
+      });
+    };
+    window.addEventListener('resize', handleResize);
+    window.addEventListener('orientationchange', handleResize);
+    return () => {
+      window.removeEventListener('resize', handleResize);
+      window.removeEventListener('orientationchange', handleResize);
+    };
+  }, []);
+
+  const isWindowLandscape = windowDimensions.width > windowDimensions.height;
+  const effectiveOrientation: 'portrait' | 'landscape' =
+    orientationMode === 'auto'
+      ? isWindowLandscape
+        ? 'landscape'
+        : 'portrait'
+      : orientationMode;
+
+  const cycleOrientation = () => {
+    if (orientationMode === 'auto') {
+      const next = effectiveOrientation === 'portrait' ? 'landscape' : 'portrait';
+      setOrientationMode(next);
+      showToast(`Đã cố định: ${next === 'landscape' ? 'Màn hình ngang' : 'Màn hình dọc'}`);
+    } else if (orientationMode === 'portrait') {
+      setOrientationMode('landscape');
+      showToast('Đã chuyển sang màn hình ngang');
+    } else {
+      setOrientationMode('auto');
+      showToast('Tự động xoay theo màn hình');
+    }
+  };
+
   const [fpsDisplay, setFpsDisplay] = useState<number>(60.0);
   const [activeSignals, setActiveSignals] = useState<{ [key: string]: boolean }>({});
   const [connectedGamepad, setConnectedGamepad] = useState<ConnectedGamepadInfo | null>(() => gamepadService.getPrimaryController());
@@ -117,23 +167,51 @@ export const EmulatorPage: React.FC<EmulatorPageProps> = ({
     setTimeout(() => setToastMessage(null), 2400);
   };
 
+  // Local core paths for zero-latency offline loading without CDN dependencies
+  const LOCAL_CORES: Record<string, { name: string; js: string; wasm: string }> = {
+    NES: {
+      name: 'fceumm',
+      js: '/cores/fceumm_libretro.js',
+      wasm: '/cores/fceumm_libretro.wasm',
+    },
+    SNES: {
+      name: 'snes9x2005',
+      js: '/cores/snes9x2005_libretro.js',
+      wasm: '/cores/snes9x2005_libretro.wasm',
+    },
+    GBA: {
+      name: 'mgba',
+      js: '/cores/mgba_libretro.js',
+      wasm: '/cores/mgba_libretro.wasm',
+    },
+  };
+
   // Launch Nostalgist with a ROM
   const launchRealEmulator = async (romData: Uint8Array, filename: string, targetPlatform: string) => {
-    if (!canvasRef.current) return;
     setIsLoadingCore(true);
     setLoadError(null);
 
     const plat = (targetPlatform || 'NES').toUpperCase();
-    let core = 'fceumm';
-    if (plat === 'SNES' || plat.includes('SUPER')) core = 'snes9x';
-    else if (plat === 'GBA' || plat.includes('ADVANCE')) core = 'mgba';
-    else if (plat === 'GENESIS' || plat === 'MEGADRIVE') core = 'genesis_plus_gx';
+    const coreDef = plat.includes('GBA') || plat.includes('ADVANCE')
+      ? LOCAL_CORES.GBA
+      : plat === 'SNES' || plat.includes('SUPER')
+      ? LOCAL_CORES.SNES
+      : LOCAL_CORES.NES;
 
-    setCoreLoadingStatus(`Đang tải core ${core} (RetroArch WebAssembly)...`);
+    let validFilename = filename || `game.${plat.toLowerCase()}`;
+    if (!validFilename.includes('.')) {
+      if (plat === 'NES') validFilename += '.nes';
+      else if (plat.includes('GBA')) validFilename += '.gba';
+      else validFilename += '.sfc';
+    }
+
+    setCoreLoadingStatus(`Đang nạp core ${coreDef.name} (RetroArch WebAssembly)...`);
 
     try {
       if (nostalgistRef.current) {
-        try { nostalgistRef.current.exit(); } catch {}
+        try {
+          nostalgistRef.current.exit({ removeCanvas: false });
+        } catch {}
         nostalgistRef.current = null;
       }
       if (engineRef.current) {
@@ -141,24 +219,133 @@ export const EmulatorPage: React.FC<EmulatorPageProps> = ({
         engineRef.current = null;
       }
 
-      const instance = await Nostalgist.launch({
-        element: canvasRef.current,
-        core,
+      const canvas = canvasRef.current;
+      if (!canvas) {
+        throw new Error('Khung hiển thị canvas không sẵn sàng');
+      }
+
+      setHasRom(true);
+
+      const launchPromise = Nostalgist.launch({
+        element: canvas,
+        core: {
+          name: coreDef.name,
+          js: coreDef.js,
+          wasm: coreDef.wasm,
+        },
         rom: {
-          fileName: filename,
+          fileName: validFilename,
           fileContent: romData,
+        },
+        retroarchConfig: {
+          input_player1_analog_dpad_mode: 1,
+          input_player1_up: 'up',
+          input_player1_down: 'down',
+          input_player1_left: 'left',
+          input_player1_right: 'right',
+          input_player1_a: 'x',
+          input_player1_b: 'z',
+          input_player1_x: 's',
+          input_player1_y: 'a',
+          input_player1_l: 'q',
+          input_player1_r: 'e',
+          input_player1_start: 'enter',
+          input_player1_select: 'rshift',
         },
       });
 
+      const timeoutPromise = new Promise<never>((_, reject) => {
+        setTimeout(() => reject(new Error('Khởi động WebAssembly quá thời gian chờ (15s).')), 15000);
+      });
+
+      const instance = await Promise.race([launchPromise, timeoutPromise]);
+
+      // Patch Nostalgist emulator's internal fireKeyboardEvent to provide fully-formed mock events
+      // with preventDefault and valid scancodes, preventing memory access out of bounds in RetroArch WASM
+      try {
+        const emulator = (instance as any).getEmulator?.();
+        if (emulator && typeof emulator.fireKeyboardEvent === 'function') {
+          const originalFire = emulator.fireKeyboardEvent.bind(emulator);
+          emulator.fireKeyboardEvent = (type: string, code: string) => {
+            try {
+              const { JSEvents } = emulator.getEmscripten() || {};
+              if (JSEvents && Array.isArray(JSEvents.eventHandlers)) {
+                const codeMap: Record<string, { key: string; keyCode: number }> = {
+                  ArrowUp: { key: 'ArrowUp', keyCode: 38 },
+                  ArrowDown: { key: 'ArrowDown', keyCode: 40 },
+                  ArrowLeft: { key: 'ArrowLeft', keyCode: 37 },
+                  ArrowRight: { key: 'ArrowRight', keyCode: 39 },
+                  KeyX: { key: 'x', keyCode: 88 },
+                  KeyZ: { key: 'z', keyCode: 90 },
+                  KeyS: { key: 's', keyCode: 83 },
+                  KeyA: { key: 'a', keyCode: 65 },
+                  KeyQ: { key: 'q', keyCode: 81 },
+                  KeyE: { key: 'e', keyCode: 69 },
+                  KeyW: { key: 'w', keyCode: 87 },
+                  Enter: { key: 'Enter', keyCode: 13 },
+                  ShiftRight: { key: 'Shift', keyCode: 16 },
+                };
+                const mapped = codeMap[code] || { key: code, keyCode: 0 };
+                const mockEvent = {
+                  type,
+                  code,
+                  key: mapped.key,
+                  keyCode: mapped.keyCode,
+                  which: mapped.keyCode,
+                  charCode: 0,
+                  location: 0,
+                  ctrlKey: false,
+                  shiftKey: false,
+                  altKey: false,
+                  metaKey: false,
+                  repeat: false,
+                  timeStamp: performance.now(),
+                  target: emulator.options?.element || canvas,
+                  preventDefault: () => {},
+                  stopPropagation: () => {},
+                };
+                for (const handler of JSEvents.eventHandlers) {
+                  if (handler && handler.eventTypeString === type && typeof handler.eventListenerFunc === 'function') {
+                    try {
+                      handler.eventListenerFunc(mockEvent);
+                    } catch {}
+                  }
+                }
+                return;
+              }
+            } catch {}
+            originalFire(type, code);
+          };
+        }
+      } catch (patchErr) {
+        console.warn('Could not wrap emulator.fireKeyboardEvent:', patchErr);
+      }
+
       nostalgistRef.current = instance;
       setIsLoadingCore(false);
-      setHasRom(true);
-      showToast(`Đã nạp ROM: ${filename}`);
+      showToast(`Đã nạp ROM: ${validFilename}`);
     } catch (err: any) {
       console.error('Failed to launch Nostalgist:', err);
       setIsLoadingCore(false);
       setLoadError(err?.message || 'Không thể tải core giả lập. Vui lòng kiểm tra lại tệp ROM.');
     }
+  };
+
+  const launchCanvasFallback = () => {
+    if (!canvasRef.current) return;
+    setLoadError(null);
+    setIsLoadingCore(false);
+    if (nostalgistRef.current) {
+      try { nostalgistRef.current.exit({ removeCanvas: false }); } catch {}
+      nostalgistRef.current = null;
+    }
+    const engine = new RetroEmulatorEngine();
+    engine.initialize(canvasRef.current);
+    engine.loadGame(game);
+    engine.start();
+    engineRef.current = engine;
+    setHasRom(true);
+    showToast("Đang chạy bằng Canvas Retro Engine dự phòng");
   };
 
   const handleDirectRomFile = async (file: File) => {
@@ -170,18 +357,24 @@ export const EmulatorPage: React.FC<EmulatorPageProps> = ({
       const header = parseRom(bytes, file.name);
       const detectedPlatform = header.platform === 'UNKNOWN' ? game.platform : header.platform;
 
-      romStorage.saveRom(game.id, file.name, detectedPlatform, bytes);
-      setGame(prev => ({
-        ...prev,
+      const updatedGame: Game = {
+        ...game,
+        id: game.id === 'custom-unloaded' ? `custom-${Date.now()}` : game.id,
         title: header.internalTitle || file.name,
-        platform: detectedPlatform
-      }));
+        platform: detectedPlatform,
+        romFilename: file.name,
+        source: 'local',
+      };
+
+      romStorage.saveRom(updatedGame.id, file.name, detectedPlatform, bytes);
+      libraryStore.addGame(updatedGame);
+      setGame(updatedGame);
 
       await launchRealEmulator(bytes, file.name, detectedPlatform);
     } catch (err: any) {
       console.error(err);
       setIsLoadingCore(false);
-      setLoadError('Lỗi đọc tệp ROM từ máy tính');
+      setLoadError('Lỗi đọc tệp ROM từ máy tính: ' + (err?.message || ''));
     }
   };
 
@@ -195,35 +388,50 @@ export const EmulatorPage: React.FC<EmulatorPageProps> = ({
 
   // Initialize and run emulator engine
   useEffect(() => {
-    const targetGame = getGameById(gameId) || FEATURED_GAMES[0] || fallbackGame;
+    let isCancelled = false;
+    const targetGame = getGameById(gameId) || FEATURED_GAMES[0] || FALLBACK_GAME;
     setGame(targetGame);
 
-    const stored = romStorage.getRom(gameId);
-    if (stored && stored.data && stored.data.length > 0) {
-      setHasRom(true);
-      launchRealEmulator(stored.data, stored.filename, stored.platform || targetGame.platform);
-    } else if (targetGame?.driveFileId) {
-      setIsLoadingCore(true);
-      setCoreLoadingStatus(`Đang tải ROM "${targetGame.romFilename || targetGame.title}" từ Google Drive...`);
-      downloadDriveFile(targetGame.driveFileId)
-        .then((buf) => {
+    const initRom = async () => {
+      // 1. Check synchronous memory cache first
+      let stored = romStorage.getRom(gameId);
+      // 2. If not in memory (e.g. after page refresh), query IndexedDB
+      if (!stored) {
+        stored = await romStorage.getRomAsync(gameId);
+      }
+
+      if (isCancelled) return;
+
+      if (stored && stored.data && stored.data.length > 0) {
+        setHasRom(true);
+        launchRealEmulator(stored.data, stored.filename, stored.platform || targetGame.platform);
+      } else if (targetGame?.driveFileId) {
+        setIsLoadingCore(true);
+        setCoreLoadingStatus(`Đang tải ROM "${targetGame.romFilename || targetGame.title}" từ Google Drive...`);
+        try {
+          const buf = await downloadDriveFile(targetGame.driveFileId);
+          if (isCancelled) return;
           const bytes = new Uint8Array(buf);
           romStorage.saveRom(targetGame.id, targetGame.romFilename || targetGame.title, targetGame.platform, bytes);
           setHasRom(true);
           launchRealEmulator(bytes, targetGame.romFilename || targetGame.title, targetGame.platform);
-        })
-        .catch((err) => {
+        } catch (err: any) {
+          if (isCancelled) return;
           setIsLoadingCore(false);
           setLoadError(`Không thể tải tệp từ Google Drive: ${err?.message || 'Lỗi kết nối'}. Vui lòng thử nạp lại.`);
-        });
-    } else {
-      setHasRom(false);
-    }
+        }
+      } else {
+        setHasRom(false);
+      }
+    };
+
+    initRom();
 
     return () => {
+      isCancelled = true;
       if (nostalgistRef.current) {
         try {
-          nostalgistRef.current.exit();
+          nostalgistRef.current.exit({ removeCanvas: false });
         } catch (e) {
           console.error(e);
         }
@@ -236,108 +444,224 @@ export const EmulatorPage: React.FC<EmulatorPageProps> = ({
     };
   }, [gameId]);
 
+  // RetroArch Emscripten and DOM synthetic key mapping table
+  const RETRO_KEY_MAPPING: Record<
+    keyof EmulatorInputState,
+    { code: string; key: string; keyCode: number; retroButton: string }
+  > = {
+    up: { code: 'ArrowUp', key: 'ArrowUp', keyCode: 38, retroButton: 'up' },
+    down: { code: 'ArrowDown', key: 'ArrowDown', keyCode: 40, retroButton: 'down' },
+    left: { code: 'ArrowLeft', key: 'ArrowLeft', keyCode: 37, retroButton: 'left' },
+    right: { code: 'ArrowRight', key: 'ArrowRight', keyCode: 39, retroButton: 'right' },
+    a: { code: 'KeyX', key: 'x', keyCode: 88, retroButton: 'a' },
+    b: { code: 'KeyZ', key: 'z', keyCode: 90, retroButton: 'b' },
+    x: { code: 'KeyS', key: 's', keyCode: 83, retroButton: 'x' },
+    y: { code: 'KeyA', key: 'a', keyCode: 65, retroButton: 'y' },
+    l: { code: 'KeyQ', key: 'q', keyCode: 81, retroButton: 'l' },
+    r: { code: 'KeyE', key: 'e', keyCode: 69, retroButton: 'r' },
+    start: { code: 'Enter', key: 'Enter', keyCode: 13, retroButton: 'start' },
+    select: { code: 'ShiftRight', key: 'Shift', keyCode: 16, retroButton: 'select' },
+  };
+
+  // Helper to map KeyboardEvent code to Virtual Button name for UI signals / fallback engine
+  const getButtonFromCode = (code: string): keyof EmulatorInputState | null => {
+    switch (code) {
+      case 'ArrowUp':
+      case 'KeyW':
+        return 'up';
+      case 'ArrowDown':
+      case 'KeyS':
+        return 'down';
+      case 'ArrowLeft':
+      case 'KeyA':
+        return 'left';
+      case 'ArrowRight':
+      case 'KeyD':
+        return 'right';
+      case 'KeyZ':
+        return 'b';
+      case 'KeyX':
+        return 'a';
+      case 'KeyS':
+        return 'x';
+      case 'KeyA':
+        return 'y';
+      case 'KeyQ':
+        return 'l';
+      case 'KeyE':
+        return 'r';
+      case 'Enter':
+        return 'start';
+      case 'ShiftRight':
+      case 'Space':
+        return 'select';
+      default:
+        return null;
+    }
+  };
+
+  // Unified Input Router: used strictly for On-Screen Virtual Controller & Gamepads
+  const handleVirtualInput = useCallback((btn: keyof EmulatorInputState, pressed: boolean) => {
+    // 1. Update visual signals for HUD and test panel (bailout if unchanged to prevent re-render cascading)
+    const sigKey = btn.toUpperCase();
+    setActiveSignals((prev) => {
+      if (prev[sigKey] === pressed) return prev;
+      return { ...prev, [sigKey]: pressed };
+    });
+
+    // 2. Route to Canvas Fallback Engine if active
+    if (engineRef.current) {
+      engineRef.current.setInput(btn, pressed);
+    }
+
+    // 3. Route to Nostalgist WebAssembly Core (RetroArch) safely via official API (no DOM event dispatch)
+    if (nostalgistRef.current) {
+      const mapping = RETRO_KEY_MAPPING[btn];
+      if (mapping) {
+        try {
+          if (pressed) {
+            nostalgistRef.current.pressDown(mapping.retroButton as any);
+          } else {
+            nostalgistRef.current.pressUp(mapping.retroButton as any);
+          }
+        } catch (err) {
+          console.warn('Nostalgist pressDown/pressUp error:', err);
+        }
+      }
+    }
+  }, []);
+
   // Keyboard mapping listeners
   useEffect(() => {
-    const handleKeyDown = (e: KeyboardEvent) => {
-      if (!engineRef.current) return;
+    const getTargetSystem = (): TargetSystem => {
+      const plat = (game?.platform || '').toUpperCase();
+      if (plat === 'NES') return 'NES';
+      if (plat === 'GBA' || plat.includes('ADVANCE')) return 'GBA';
+      return 'SNES';
+    };
 
-      // Global hotkeys
-      if (e.code === 'Space' && e.target === document.body) {
+    const handleKeyDown = (e: KeyboardEvent) => {
+      // 1. Strictly ignore untrusted/synthetic events to prevent recursion loops
+      if (!e.isTrusted) return;
+
+      // 2. Ignore if user is currently typing in an input, textarea, or select element
+      const activeEl = document.activeElement;
+      if (
+        activeEl &&
+        (activeEl.tagName === 'INPUT' ||
+          activeEl.tagName === 'TEXTAREA' ||
+          activeEl.tagName === 'SELECT')
+      ) {
+        return;
+      }
+
+      // 3. Global hotkeys
+      if (e.code === 'Space' && (e.target === document.body || e.target === canvasRef.current)) {
         e.preventDefault();
         togglePlayPause();
+        return;
       } else if (e.code === 'F2') {
         e.preventDefault();
         triggerQuickSave();
+        return;
       } else if (e.code === 'F4') {
         e.preventDefault();
         triggerQuickLoad();
-      } else if (e.code === 'Backspace') {
+        return;
+      } else if (e.code === 'Backspace' && (e.target === document.body || e.target === canvasRef.current)) {
         e.preventDefault();
         triggerRewind();
+        return;
       } else if (e.code === 'Tab') {
         e.preventDefault();
         cycleFastForward();
+        return;
       } else if (e.code === 'F8') {
         e.preventDefault();
         cycleShader();
+        return;
       } else if (e.code === 'F11') {
         e.preventDefault();
         toggleFullscreen();
+        return;
       } else if (e.code === 'F12') {
         e.preventDefault();
         triggerScreenshot();
+        return;
       }
 
-      // Game controller inputs
-      mapKeyCodeToInput(e.code, true);
+      // 4. Custom configured hotkeys
+      const sys = getTargetSystem();
+      const customAction = inputConfigService.getVirtualButtonForKeyboard(e.code, sys);
+      if (customAction) {
+        if (customAction === 'quickSave') {
+          triggerQuickSave();
+          e.preventDefault();
+          return;
+        }
+        if (customAction === 'quickLoad') {
+          triggerQuickLoad();
+          e.preventDefault();
+          return;
+        }
+        if (customAction === 'rewind') {
+          triggerRewind();
+          e.preventDefault();
+          return;
+        }
+        if (customAction === 'fastForward') {
+          cycleFastForward();
+          e.preventDefault();
+          return;
+        }
+        if (customAction === 'pause') {
+          togglePlayPause();
+          e.preventDefault();
+          return;
+        }
+      }
+
+      // 5. Prevent page scrolling for direction keys and Space
+      if (['ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight', 'Space'].includes(e.code)) {
+        e.preventDefault();
+      }
+
+      // 6. Update visual HUD signals
+      const btn = (customAction as keyof EmulatorInputState) || getButtonFromCode(e.code);
+      if (btn && btn in RETRO_KEY_MAPPING) {
+        setActiveSignals((prev) => ({ ...prev, [btn.toUpperCase()]: true }));
+      }
+
+      // 7. Route to Canvas Fallback Engine if active (Nostalgist not active)
+      if (engineRef.current && !nostalgistRef.current && btn) {
+        engineRef.current.setInput(btn, true);
+      }
+      // Note: If Nostalgist IS active, RetroArch natively receives physical keyboard events directly via Emscripten document listeners.
     };
 
     const handleKeyUp = (e: KeyboardEvent) => {
-      mapKeyCodeToInput(e.code, false);
-    };
+      if (!e.isTrusted) return;
 
-    const mapKeyCodeToInput = (code: string, pressed: boolean) => {
-      if (!engineRef.current) return;
-      const eng = engineRef.current;
-
-      switch (code) {
-        case 'ArrowUp':
-        case 'KeyW':
-          eng.setInput('up', pressed);
-          updateSignal('UP', pressed);
-          break;
-        case 'ArrowDown':
-        case 'KeyS':
-          eng.setInput('down', pressed);
-          updateSignal('DOWN', pressed);
-          break;
-        case 'ArrowLeft':
-        case 'KeyA':
-          eng.setInput('left', pressed);
-          updateSignal('LEFT', pressed);
-          break;
-        case 'ArrowRight':
-        case 'KeyD':
-          eng.setInput('right', pressed);
-          updateSignal('RIGHT', pressed);
-          break;
-        case 'KeyZ':
-          eng.setInput('b', pressed);
-          updateSignal('B', pressed);
-          break;
-        case 'KeyX':
-          eng.setInput('a', pressed);
-          updateSignal('A', pressed);
-          break;
-        case 'KeyA':
-          eng.setInput('x', pressed);
-          updateSignal('X', pressed);
-          break;
-        case 'KeyS':
-          eng.setInput('y', pressed);
-          updateSignal('Y', pressed);
-          break;
-        case 'KeyQ':
-          eng.setInput('l', pressed);
-          updateSignal('L', pressed);
-          break;
-        case 'KeyE':
-          eng.setInput('r', pressed);
-          updateSignal('R', pressed);
-          break;
-        case 'Enter':
-          eng.setInput('start', pressed);
-          updateSignal('START', pressed);
-          break;
-        case 'Space':
-          eng.setInput('select', pressed);
-          updateSignal('SELECT', pressed);
-          break;
+      const activeEl = document.activeElement;
+      if (
+        activeEl &&
+        (activeEl.tagName === 'INPUT' ||
+          activeEl.tagName === 'TEXTAREA' ||
+          activeEl.tagName === 'SELECT')
+      ) {
+        return;
       }
-    };
 
-    const updateSignal = (btn: string, val: boolean) => {
-      setActiveSignals(prev => ({ ...prev, [btn]: val }));
+      const sys = getTargetSystem();
+      const customAction = inputConfigService.getVirtualButtonForKeyboard(e.code, sys);
+      const btn = (customAction as keyof EmulatorInputState) || getButtonFromCode(e.code);
+      if (btn && btn in RETRO_KEY_MAPPING) {
+        setActiveSignals((prev) => ({ ...prev, [btn.toUpperCase()]: false }));
+      }
+
+      if (engineRef.current && !nostalgistRef.current && btn) {
+        engineRef.current.setInput(btn, false);
+      }
     };
 
     window.addEventListener('keydown', handleKeyDown);
@@ -347,7 +671,7 @@ export const EmulatorPage: React.FC<EmulatorPageProps> = ({
       window.removeEventListener('keydown', handleKeyDown);
       window.removeEventListener('keyup', handleKeyUp);
     };
-  }, [isPaused, currentSlot, fastForwardSpeed, visualSettings]);
+  }, [isPaused, currentSlot, fastForwardSpeed, visualSettings, game?.platform]);
 
   // Gamepad Connection and Action Event Listeners
   useEffect(() => {
@@ -378,17 +702,40 @@ export const EmulatorPage: React.FC<EmulatorPageProps> = ({
   }, [currentSlot, fastForwardSpeed, isPaused]);
 
   // Gamepad 60 FPS Polling Loop
+  const prevGamepadInputsRef = useRef<Record<string, boolean>>({});
+
   useEffect(() => {
     let animId: number;
 
     const pollGamepad = () => {
-      if (engineRef.current && !isPaused) {
-        const { inputs } = gamepadService.poll(engineRef.current.inputs);
+      if (!isPaused && (engineRef.current || nostalgistRef.current)) {
+        const plat = (game?.platform || '').toUpperCase();
+        const sys: TargetSystem = plat === 'NES' ? 'NES' : plat === 'GBA' || plat.includes('ADVANCE') ? 'GBA' : 'SNES';
+
+        const dummyBaseState: EmulatorInputState = {
+          up: false,
+          down: false,
+          left: false,
+          right: false,
+          a: false,
+          b: false,
+          x: false,
+          y: false,
+          l: false,
+          r: false,
+          start: false,
+          select: false,
+        };
+
+        const { inputs } = gamepadService.poll(dummyBaseState, sys);
+        const prev = prevGamepadInputsRef.current;
+
         for (const btn in inputs) {
           const k = btn as keyof EmulatorInputState;
-          if (inputs[k] !== engineRef.current.inputs[k]) {
-            engineRef.current.setInput(k, inputs[k]);
-            setActiveSignals((prev) => ({ ...prev, [k.toUpperCase()]: inputs[k] }));
+          const isPressed = !!inputs[k];
+          if (prev[k] !== isPressed) {
+            prev[k] = isPressed;
+            handleVirtualInput(k, isPressed);
           }
         }
       }
@@ -397,7 +744,7 @@ export const EmulatorPage: React.FC<EmulatorPageProps> = ({
 
     animId = requestAnimationFrame(pollGamepad);
     return () => cancelAnimationFrame(animId);
-  }, [isPaused]);
+  }, [isPaused, game?.platform]);
 
   const togglePlayPause = () => {
     if (nostalgistRef.current) {
@@ -507,12 +854,6 @@ export const EmulatorPage: React.FC<EmulatorPageProps> = ({
     }
   };
 
-  const handleVirtualInput = (btn: keyof EmulatorInputState, pressed: boolean) => {
-    if (engineRef.current) {
-      engineRef.current.setInput(btn, pressed);
-    }
-  };
-
   const aspectRatioClass =
     visualSettings.aspectRatio === '8:7' ? 'aspect-[8/7]' :
     visualSettings.aspectRatio === '16:9' ? 'aspect-[16/9]' :
@@ -530,111 +871,165 @@ export const EmulatorPage: React.FC<EmulatorPageProps> = ({
 
   return (
     <div className="fixed inset-0 top-0 left-0 w-screen h-screen bg-[#0c0e14] text-[#e2e2eb] flex flex-col z-50 overflow-hidden select-none">
-      {/* ================= TOP HEADER (Docked) ================= */}
-      <header className="bg-[#0c0e14]/90 backdrop-blur-md w-full px-4 lg:px-6 flex items-center justify-between h-14 border-b border-[#494454]/30 z-40 flex-shrink-0">
-        {/* Left Cluster */}
-        <div className="flex items-center gap-4">
-          <div className="font-bold text-[#d0bcff] flex items-center gap-1.5 uppercase text-sm tracking-wider">
-            <span className="material-symbols-outlined text-[#4cd7f6] fill-icon">sports_esports</span>
-            <span>RetroVerse</span>
-          </div>
-          <div className="h-5 w-px bg-[#494454]/40 hidden md:block"></div>
-
-          {/* Navigation Back */}
-          <button
-            onClick={onExit}
-            className="flex items-center gap-1 text-[#cbc3d7] hover:text-[#4cd7f6] transition-colors font-mono text-xs group"
-          >
-            <span className="material-symbols-outlined text-sm group-hover:-translate-x-0.5 transition-transform">arrow_back</span>
-            <span className="truncate max-w-[140px] sm:max-w-xs">{game.title}</span>
-            <span className="px-1.5 py-0.2 rounded bg-indigo-500/10 border border-indigo-400 text-indigo-300 text-[10px] ml-1">
-              {game.platform}
-            </span>
-          </button>
-        </div>
-
-        {/* Center: Game Platform Info */}
-        <div className="hidden lg:flex items-center gap-2">
-          {connectedGamepad && (
-            <div className="flex items-center gap-1.5 px-2.5 py-1 rounded bg-emerald-500/10 border border-emerald-500/30 text-xs font-mono text-emerald-400">
-              <span className="material-symbols-outlined text-xs">sports_esports</span>
-              <span>Tay cầm đã kết nối</span>
+      {/* ================= TOP HEADER (Docked - hidden in landscape touch mode for max screen area) ================= */}
+      {!(isHandheldTouchMode && effectiveOrientation === 'landscape') && (
+        <header className="bg-[#0c0e14]/90 backdrop-blur-md w-full px-2 sm:px-4 lg:px-6 flex items-center justify-between h-12 sm:h-14 border-b border-[#494454]/30 z-40 flex-shrink-0 max-w-full overflow-hidden">
+          {/* Left Cluster */}
+          <div className="flex items-center gap-1.5 sm:gap-4 min-w-0 flex-shrink">
+            <div className="font-bold text-[#d0bcff] flex items-center gap-1 uppercase text-xs sm:text-sm tracking-wider shrink-0">
+              <span className="material-symbols-outlined text-[#4cd7f6] fill-icon text-lg sm:text-xl">sports_esports</span>
+              <span className="hidden sm:inline">RetroVerse</span>
             </div>
-          )}
-        </div>
+            <div className="h-4 sm:h-5 w-px bg-[#494454]/40 hidden md:block"></div>
 
-        {/* Right Cluster: Actions */}
-        <div className="flex items-center gap-2">
-          {/* Handheld Touch Mode Switcher */}
-          <button
-            onClick={() => setIsHandheldTouchMode(!isHandheldTouchMode)}
-            className={`px-2.5 py-1 rounded-lg border font-mono text-xs flex items-center gap-1 transition-all ${
-              isHandheldTouchMode
-                ? 'bg-[#4cd7f6]/20 border-[#4cd7f6] text-[#4cd7f6]'
-                : 'bg-[#191b22] border-[#494454]/40 text-[#cbc3d7] hover:text-white'
-            }`}
-          >
-            <span className="material-symbols-outlined text-sm">phone_iphone</span>
-            <span className="hidden sm:inline">Handheld Touch</span>
-          </button>
+            {/* Navigation Back */}
+            <button
+              onClick={onExit}
+              className="flex items-center gap-1 text-[#cbc3d7] hover:text-[#4cd7f6] transition-colors font-mono text-xs group min-w-0"
+              title="Quay lại danh sách trò chơi"
+            >
+              <span className="material-symbols-outlined text-sm group-hover:-translate-x-0.5 transition-transform shrink-0">arrow_back</span>
+              <span className="truncate max-w-[85px] xs:max-w-[130px] sm:max-w-xs">{game.title}</span>
+              <span className="px-1 py-0.2 rounded bg-indigo-500/10 border border-indigo-400 text-indigo-300 text-[10px] shrink-0">
+                {game.platform}
+              </span>
+            </button>
+          </div>
 
-          {/* Visual Settings Menu Button */}
-          <button
-            onClick={() => setShowVisualSettingsModal(true)}
-            className="px-2.5 py-1 rounded-lg border border-[#494454]/40 bg-[#191b22] text-[#cbc3d7] hover:text-[#4cd7f6] hover:border-[#4cd7f6]/60 font-mono text-xs flex items-center gap-1.5 transition-all"
-            title="Visual Settings Menu: CRT Scanlines, Pixelated, LCD Grid (F8)"
-          >
-            <span className="material-symbols-outlined text-base text-[#d0bcff]">display_settings</span>
-            <span className="hidden sm:inline">{visualSettings.filter}</span>
-          </button>
+          {/* Center: Game Platform Info */}
+          <div className="hidden lg:flex items-center gap-2">
+            {connectedGamepad && (
+              <div className="flex items-center gap-1.5 px-2.5 py-1 rounded bg-emerald-500/10 border border-emerald-500/30 text-xs font-mono text-emerald-400">
+                <span className="material-symbols-outlined text-xs">sports_esports</span>
+                <span>Tay cầm đã kết nối</span>
+              </div>
+            )}
+          </div>
 
-          {/* Settings */}
-          <button
-            onClick={onOpenSettings}
-            className="p-1.5 text-[#cbc3d7] hover:text-white hover:bg-[#282a30] rounded-lg transition-colors"
-            title="Settings & Keybindings"
-          >
-            <span className="material-symbols-outlined text-lg">tune</span>
-          </button>
+          {/* Right Cluster: Actions */}
+          <div className="flex items-center gap-1 sm:gap-2 shrink-0">
+            {/* Orientation Switcher for Handheld Mode */}
+            {isHandheldTouchMode && (
+              <button
+                onClick={cycleOrientation}
+                className="p-1 sm:px-2.5 sm:py-1 rounded-lg border border-[#4cd7f6]/40 bg-[#4cd7f6]/10 text-[#4cd7f6] hover:bg-[#4cd7f6]/20 font-mono text-xs flex items-center gap-1 transition-all"
+                title="Đổi hướng màn hình (Dọc / Ngang / Tự động)"
+              >
+                <span className="material-symbols-outlined text-base sm:text-sm">
+                  {orientationMode === 'auto'
+                    ? 'screen_rotation'
+                    : effectiveOrientation === 'portrait'
+                    ? 'stay_current_portrait'
+                    : 'stay_current_landscape'}
+                </span>
+                <span className="hidden sm:inline">
+                  {orientationMode === 'auto'
+                    ? 'Tự động'
+                    : effectiveOrientation === 'portrait'
+                    ? 'Dọc'
+                    : 'Ngang'}
+                </span>
+              </button>
+            )}
 
-          {/* Fullscreen */}
-          <button
-            onClick={toggleFullscreen}
-            className="p-1.5 text-[#cbc3d7] hover:text-[#4cd7f6] hover:bg-[#282a30] rounded-lg transition-colors"
-            title="Toggle Fullscreen (F11)"
-          >
-            <span className="material-symbols-outlined text-lg">fullscreen</span>
-          </button>
+            {/* Handheld Touch Mode Switcher */}
+            <button
+              onClick={() => setIsHandheldTouchMode(!isHandheldTouchMode)}
+              className={`p-1 sm:px-2.5 sm:py-1 rounded-lg border font-mono text-xs flex items-center gap-1 transition-all ${
+                isHandheldTouchMode
+                  ? 'bg-[#4cd7f6]/20 border-[#4cd7f6] text-[#4cd7f6]'
+                  : 'bg-[#191b22] border-[#494454]/40 text-[#cbc3d7] hover:text-white'
+              }`}
+              title="Chế độ tay cầm cảm ứng"
+            >
+              <span className="material-symbols-outlined text-base sm:text-sm">phone_iphone</span>
+              <span className="hidden md:inline">Touch</span>
+            </button>
 
-          {/* Power / Exit */}
-          <button
-            onClick={onExit}
-            className="p-1.5 text-rose-400 hover:bg-rose-950/40 rounded-lg transition-colors"
-            title="Exit Session"
-          >
-            <span className="material-symbols-outlined text-lg">power_settings_new</span>
-          </button>
-        </div>
-      </header>
+            {/* Visual Settings Menu Button */}
+            <button
+              onClick={() => setShowVisualSettingsModal(true)}
+              className="p-1 sm:px-2.5 sm:py-1 rounded-lg border border-[#494454]/40 bg-[#191b22] text-[#cbc3d7] hover:text-[#4cd7f6] hover:border-[#4cd7f6]/60 font-mono text-xs flex items-center gap-1 transition-all"
+              title="Bộ lọc hình ảnh CRT / Pixel (F8)"
+            >
+              <span className="material-symbols-outlined text-base text-[#d0bcff]">display_settings</span>
+              <span className="hidden md:inline">{visualSettings.filter}</span>
+            </button>
+
+            {/* Settings */}
+            <button
+              onClick={onOpenSettings}
+              className="p-1 sm:p-1.5 text-[#cbc3d7] hover:text-white hover:bg-[#282a30] rounded-lg transition-colors"
+              title="Cài đặt & Phím bấm"
+            >
+              <span className="material-symbols-outlined text-base sm:text-lg">tune</span>
+            </button>
+
+            {/* Fullscreen */}
+            <button
+              onClick={toggleFullscreen}
+              className="p-1 sm:p-1.5 text-[#cbc3d7] hover:text-[#4cd7f6] hover:bg-[#282a30] rounded-lg transition-colors hidden xs:flex"
+              title="Toàn màn hình (F11)"
+            >
+              <span className="material-symbols-outlined text-base sm:text-lg">fullscreen</span>
+            </button>
+
+            {/* Power / Exit */}
+            <button
+              onClick={onExit}
+              className="p-1 sm:p-1.5 text-rose-400 hover:bg-rose-950/40 rounded-lg transition-colors"
+              title="Thoát trò chơi"
+            >
+              <span className="material-symbols-outlined text-base sm:text-lg">power_settings_new</span>
+            </button>
+          </div>
+        </header>
+      )}
 
       {/* ================= MAIN EMULATOR WORKSPACE ================= */}
       <div className="flex-1 flex overflow-hidden relative">
         {/* PRIMARY STAGE (Retro Game Viewport Canvas 4:3) */}
-        <section className="flex-1 relative flex flex-col items-center justify-center p-2 lg:p-4 bg-[#0c0e14] overflow-hidden">
+        <section
+          className={
+            !isHandheldTouchMode
+              ? 'flex-1 relative flex flex-col items-center justify-center p-2 lg:p-4 bg-[#0c0e14] overflow-hidden'
+              : effectiveOrientation === 'landscape'
+              ? 'flex-1 w-full h-full relative flex items-center justify-center overflow-hidden bg-black'
+              : 'flex-1 w-full h-full flex flex-col justify-between items-center p-0 sm:p-1 bg-[#080a12] overflow-hidden relative max-w-full'
+          }
+        >
           {/* Subtle Ambient Glow Backdrop */}
           <div className="absolute inset-0 flex items-center justify-center pointer-events-none opacity-20 blur-3xl">
             <div className="w-[500px] h-[380px] bg-[#a078ff] rounded-full mix-blend-screen"></div>
             <div className="w-[400px] h-[320px] bg-[#4cd7f6] rounded-full mix-blend-screen -ml-32"></div>
           </div>
 
-          {/* Emulation Screen Bezel Frame (Dynamic Aspect Ratio & CRT Curvature/Bloom) */}
-          <div className={`relative w-full max-w-[900px] ${aspectRatioClass} max-h-[calc(100vh-11rem)] flex items-center justify-center group rounded-lg overflow-hidden border border-[#494454]/50 bg-black shadow-2xl ${curvatureClass} ${bloomClass}`}>
+          {/* Top Canvas Container Wrapper (ensures un-squashed 4:3 aspect ratio in portrait handheld mode) */}
+          <div
+            className={
+              isHandheldTouchMode && effectiveOrientation === 'portrait'
+                ? 'flex-1 min-h-0 w-full flex items-center justify-center p-1 relative'
+                : 'contents'
+            }
+          >
+            {/* Emulation Screen Bezel Frame (Dynamic Aspect Ratio & CRT Curvature/Bloom) */}
+            <div
+              className={
+                !isHandheldTouchMode
+                  ? `relative w-full max-w-[900px] ${aspectRatioClass} max-h-[calc(100vh-11rem)] flex items-center justify-center group rounded-lg overflow-hidden border border-[#494454]/50 bg-black shadow-2xl ${curvatureClass} ${bloomClass}`
+                  : effectiveOrientation === 'landscape'
+                  ? `relative h-full max-h-screen aspect-[4/3] max-w-full flex items-center justify-center bg-black overflow-hidden shadow-2xl ${curvatureClass} ${bloomClass}`
+                  : `relative h-full max-h-full aspect-[4/3] max-w-full flex items-center justify-center group rounded-2xl overflow-hidden border-2 sm:border-4 border-[#242735] bg-black shadow-2xl ${curvatureClass} ${bloomClass}`
+              }
+            >
             {/* Real Canvas Display */}
             <canvas
               ref={canvasRef}
               width={256}
               height={224}
-              className={`w-full h-full object-contain ${visualSettings.filter === 'Pixelated' ? 'filter-pixelated' : '[image-rendering:pixelated]'} ${!hasRom ? 'hidden' : 'block'}`}
+              tabIndex={0}
+              onClick={() => canvasRef.current?.focus()}
+              className={`w-full h-full object-contain outline-none ${visualSettings.filter === 'Pixelated' ? 'filter-pixelated' : '[image-rendering:pixelated]'}`}
               style={colorTintStyle}
             />
 
@@ -699,13 +1094,49 @@ export const EmulatorPage: React.FC<EmulatorPageProps> = ({
             {loadError && (
               <div className="absolute inset-0 bg-[#0c0e14]/95 flex flex-col items-center justify-center p-6 text-center z-30">
                 <span className="material-symbols-outlined text-rose-400 text-4xl mb-2">error</span>
-                <p className="text-sm text-rose-300 font-mono mb-4">{loadError}</p>
-                <button
-                  onClick={() => fileInputRef.current?.click()}
-                  className="px-4 py-2 rounded-lg bg-[#4cd7f6] text-[#003641] font-bold text-xs"
-                >
-                  Chọn tệp ROM khác
-                </button>
+                <p className="text-sm text-rose-300 font-mono mb-2 max-w-md">{loadError}</p>
+                <p className="text-xs text-[#958ea0] mb-5 max-w-sm">
+                  Đảm bảo tệp ROM có định dạng hợp lệ ({game.platform}: .nes, .smc, .sfc, .gba) hoặc thử tải lại.
+                </p>
+                <div className="flex flex-wrap items-center justify-center gap-3">
+                  <button
+                    onClick={async () => {
+                      let stored = romStorage.getRom(game.id);
+                      if (!stored) {
+                        stored = await romStorage.getRomAsync(game.id);
+                      }
+                      if (stored) {
+                        launchRealEmulator(stored.data, stored.filename, stored.platform || game.platform);
+                      } else {
+                        fileInputRef.current?.click();
+                      }
+                    }}
+                    className="px-4 py-2 rounded-lg bg-[#4cd7f6] text-[#003641] font-bold text-xs flex items-center gap-1.5 shadow-md hover:bg-[#70e0f8] transition-colors"
+                  >
+                    <span className="material-symbols-outlined text-sm">replay</span>
+                    <span>Thử lại WebAssembly</span>
+                  </button>
+                  <button
+                    onClick={launchCanvasFallback}
+                    className="px-4 py-2 rounded-lg bg-amber-500/20 border border-amber-500/40 text-amber-300 hover:bg-amber-500/30 font-bold text-xs flex items-center gap-1.5 transition-colors"
+                  >
+                    <span className="material-symbols-outlined text-sm">view_in_ar</span>
+                    <span>Chạy bằng Engine Canvas</span>
+                  </button>
+                  <button
+                    onClick={() => fileInputRef.current?.click()}
+                    className="px-4 py-2 rounded-lg bg-[#1e1f26] border border-[#494454]/40 text-[#e2e2eb] hover:border-[#4cd7f6] hover:text-[#4cd7f6] font-bold text-xs flex items-center gap-1.5 transition-colors"
+                  >
+                    <span className="material-symbols-outlined text-sm">upload_file</span>
+                    <span>Chọn tệp ROM khác</span>
+                  </button>
+                  <button
+                    onClick={onExit}
+                    className="px-4 py-2 rounded-lg bg-[#1e1f26] border border-[#494454]/30 text-[#958ea0] hover:text-white text-xs transition-colors"
+                  >
+                    Quay lại
+                  </button>
+                </div>
               </div>
             )}
 
@@ -770,6 +1201,7 @@ export const EmulatorPage: React.FC<EmulatorPageProps> = ({
               </div>
             )}
           </div>
+        </div>
 
           {/* DOCKED FLOATING EMULATOR CONTROL BAR */}
           {!isHandheldTouchMode && (
@@ -931,10 +1363,84 @@ export const EmulatorPage: React.FC<EmulatorPageProps> = ({
             </div>
           )}
 
-          {/* Virtual Gamepad for Handheld Mode */}
-          {isHandheldTouchMode && (
-            <div className="w-full max-w-lg mt-2">
-              <VirtualGamepad onInput={handleVirtualInput} />
+          {/* PORTRAIT HANDHELD CONSOLE DECK */}
+          {isHandheldTouchMode && effectiveOrientation === 'portrait' && (
+            <div className="flex-shrink-0 w-full max-w-md mx-auto z-20 px-0.5 sm:px-1">
+              <VirtualGamepad
+                layout="portrait"
+                onInput={handleVirtualInput}
+                platform={game?.platform}
+                onTriggerQuickSave={triggerQuickSave}
+                onTriggerQuickLoad={triggerQuickLoad}
+                onTriggerRewind={triggerRewind}
+                onCycleFastForward={cycleFastForward}
+                onTogglePause={togglePlayPause}
+                isPaused={isPaused}
+                fastForwardSpeed={fastForwardSpeed}
+                currentSlot={currentSlot}
+              />
+            </div>
+          )}
+
+          {/* LANDSCAPE MINIMAL TOP HUD PILL */}
+          {isHandheldTouchMode && effectiveOrientation === 'landscape' && (
+            <div className="absolute top-2.5 left-1/2 -translate-x-1/2 z-40 flex items-center gap-2 bg-[#12141c]/85 backdrop-blur-md px-3.5 py-1 rounded-full border border-[#494454]/40 shadow-xl pointer-events-auto">
+              <button
+                onClick={onExit}
+                className="text-xs text-[#cbc3d7] hover:text-white flex items-center gap-1 font-mono transition-colors"
+                title="Thoát trò chơi"
+              >
+                <span className="material-symbols-outlined text-sm">arrow_back</span>
+                <span className="truncate max-w-[120px]">{game.title}</span>
+              </button>
+              <div className="w-px h-3.5 bg-[#494454]/40"></div>
+              <button
+                onClick={cycleOrientation}
+                className="text-[#4cd7f6] text-[11px] font-mono flex items-center gap-0.5 hover:text-white transition-colors"
+                title="Đổi hướng màn hình (Dọc / Ngang / Tự động)"
+              >
+                <span className="material-symbols-outlined text-xs">
+                  {orientationMode === 'auto'
+                    ? 'screen_rotation'
+                    : 'stay_current_landscape'}
+                </span>
+                <span>{orientationMode === 'auto' ? 'Auto' : 'Ngang'}</span>
+              </button>
+              <div className="w-px h-3.5 bg-[#494454]/40"></div>
+              <button
+                onClick={() => setShowVisualSettingsModal(true)}
+                className="text-[#d0bcff] text-[11px] font-mono flex items-center gap-0.5 hover:text-white transition-colors"
+                title="Bộ lọc hình ảnh CRT / Pixel"
+              >
+                <span className="material-symbols-outlined text-xs">display_settings</span>
+              </button>
+              <div className="w-px h-3.5 bg-[#494454]/40"></div>
+              <button
+                onClick={() => setIsHandheldTouchMode(false)}
+                className="text-[#cbc3d7] text-[11px] font-mono flex items-center gap-0.5 hover:text-white transition-colors"
+                title="Chuyển sang chế độ PC"
+              >
+                <span className="material-symbols-outlined text-xs">computer</span>
+              </button>
+            </div>
+          )}
+
+          {/* LANDSCAPE FLOATING OVERLAY GAMEPAD */}
+          {isHandheldTouchMode && effectiveOrientation === 'landscape' && (
+            <div className="absolute inset-0 pointer-events-none z-30 flex flex-col justify-between">
+              <VirtualGamepad
+                layout="landscape"
+                onInput={handleVirtualInput}
+                platform={game?.platform}
+                onTriggerQuickSave={triggerQuickSave}
+                onTriggerQuickLoad={triggerQuickLoad}
+                onTriggerRewind={triggerRewind}
+                onCycleFastForward={cycleFastForward}
+                onTogglePause={togglePlayPause}
+                isPaused={isPaused}
+                fastForwardSpeed={fastForwardSpeed}
+                currentSlot={currentSlot}
+              />
             </div>
           )}
         </section>

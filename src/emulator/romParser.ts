@@ -232,6 +232,48 @@ export function parseRom(arg1: string | ArrayBuffer | Uint8Array, arg2?: string 
       isValidDump: true,
       dumpStatus: 'No-Intro Clean'
     };
+  } else if (ext === 'zip' || (bytes[0] === 0x50 && bytes[1] === 0x4B && bytes[2] === 0x03 && bytes[3] === 0x04)) {
+    // Inspect ZIP file headers to identify inner ROM file
+    const innerFileName = findInnerFileInZip(bytes);
+    const innerExt = innerFileName ? innerFileName.split('.').pop()?.toLowerCase() || '' : '';
+    let innerPlat: 'NES' | 'SNES' | 'GBA' | 'GENESIS' | 'UNKNOWN' = 'UNKNOWN';
+
+    if (innerExt === 'nes') innerPlat = 'NES';
+    else if (innerExt === 'sfc' || innerExt === 'smc') innerPlat = 'SNES';
+    else if (innerExt === 'gba') innerPlat = 'GBA';
+    else if (innerExt === 'md' || innerExt === 'gen') innerPlat = 'GENESIS';
+    else {
+      // Fallback heuristics from ZIP archive filename
+      const fnLower = filename.toLowerCase();
+      if (fnLower.includes('gba') || fnLower.includes('advance')) innerPlat = 'GBA';
+      else if (fnLower.includes('snes') || fnLower.includes('super')) innerPlat = 'SNES';
+      else if (fnLower.includes('nes')) innerPlat = 'NES';
+    }
+
+    const cleanTitle = (innerFileName || filename)
+      .replace(/\.(nes|smc|sfc|gba|bin|zip|7z)$/i, '')
+      .replace(/[\[\(].*?[\]\)]/g, '')
+      .replace(/[_\-]+/g, ' ')
+      .trim();
+
+    return {
+      filename,
+      sizeBytes,
+      platform: innerPlat,
+      internalTitle: cleanTitle || 'Compressed Retro Game',
+      romSpeedAndType: `ZIP Archive (${innerFileName ? `Chứa: ${innerFileName}` : 'Nén Zip'})`,
+      sramSize: 'Tự động quản lý',
+      hasBattery: true,
+      coProcessor: 'Zip Compressed Core',
+      videoStandard: 'NTSC 60Hz',
+      region: 'Global',
+      headerOffset: '0x000000 (ZIP)',
+      md5,
+      sha1,
+      crc32,
+      isValidDump: true,
+      dumpStatus: 'No-Intro Clean'
+    };
   }
 
   return {
@@ -252,4 +294,41 @@ export function parseRom(arg1: string | ArrayBuffer | Uint8Array, arg2?: string 
     isValidDump: true,
     dumpStatus: 'Homebrew / Custom'
   };
+}
+
+function findInnerFileInZip(bytes: Uint8Array): string | null {
+  if (bytes.length < 30 || bytes[0] !== 0x50 || bytes[1] !== 0x4B) return null;
+  let offset = 0;
+  while (offset + 30 < bytes.length) {
+    if (bytes[offset] === 0x50 && bytes[offset + 1] === 0x4B && bytes[offset + 2] === 0x03 && bytes[offset + 3] === 0x04) {
+      const fileNameLen = bytes[offset + 26] | (bytes[offset + 27] << 8);
+      const nameStart = offset + 30;
+      if (nameStart + fileNameLen <= bytes.length) {
+        const nameBytes = bytes.slice(nameStart, nameStart + fileNameLen);
+        let name = '';
+        for (let i = 0; i < nameBytes.length; i++) {
+          name += String.fromCharCode(nameBytes[i]);
+        }
+        const lower = name.toLowerCase();
+        if (
+          lower.endsWith('.nes') ||
+          lower.endsWith('.sfc') ||
+          lower.endsWith('.smc') ||
+          lower.endsWith('.gba') ||
+          lower.endsWith('.gb') ||
+          lower.endsWith('.gbc') ||
+          lower.endsWith('.md') ||
+          lower.endsWith('.gen') ||
+          lower.endsWith('.bin')
+        ) {
+          return name;
+        }
+      }
+      offset += 30 + fileNameLen;
+    } else {
+      offset++;
+      if (offset > 4096) break;
+    }
+  }
+  return null;
 }
