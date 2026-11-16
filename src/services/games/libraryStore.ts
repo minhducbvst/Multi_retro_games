@@ -22,6 +22,10 @@ export function getCartridgeCoverArt(title: string, platform: Platform | string)
     bgGradient = 'from-rose-950 via-slate-900 to-black';
     accentColor = '#fb7185';
     badgeColor = 'bg-rose-500/20 text-rose-300 border-rose-400/40';
+  } else if (plat.includes('GENESIS') || plat.includes('SEGA') || plat.includes('MEGA')) {
+    bgGradient = 'from-emerald-950 via-slate-900 to-black';
+    accentColor = '#34d399';
+    badgeColor = 'bg-emerald-500/20 text-emerald-300 border-emerald-400/40';
   }
 
   // Generate SVG data URL for crisp retro cartridge artwork
@@ -148,6 +152,19 @@ class LibraryStore {
             );
             if (isSample) return false;
 
+            // Strictly filter out any Java / J2ME / .jar leftover items
+            if (
+              g.platform === 'JAVA' ||
+              idLower.startsWith('java-') ||
+              titleLower.includes('j2me') ||
+              titleLower.includes('bounce tales') ||
+              titleLower.includes('diamond rush') ||
+              titleLower.includes('space impact') ||
+              (g.romFilename && (g.romFilename.endsWith('.jar') || g.romFilename.endsWith('.jad')))
+            ) {
+              return false;
+            }
+
             // Must be user custom uploaded or drive scanned
             return (
               g.source === 'local' ||
@@ -156,6 +173,8 @@ class LibraryStore {
               idLower.startsWith('drive-')
             );
           });
+          // Persist the sanitized library list
+          localStorage.setItem(STORAGE_KEY, JSON.stringify(this.games));
         } else {
           this.games = [];
         }

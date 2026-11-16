@@ -1,4 +1,4 @@
-export type Platform = 'NES' | 'SNES' | 'GBA' | 'GENESIS';
+export type Platform = 'NES' | 'SNES' | 'GBA' | 'GENESIS' | 'GB' | 'GBC';
 
 export interface Game {
   id: string;
@@ -81,9 +81,9 @@ export interface NetPlayRoom {
   hostUid: string;
   hostName: string;
   hostAvatar?: string;
-  guestUid?: string;
-  guestName?: string;
-  guestAvatar?: string;
+  guestUid?: string | null;
+  guestName?: string | null;
+  guestAvatar?: string | null;
   gameId: string;
   gameTitle: string;
   platform: Platform;
@@ -92,6 +92,8 @@ export interface NetPlayRoom {
   hostReady: boolean;
   guestReady: boolean;
   pingMs: number;
+  hostPingMs?: number;
+  guestPingMs?: number;
   spectators: { id: string; name: string; latencyMs: number }[];
   rollbackFrames: number;
   inputDelayTarget: string;
@@ -116,7 +118,7 @@ export interface SignalingMessage {
   roomId: string;
   senderUid: string;
   targetUid?: string;
-  type: 'offer' | 'answer' | 'candidate';
+  type: 'offer' | 'answer' | 'candidate' | 'renegotiate' | 'bye';
   payload: string;
   createdAt: string;
 }
@@ -190,3 +192,4 @@ export interface EmulatorTelemetry {
   bufferHealth?: number;
   sampleRate?: number;
 }
+

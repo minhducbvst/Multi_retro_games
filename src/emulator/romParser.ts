@@ -232,6 +232,78 @@ export function parseRom(arg1: string | ArrayBuffer | Uint8Array, arg2?: string 
       isValidDump: true,
       dumpStatus: 'No-Intro Clean'
     };
+  } else if (ext === 'gb' || ext === 'gbc') {
+    // Game Boy / Game Boy Color (Runs on mGBA core, mapped as GBA controller)
+    let title = '';
+    if (sizeBytes > 0x134 + 16) {
+      for (let i = 0; i < 16; i++) {
+        const c = bytes[0x134 + i];
+        if (c >= 32 && c <= 126) title += String.fromCharCode(c);
+      }
+    }
+    const cleanAlpha = title.replace(/[^a-zA-Z0-9]/g, '');
+    const cleanFromFilename = filename
+      .replace(/\.(gb|gbc|bin|zip|7z)$/i, '')
+      .replace(/[\[\(].*?[\]\)]/g, '')
+      .replace(/[_\-]+/g, ' ')
+      .trim();
+
+    const finalTitle = cleanAlpha.length >= 3 ? title.trim() : cleanFromFilename || (ext === 'gbc' ? 'Game Boy Color' : 'Game Boy');
+
+    return {
+      filename,
+      sizeBytes,
+      platform: 'GBA',
+      internalTitle: finalTitle,
+      romSpeedAndType: ext === 'gbc' ? '8-Bit Sharp LR35902 (8.388 MHz CGB)' : '8-Bit Sharp LR35902 (4.194 MHz DMG)',
+      sramSize: '32 KB Cartridge RAM / Battery',
+      hasBattery: true,
+      coProcessor: 'MBC1/MBC3/MBC5 Cartridge Controller',
+      videoStandard: '160x144 LCD 59.73Hz',
+      region: 'Worldwide',
+      headerOffset: '0x000134',
+      md5,
+      sha1,
+      crc32,
+      isValidDump: true,
+      dumpStatus: 'No-Intro Clean'
+    };
+  } else if (ext === 'md' || ext === 'gen' || ext === 'smd') {
+    // Sega Genesis / Mega Drive Header inspection at 0x120 or 0x150
+    let title = '';
+    if (sizeBytes > 0x150 + 48) {
+      for (let i = 0; i < 48; i++) {
+        const c = bytes[0x150 + i];
+        if (c >= 32 && c <= 126) title += String.fromCharCode(c);
+      }
+    }
+    const cleanAlpha = title.replace(/[^a-zA-Z0-9]/g, '');
+    const cleanFromFilename = filename
+      .replace(/\.(md|gen|smd|bin|zip|7z)$/i, '')
+      .replace(/[\[\(].*?[\]\)]/g, '')
+      .replace(/[_\-]+/g, ' ')
+      .trim();
+
+    const finalTitle = cleanAlpha.length >= 3 ? title.trim() : cleanFromFilename || 'Sega Mega Drive Game';
+
+    return {
+      filename,
+      sizeBytes,
+      platform: 'GENESIS',
+      internalTitle: finalTitle,
+      romSpeedAndType: '16-bit Motorola 68000 @ 7.6 MHz + Z80',
+      sramSize: '64 KB VRAM + Battery Save',
+      hasBattery: true,
+      coProcessor: 'Yamaha YM2612 FM Sound Synth',
+      videoStandard: 'NTSC 60Hz (320x224)',
+      region: 'Japan / USA / Europe',
+      headerOffset: '0x000150 (SEGA)',
+      md5,
+      sha1,
+      crc32,
+      isValidDump: true,
+      dumpStatus: 'No-Intro Clean'
+    };
   } else if (ext === 'zip' || (bytes[0] === 0x50 && bytes[1] === 0x4B && bytes[2] === 0x03 && bytes[3] === 0x04)) {
     // Inspect ZIP file headers to identify inner ROM file
     const innerFileName = findInnerFileInZip(bytes);

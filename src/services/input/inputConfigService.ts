@@ -1,6 +1,6 @@
 import { EmulatorInputState } from '../../emulator/engine';
 
-export type TargetSystem = 'NES' | 'SNES' | 'GBA';
+export type TargetSystem = 'NES' | 'SNES' | 'GBA' | 'GENESIS';
 
 export type VirtualControllerButton =
   | 'up'
@@ -89,6 +89,22 @@ export const SYSTEM_BUTTONS: Record<TargetSystem, { id: VirtualControllerButton;
     { id: 'fastForward', name: 'Tua nhanh (Fast Forward)', category: 'hotkey' },
     { id: 'pause', name: 'Tạm dừng (Pause / Resume)', category: 'hotkey' },
   ],
+  GENESIS: [
+    { id: 'up', name: 'D-Pad Lên (Up)', category: 'dpad' },
+    { id: 'down', name: 'D-Pad Xuống (Down)', category: 'dpad' },
+    { id: 'left', name: 'D-Pad Trái (Left)', category: 'dpad' },
+    { id: 'right', name: 'D-Pad Phải (Right)', category: 'dpad' },
+    { id: 'b', name: 'Nút A (Tấn công / Nhảy)', category: 'face' },
+    { id: 'a', name: 'Nút B (Hành động chính)', category: 'face' },
+    { id: 'y', name: 'Nút C (Nhảy / Phụ)', category: 'face' },
+    { id: 'start', name: 'Start', category: 'meta' },
+    { id: 'select', name: 'Mode / Select', category: 'meta' },
+    { id: 'quickSave', name: 'Lưu nhanh (Quick Save)', category: 'hotkey' },
+    { id: 'quickLoad', name: 'Nạp nhanh (Quick Load)', category: 'hotkey' },
+    { id: 'rewind', name: 'Tua lại (Rewind 5s)', category: 'hotkey' },
+    { id: 'fastForward', name: 'Tua nhanh (Fast Forward)', category: 'hotkey' },
+    { id: 'pause', name: 'Tạm dừng (Pause / Resume)', category: 'hotkey' },
+  ],
 };
 
 const DEFAULT_SNES_KEYBOARD: Record<VirtualControllerButton, KeyBinding> = {
@@ -136,8 +152,8 @@ const DEFAULT_NES_KEYBOARD: Record<VirtualControllerButton, KeyBinding> = {
   down: { code: 'ArrowDown', label: '↓ Phím Mũi Tên Xuống' },
   left: { code: 'ArrowLeft', label: '← Phím Mũi Tên Trái' },
   right: { code: 'ArrowRight', label: '→ Phím Mũi Tên Phải' },
-  b: { code: 'KeyZ', label: 'Z' },
-  a: { code: 'KeyX', label: 'X' },
+  b: { code: 'KeyZ', label: 'Z (Nút B)' },
+  a: { code: 'KeyX', label: 'X (Nút A)' },
   y: { code: '', label: 'Chưa gán' },
   x: { code: '', label: 'Chưa gán' },
   l: { code: '', label: 'Chưa gán' },
@@ -176,12 +192,12 @@ const DEFAULT_GBA_KEYBOARD: Record<VirtualControllerButton, KeyBinding> = {
   down: { code: 'ArrowDown', label: '↓ Phím Mũi Tên Xuống' },
   left: { code: 'ArrowLeft', label: '← Phím Mũi Tên Trái' },
   right: { code: 'ArrowRight', label: '→ Phím Mũi Tên Phải' },
-  b: { code: 'KeyZ', label: 'Z' },
-  a: { code: 'KeyX', label: 'X' },
+  b: { code: 'KeyZ', label: 'Z (Nút B)' },
+  a: { code: 'KeyX', label: 'X (Nút A)' },
   y: { code: '', label: 'Chưa gán' },
   x: { code: '', label: 'Chưa gán' },
-  l: { code: 'KeyQ', label: 'Q' },
-  r: { code: 'KeyE', label: 'E' },
+  l: { code: 'KeyQ', label: 'Q (Vai L)' },
+  r: { code: 'KeyE', label: 'E (Vai R)' },
   select: { code: 'ShiftRight', label: 'Shift Phải' },
   start: { code: 'Enter', label: 'Enter' },
   quickSave: { code: 'F2', label: 'F2' },
@@ -211,8 +227,48 @@ const DEFAULT_GBA_GAMEPAD: Record<VirtualControllerButton, GamepadBinding> = {
   pause: { buttonIndex: 16, label: 'Btn 16 (Home)' },
 };
 
+const DEFAULT_GENESIS_KEYBOARD: Record<VirtualControllerButton, KeyBinding> = {
+  up: { code: 'ArrowUp', label: '↑ Phím Mũi Tên Lên' },
+  down: { code: 'ArrowDown', label: '↓ Phím Mũi Tên Xuống' },
+  left: { code: 'ArrowLeft', label: '← Phím Mũi Tên Trái' },
+  right: { code: 'ArrowRight', label: '→ Phím Mũi Tên Phải' },
+  b: { code: 'KeyA', label: 'A (Genesis Nút A)' },
+  a: { code: 'KeyS', label: 'S (Genesis Nút B)' },
+  y: { code: 'KeyD', label: 'D (Genesis Nút C)' },
+  x: { code: '', label: 'Chưa gán' },
+  l: { code: '', label: 'Chưa gán' },
+  r: { code: '', label: 'Chưa gán' },
+  select: { code: 'ShiftRight', label: 'Mode' },
+  start: { code: 'Enter', label: 'Start' },
+  quickSave: { code: 'F2', label: 'F2' },
+  quickLoad: { code: 'F4', label: 'F4' },
+  rewind: { code: 'Backspace', label: 'Backspace' },
+  fastForward: { code: 'Tab', label: 'Tab' },
+  pause: { code: 'Space', label: 'Space' },
+};
+
+const DEFAULT_GENESIS_GAMEPAD: Record<VirtualControllerButton, GamepadBinding> = {
+  up: { buttonIndex: 12, label: 'D-Pad Lên (Btn 12)' },
+  down: { buttonIndex: 13, label: 'D-Pad Xuống (Btn 13)' },
+  left: { buttonIndex: 14, label: 'D-Pad Trái (Btn 14)' },
+  right: { buttonIndex: 15, label: 'D-Pad Phải (Btn 15)' },
+  b: { buttonIndex: 2, label: 'Btn 2 (Genesis A / Xbox X)' },
+  a: { buttonIndex: 0, label: 'Btn 0 (Genesis B / Xbox A)' },
+  y: { buttonIndex: 1, label: 'Btn 1 (Genesis C / Xbox B)' },
+  x: { buttonIndex: -1, label: 'Chưa gán' },
+  l: { buttonIndex: -1, label: 'Chưa gán' },
+  r: { buttonIndex: -1, label: 'Chưa gán' },
+  select: { buttonIndex: 8, label: 'Btn 8 (Mode)' },
+  start: { buttonIndex: 9, label: 'Btn 9 (Start)' },
+  quickSave: { buttonIndex: 10, label: 'Btn 10 (L3)' },
+  quickLoad: { buttonIndex: 11, label: 'Btn 11 (R3)' },
+  rewind: { buttonIndex: 6, label: 'Btn 6 (L2)' },
+  fastForward: { buttonIndex: 7, label: 'Btn 7 (R2)' },
+  pause: { buttonIndex: 16, label: 'Btn 16 (Home)' },
+};
+
 export class InputConfigService {
-  private storageKey = 'retroverse_input_config_v3';
+  private storageKey = 'retroverse_input_config_v4';
   private configs: Record<TargetSystem, SystemInputMap>;
   private changeListeners: Array<() => void> = [];
 
@@ -221,6 +277,7 @@ export class InputConfigService {
       NES: { keyboard: { ...DEFAULT_NES_KEYBOARD }, gamepad: { ...DEFAULT_NES_GAMEPAD } },
       SNES: { keyboard: { ...DEFAULT_SNES_KEYBOARD }, gamepad: { ...DEFAULT_SNES_GAMEPAD } },
       GBA: { keyboard: { ...DEFAULT_GBA_KEYBOARD }, gamepad: { ...DEFAULT_GBA_GAMEPAD } },
+      GENESIS: { keyboard: { ...DEFAULT_GENESIS_KEYBOARD }, gamepad: { ...DEFAULT_GENESIS_GAMEPAD } },
     };
     this.loadFromStorage();
   }
@@ -234,6 +291,7 @@ export class InputConfigService {
         if (parsed.NES) this.configs.NES = parsed.NES;
         if (parsed.SNES) this.configs.SNES = parsed.SNES;
         if (parsed.GBA) this.configs.GBA = parsed.GBA;
+        if (parsed.GENESIS) this.configs.GENESIS = parsed.GENESIS;
       }
     } catch (e) {
       console.warn('Could not load input config from localStorage', e);
@@ -251,7 +309,7 @@ export class InputConfigService {
   }
 
   public getSystemConfig(system: TargetSystem): SystemInputMap {
-    return this.configs[system];
+    return this.configs[system] || this.configs.SNES;
   }
 
   public setKeyboardBinding(system: TargetSystem, button: VirtualControllerButton, binding: KeyBinding): void {
@@ -280,6 +338,8 @@ export class InputConfigService {
       this.configs.SNES = { keyboard: { ...DEFAULT_SNES_KEYBOARD }, gamepad: { ...DEFAULT_SNES_GAMEPAD } };
     } else if (system === 'GBA') {
       this.configs.GBA = { keyboard: { ...DEFAULT_GBA_KEYBOARD }, gamepad: { ...DEFAULT_GBA_GAMEPAD } };
+    } else if (system === 'GENESIS') {
+      this.configs.GENESIS = { keyboard: { ...DEFAULT_GENESIS_KEYBOARD }, gamepad: { ...DEFAULT_GENESIS_GAMEPAD } };
     }
     this.saveToStorage();
   }
@@ -288,6 +348,7 @@ export class InputConfigService {
     this.configs.NES = { keyboard: { ...DEFAULT_NES_KEYBOARD }, gamepad: { ...DEFAULT_NES_GAMEPAD } };
     this.configs.SNES = { keyboard: { ...DEFAULT_SNES_KEYBOARD }, gamepad: { ...DEFAULT_SNES_GAMEPAD } };
     this.configs.GBA = { keyboard: { ...DEFAULT_GBA_KEYBOARD }, gamepad: { ...DEFAULT_GBA_GAMEPAD } };
+    this.configs.GENESIS = { keyboard: { ...DEFAULT_GENESIS_KEYBOARD }, gamepad: { ...DEFAULT_GENESIS_GAMEPAD } };
     this.saveToStorage();
   }
 
@@ -300,12 +361,18 @@ export class InputConfigService {
       kb.down = { code: 'KeyS', label: 'S' };
       kb.left = { code: 'KeyA', label: 'A' };
       kb.right = { code: 'KeyD', label: 'D' };
-      kb.b = { code: 'KeyJ', label: 'J' };
-      kb.a = { code: 'KeyK', label: 'K' };
-      kb.y = { code: 'KeyU', label: 'U' };
-      kb.x = { code: 'KeyI', label: 'I' };
-      kb.l = { code: 'KeyO', label: 'O' };
-      kb.r = { code: 'KeyP', label: 'P' };
+      if (system === 'GENESIS') {
+        kb.b = { code: 'KeyJ', label: 'J (Genesis A)' };
+        kb.a = { code: 'KeyK', label: 'K (Genesis B)' };
+        kb.y = { code: 'KeyL', label: 'L (Genesis C)' };
+      } else {
+        kb.b = { code: 'KeyJ', label: 'J' };
+        kb.a = { code: 'KeyK', label: 'K' };
+        kb.y = { code: 'KeyU', label: 'U' };
+        kb.x = { code: 'KeyI', label: 'I' };
+        kb.l = { code: 'KeyO', label: 'O' };
+        kb.r = { code: 'KeyP', label: 'P' };
+      }
       kb.select = { code: 'Space', label: 'Space' };
       kb.start = { code: 'Enter', label: 'Enter' };
     } else if (preset === 'numpad_compact') {
@@ -326,6 +393,7 @@ export class InputConfigService {
       if (system === 'NES') this.configs.NES.keyboard = { ...DEFAULT_NES_KEYBOARD };
       if (system === 'SNES') this.configs.SNES.keyboard = { ...DEFAULT_SNES_KEYBOARD };
       if (system === 'GBA') this.configs.GBA.keyboard = { ...DEFAULT_GBA_KEYBOARD };
+      if (system === 'GENESIS') this.configs.GENESIS.keyboard = { ...DEFAULT_GENESIS_KEYBOARD };
     }
     this.saveToStorage();
   }
@@ -335,20 +403,32 @@ export class InputConfigService {
 
     if (preset === 'xbox_pc') {
       // Xbox / PC layout: A is bottom (Btn 0), B is right (Btn 1), X is left (Btn 2), Y is top (Btn 3)
-      gp.b = { buttonIndex: 0, label: 'Btn 0 (Xbox A / Bottom)' };
-      gp.a = { buttonIndex: 1, label: 'Btn 1 (Xbox B / Right)' };
-      gp.y = { buttonIndex: 2, label: 'Btn 2 (Xbox X / Left)' };
-      gp.x = { buttonIndex: 3, label: 'Btn 3 (Xbox Y / Top)' };
+      if (system === 'GENESIS') {
+        gp.b = { buttonIndex: 2, label: 'Btn 2 (Xbox X -> Genesis A)' };
+        gp.a = { buttonIndex: 0, label: 'Btn 0 (Xbox A -> Genesis B)' };
+        gp.y = { buttonIndex: 1, label: 'Btn 1 (Xbox B -> Genesis C)' };
+      } else {
+        gp.b = { buttonIndex: 0, label: 'Btn 0 (Xbox A / Bottom)' };
+        gp.a = { buttonIndex: 1, label: 'Btn 1 (Xbox B / Right)' };
+        gp.y = { buttonIndex: 2, label: 'Btn 2 (Xbox X / Left)' };
+        gp.x = { buttonIndex: 3, label: 'Btn 3 (Xbox Y / Top)' };
+      }
       gp.l = { buttonIndex: 4, label: 'Btn 4 (LB)' };
       gp.r = { buttonIndex: 5, label: 'Btn 5 (RB)' };
       gp.select = { buttonIndex: 8, label: 'Btn 8 (View / Back)' };
       gp.start = { buttonIndex: 9, label: 'Btn 9 (Menu / Start)' };
     } else if (preset === 'playstation') {
       // DualShock / DualSense layout: Cross is bottom (Btn 0), Circle is right (Btn 1), Square is left (Btn 2), Triangle is top (Btn 3)
-      gp.b = { buttonIndex: 0, label: 'Btn 0 (Cross ✕ / Bottom)' };
-      gp.a = { buttonIndex: 1, label: 'Btn 1 (Circle ◯ / Right)' };
-      gp.y = { buttonIndex: 2, label: 'Btn 2 (Square ▢ / Left)' };
-      gp.x = { buttonIndex: 3, label: 'Btn 3 (Triangle △ / Top)' };
+      if (system === 'GENESIS') {
+        gp.b = { buttonIndex: 2, label: 'Btn 2 (Square ▢ -> Genesis A)' };
+        gp.a = { buttonIndex: 0, label: 'Btn 0 (Cross ✕ -> Genesis B)' };
+        gp.y = { buttonIndex: 1, label: 'Btn 1 (Circle ◯ -> Genesis C)' };
+      } else {
+        gp.b = { buttonIndex: 0, label: 'Btn 0 (Cross ✕ / Bottom)' };
+        gp.a = { buttonIndex: 1, label: 'Btn 1 (Circle ◯ / Right)' };
+        gp.y = { buttonIndex: 2, label: 'Btn 2 (Square ▢ / Left)' };
+        gp.x = { buttonIndex: 3, label: 'Btn 3 (Triangle △ / Top)' };
+      }
       gp.l = { buttonIndex: 4, label: 'Btn 4 (L1)' };
       gp.r = { buttonIndex: 5, label: 'Btn 5 (R1)' };
       gp.select = { buttonIndex: 8, label: 'Btn 8 (Share / Create)' };
@@ -358,6 +438,7 @@ export class InputConfigService {
       if (system === 'NES') this.configs.NES.gamepad = { ...DEFAULT_NES_GAMEPAD };
       if (system === 'SNES') this.configs.SNES.gamepad = { ...DEFAULT_SNES_GAMEPAD };
       if (system === 'GBA') this.configs.GBA.gamepad = { ...DEFAULT_GBA_GAMEPAD };
+      if (system === 'GENESIS') this.configs.GENESIS.gamepad = { ...DEFAULT_GENESIS_GAMEPAD };
     }
     this.saveToStorage();
   }

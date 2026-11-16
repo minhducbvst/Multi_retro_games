@@ -1,8 +1,18 @@
 import React from 'react';
 
-export type DisplayFilterType = 'CRT Scanlines' | 'Pixelated' | 'LCD Grid' | 'Bilinear Smooth';
+export type DisplayFilterType =
+  | 'CRT Scanlines'
+  | 'Arcade Trinitron Pro'
+  | 'NTSC Composite CRT'
+  | 'Game Boy DMG Green'
+  | 'Game Boy Pocket B&W'
+  | 'Pixelated'
+  | 'LCD Grid'
+  | 'Bilinear Smooth'
+  | 'Nokia CSTN Ghosting'
+  | 'Nokia 3310 Monochrome';
 export type AspectRatioType = '4:3' | '8:7' | '16:9' | '1:1';
-export type ColorTintType = 'neutral' | 'warm-crt' | 'cool-trinitron' | 'dmg-green';
+export type ColorTintType = 'neutral' | 'warm-crt' | 'cool-trinitron' | 'dmg-green' | 'nokia-3310-green' | 'cstn-12bit';
 
 export interface VisualSettingsConfig {
   filter: DisplayFilterType;
@@ -47,20 +57,68 @@ export const VisualSettingsModal: React.FC<VisualSettingsModalProps> = ({
       previewBg: 'filter-crt-scanlines'
     },
     {
+      id: 'Arcade Trinitron Pro',
+      label: 'Arcade Trinitron Pro',
+      description: 'Màn hình thùng máy Arcade với lưới rãnh màu Aperture Grille RGB thẳng đứng và quét dòng 240p siêu nét.',
+      icon: 'videogame_asset',
+      badge: 'ARCADE 240P',
+      previewBg: 'filter-arcade-trinitron'
+    },
+    {
+      id: 'Game Boy DMG Green',
+      label: 'Game Boy DMG Green',
+      description: 'Màn hình xanh rêu ma trận điểm (Dot-Matrix LCD) kinh điển 1989 của Game Boy đời đầu với lưới pixel siêu chuẩn.',
+      icon: 'stay_current_portrait',
+      badge: 'GAME BOY 1989',
+      previewBg: 'filter-gb-dmg'
+    },
+    {
+      id: 'Game Boy Pocket B&W',
+      label: 'Game Boy Pocket B&W',
+      description: 'Màn hình LCD đơn sắc bạc độ tương phản cao (Game Boy Pocket 1996) với lưới subpixel sắc nét không nhòe.',
+      icon: 'smartphone',
+      badge: 'POCKET 1996',
+      previewBg: 'filter-gb-pocket'
+    },
+    {
+      id: 'NTSC Composite CRT',
+      label: 'NTSC Composite CRT',
+      description: 'Hiệu ứng dây cáp AV hoa sen cổ điển với hiện tượng nhòe màu nhẹ (chroma bleeding) và quầng sáng phosphor ấm áp.',
+      icon: 'connected_tv',
+      badge: 'ANALOG NTSC',
+      previewBg: 'filter-ntsc-composite'
+    },
+    {
+      id: 'Nokia CSTN Ghosting',
+      label: 'Nokia CSTN Ghosting',
+      description: 'Màn hình CSTN 4096 màu (Nokia 6100, 6610) với độ trễ phản hồi 200ms tạo vệt bóng mờ (ghosting smearing) hoài niệm và lưới subpixel thụ động.',
+      icon: 'phone_android',
+      badge: 'NOKIA 6100',
+      previewBg: 'filter-nokia-cstn-grid'
+    },
+    {
+      id: 'Nokia 3310 Monochrome',
+      label: 'Nokia 3310 Monochrome',
+      description: 'Màn hình PCD8544 đơn sắc xanh lá kinh điển của Nokia 3310 với ma trận điểm LCD 84x48 và hiệu ứng 4 đèn LED xanh rực rỡ ở 4 góc viền.',
+      icon: 'stay_current_portrait',
+      badge: 'NOKIA 3310',
+      previewBg: 'filter-nokia-3310-grid'
+    },
+    {
+      id: 'LCD Grid',
+      label: 'LCD Grid',
+      description: 'Handheld reflective dot-matrix LCD grid with visible subpixel borders.',
+      icon: 'smartphone',
+      badge: 'HANDHELD',
+      previewBg: 'filter-lcd-grid'
+    },
+    {
       id: 'Pixelated',
       label: 'Pixelated',
       description: 'Raw nearest-neighbor integer scaling with razor-sharp edges and zero blur.',
       icon: 'grid_on',
       badge: 'RAW PIXEL',
       previewBg: 'filter-pixelated'
-    },
-    {
-      id: 'LCD Grid',
-      label: 'LCD Grid',
-      description: 'Handheld reflective dot-matrix LCD grid with visible subpixel borders.',
-      icon: 'stay_current_portrait',
-      badge: 'HANDHELD',
-      previewBg: 'filter-lcd-grid'
     },
     {
       id: 'Bilinear Smooth',
@@ -81,6 +139,8 @@ export const VisualSettingsModal: React.FC<VisualSettingsModalProps> = ({
 
   const colorTints: { id: ColorTintType; label: string; colorDot: string }[] = [
     { id: 'neutral', label: 'Standard RGB (Neutral)', colorDot: 'bg-zinc-200' },
+    { id: 'nokia-3310-green', label: 'Nokia 3310 Backlight (Green)', colorDot: 'bg-[#9bb23b]' },
+    { id: 'cstn-12bit', label: 'Nokia 6100 CSTN (12-bit 4096c)', colorDot: 'bg-cyan-300' },
     { id: 'warm-crt', label: 'Warm 90s Tube (D65)', colorDot: 'bg-amber-400' },
     { id: 'cool-trinitron', label: 'Sony Trinitron (9300K)', colorDot: 'bg-cyan-400' },
     { id: 'dmg-green', label: 'Game Boy DMG (Pea Soup)', colorDot: 'bg-lime-500' }
@@ -161,6 +221,24 @@ export const VisualSettingsModal: React.FC<VisualSettingsModalProps> = ({
                       )}
                       {f.id === 'Bilinear Smooth' && (
                         <div className="absolute inset-0 bg-blue-500/10 backdrop-blur-[0.5px] pointer-events-none" />
+                      )}
+                      {f.id === 'Arcade Trinitron Pro' && (
+                        <div className="absolute inset-0 filter-arcade-trinitron opacity-85 pointer-events-none" />
+                      )}
+                      {f.id === 'Game Boy DMG Green' && (
+                        <div className="absolute inset-0 filter-gb-dmg opacity-90 pointer-events-none" />
+                      )}
+                      {f.id === 'Game Boy Pocket B&W' && (
+                        <div className="absolute inset-0 filter-gb-pocket bg-zinc-700/60 opacity-90 pointer-events-none" />
+                      )}
+                      {f.id === 'NTSC Composite CRT' && (
+                        <div className="absolute inset-0 filter-ntsc-composite opacity-85 pointer-events-none" />
+                      )}
+                      {f.id === 'Nokia CSTN Ghosting' && (
+                        <div className="absolute inset-0 filter-nokia-cstn-grid filter-nokia-cstn-vignette opacity-90 pointer-events-none" />
+                      )}
+                      {f.id === 'Nokia 3310 Monochrome' && (
+                        <div className="absolute inset-0 bg-[#98b63e] filter-nokia-3310-grid opacity-90 pointer-events-none" />
                       )}
                     </div>
 

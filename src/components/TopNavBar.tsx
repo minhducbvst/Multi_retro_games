@@ -1,6 +1,9 @@
 import React, { useState, useEffect } from 'react';
 import { auth, loginWithGoogle, logoutUser } from '../services/firebase';
 import { User, onAuthStateChanged } from 'firebase/auth';
+import { saveManager } from '../services/saves/saveManager';
+import { romStorage } from '../services/roms/romStorage';
+import { useLibraryStore } from '../services/games/libraryStore';
 
 interface TopNavBarProps {
   currentTab: string;
@@ -15,9 +18,29 @@ export const TopNavBar: React.FC<TopNavBarProps> = ({
   searchQuery,
   onSearchChange
 }) => {
+  const games = useLibraryStore();
   const [currentUser, setCurrentUser] = useState<User | null>(null);
   const [showProfileMenu, setShowProfileMenu] = useState(false);
   const [showNotifications, setShowNotifications] = useState(false);
+  const [totalStorageText, setTotalStorageText] = useState('4.2MB');
+
+  useEffect(() => {
+    const updateStorage = () => {
+      const romBytes = romStorage.getTotalBytes();
+      const saveBytes = saveManager.getAllSaves().reduce((acc, s) => acc + (s.sizeBytes || 0), 0);
+      const total = romBytes + saveBytes;
+      if (total > 1024 * 1024) {
+        setTotalStorageText(`${(total / (1024 * 1024)).toFixed(1)}MB`);
+      } else if (total > 0) {
+        setTotalStorageText(`${(total / 1024).toFixed(0)}KB`);
+      } else {
+        setTotalStorageText('4.2MB');
+      }
+    };
+    updateStorage();
+    const t = setInterval(updateStorage, 3000);
+    return () => clearInterval(t);
+  }, []);
 
   useEffect(() => {
     const unsubscribe = onAuthStateChanged(auth, (user) => {
@@ -123,35 +146,61 @@ export const TopNavBar: React.FC<TopNavBarProps> = ({
         {/* Cloud Sync Status Pill */}
         <button
           onClick={() => onNavigate('saves')}
-          className="hidden sm:flex items-center gap-2 px-3 py-1 rounded-full bg-[#282a30] border border-[#494454]/30 hover:border-[#4cd7f6] transition-colors"
+          className="hidden sm:flex items-center gap-2 px-3 py-1 rounded-full bg-[#282a30] border border-[#494454]/30 hover:border-[#4cd7f6] transition-colors cursor-pointer"
+          title="Xem kho lưu trữ Cloud & bản lưu Pin SRAM"
         >
           <span className="relative flex h-2 w-2">
             <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-[#4cd7f6] opacity-75"></span>
             <span className="relative inline-flex rounded-full h-2 w-2 bg-[#4cd7f6]"></span>
           </span>
           <span className="material-symbols-outlined text-[#4cd7f6] text-sm fill-icon">cloud_done</span>
-          <span className="font-mono text-[11px] text-[#cbc3d7]">Cloud Synced - 4.2MB</span>
+          <span className="font-mono text-[11px] text-[#cbc3d7]">
+            {currentUser ? `Đồng bộ: ${totalStorageText}` : `Bộ nhớ máy: ${totalStorageText}`}
+          </span>
         </button>
 
         {/* Notifications Icon Button */}
         <div className="relative">
           <button
             onClick={() => setShowNotifications(!showNotifications)}
-            className="p-2 rounded-lg bg-[#191b22] border border-[#494454]/30 text-[#cbc3d7] hover:text-[#4cd7f6] hover:border-[#4cd7f6] transition-colors relative"
-            title="Notifications"
+            className="p-2 rounded-lg bg-[#191b22] border border-[#494454]/30 text-[#cbc3d7] hover:text-[#4cd7f6] hover:border-[#4cd7f6] transition-colors relative cursor-pointer"
+            title="Thông báo hệ thống"
           >
             <span className="material-symbols-outlined text-lg">notifications</span>
             <span className="absolute top-1.5 right-1.5 w-2 h-2 rounded-full bg-[#4cd7f6] ring-2 ring-[#0c0e14]"></span>
           </button>
 
           {showNotifications && (
-            <div className="absolute right-0 mt-2 w-72 rounded-xl bg-[#1e1f26] border border-[#494454] shadow-2xl p-3 z-50 text-xs">
+            <div className="absolute right-0 mt-2 w-80 rounded-xl bg-[#1e1f26] border border-[#494454] shadow-2xl p-3 z-50 text-xs">
               <div className="flex items-center justify-between pb-2 border-b border-[#494454]/40 font-bold text-white">
-                <span>Thông báo hệ thống</span>
-                <span className="text-[10px] text-[#4cd7f6] font-mono">0 MỚI</span>
+                <span className="flex items-center gap-1.5">
+                  <span className="material-symbols-outlined text-sm text-[#4cd7f6]">info</span>
+                  <span>Trạng thái hệ thống</span>
+                </span>
+                <span className="text-[10px] text-emerald-400 font-mono">HOẠT ĐỘNG</span>
               </div>
-              <div className="py-4 text-center text-[#958ea0] font-mono text-xs">
-                Không có thông báo mới
+              <div className="py-2 space-y-2 text-xs">
+                <div className="p-2 rounded-lg bg-[#141620] border border-[#494454]/30 flex items-start gap-2">
+                  <span className="material-symbols-outlined text-sm text-[#4cd7f6] mt-0.5">sports_esports</span>
+                  <div>
+                    <div className="font-bold text-white">Thư viện ROM</div>
+                    <div className="text-[11px] text-[#958ea0]">{games.length} trò chơi đã sẵn sàng chơi</div>
+                  </div>
+                </div>
+                <div className="p-2 rounded-lg bg-[#141620] border border-[#494454]/30 flex items-start gap-2">
+                  <span className="material-symbols-outlined text-sm text-amber-400 mt-0.5">battery_charging_full</span>
+                  <div>
+                    <div className="font-bold text-white">Lưu Pin SRAM Tự Động</div>
+                    <div className="text-[11px] text-[#958ea0]">Auto-sync 25s liên tục bảo vệ file save in-game</div>
+                  </div>
+                </div>
+                <div className="p-2 rounded-lg bg-[#141620] border border-[#494454]/30 flex items-start gap-2">
+                  <span className="material-symbols-outlined text-sm text-emerald-400 mt-0.5">gamepad</span>
+                  <div>
+                    <div className="font-bold text-white">Bộ điều khiển Gamepad</div>
+                    <div className="text-[11px] text-[#958ea0]">8 hướng D-Pad cảm ứng & Gamepad API tiêu chuẩn</div>
+                  </div>
+                </div>
               </div>
             </div>
           )}
@@ -171,15 +220,15 @@ export const TopNavBar: React.FC<TopNavBarProps> = ({
               />
             ) : (
               <div className="w-7 h-7 rounded-full bg-[#4cd7f6]/20 text-[#4cd7f6] flex items-center justify-center font-bold text-xs">
-                {currentUser?.displayName ? currentUser.displayName.charAt(0).toUpperCase() : 'G'}
+                {currentUser?.displayName ? currentUser.displayName.charAt(0).toUpperCase() : 'M'}
               </div>
             )}
             <div className="hidden md:flex flex-col text-left">
               <span className="text-[13px] leading-tight text-[#e2e2eb] font-semibold truncate max-w-[120px]">
-                {currentUser?.displayName || "Đăng nhập Google"}
+                {currentUser?.displayName || "Tài khoản Game"}
               </span>
               <span className="font-mono text-[10px] text-[#4cd7f6]">
-                {currentUser ? "Tài khoản Google" : "Nhấn để liên kết"}
+                {currentUser ? "Đã liên kết Google" : "Nhấn để cài đặt"}
               </span>
             </div>
             <span className="material-symbols-outlined text-[#958ea0] text-sm">expand_more</span>
@@ -190,69 +239,73 @@ export const TopNavBar: React.FC<TopNavBarProps> = ({
             <div className="absolute right-0 mt-2 w-64 rounded-xl bg-[#1e1f26] border border-[#494454] shadow-2xl p-3 z-50 text-xs">
               <div className="pb-2.5 border-b border-[#494454]/40 mb-2">
                 <div className="font-bold text-white text-sm">
-                  {currentUser?.displayName || "Alex Carter"}
+                  {currentUser?.displayName || "Người chơi (Guest)"}
                 </div>
                 <div className="text-[11px] text-[#958ea0] truncate font-mono">
-                  {currentUser?.email || "alex.carter@gmail.com"}
+                  {currentUser?.email || "Dữ liệu lưu an toàn trên máy"}
                 </div>
                 <div className="inline-flex items-center gap-1 mt-1 text-[10px] text-emerald-400 bg-emerald-950/60 px-2 py-0.5 rounded border border-emerald-500/30">
                   <span className="w-1.5 h-1.5 rounded-full bg-emerald-400"></span>
-                  Firebase Auth Synced
+                  {currentUser ? 'Firebase Cloud Synced' : 'Offline / Local Ready'}
                 </div>
               </div>
 
+              {!currentUser && (
+                <div className="mb-2">
+                  <button
+                    onClick={handleGoogleLogin}
+                    className="w-full py-2 px-3 rounded-lg bg-[#4cd7f6] hover:bg-[#70e0f8] text-[#003641] font-bold text-xs flex items-center justify-center gap-2 shadow-md transition-colors cursor-pointer"
+                  >
+                    <span className="material-symbols-outlined text-sm">login</span>
+                    <span>Đăng nhập Google Drive</span>
+                  </button>
+                </div>
+              )}
+
               <div className="space-y-1">
-                <button
-                  onClick={() => {
-                    onNavigate('profile');
-                    setShowProfileMenu(false);
-                  }}
-                  className="w-full flex items-center gap-2 px-2.5 py-1.5 rounded hover:bg-[#282a30] text-[#cbc3d7] hover:text-white text-left"
-                >
-                  <span className="material-symbols-outlined text-sm">account_circle</span>
-                  <span>View Full Profile & Trophies</span>
-                </button>
                 <button
                   onClick={() => {
                     onNavigate('saves');
                     setShowProfileMenu(false);
                   }}
-                  className="w-full flex items-center gap-2 px-2.5 py-1.5 rounded hover:bg-[#282a30] text-[#cbc3d7] hover:text-white text-left"
+                  className="w-full flex items-center gap-2 px-2.5 py-1.5 rounded hover:bg-[#282a30] text-[#cbc3d7] hover:text-white text-left cursor-pointer"
                 >
                   <span className="material-symbols-outlined text-sm">cloud_sync</span>
-                  <span>Cloud Saves & Conflict Hub</span>
+                  <span>Quản lý bản lưu (SRAM & States)</span>
                 </button>
                 <button
                   onClick={() => {
                     onNavigate('settings');
                     setShowProfileMenu(false);
                   }}
-                  className="w-full flex items-center gap-2 px-2.5 py-1.5 rounded hover:bg-[#282a30] text-[#cbc3d7] hover:text-white text-left"
+                  className="w-full flex items-center gap-2 px-2.5 py-1.5 rounded hover:bg-[#282a30] text-[#cbc3d7] hover:text-white text-left cursor-pointer"
                 >
                   <span className="material-symbols-outlined text-sm">tune</span>
-                  <span>System & Gamepad Settings</span>
+                  <span>Cài đặt tay cầm & hiển thị</span>
+                </button>
+                <button
+                  onClick={() => {
+                    onNavigate('vault');
+                    setShowProfileMenu(false);
+                  }}
+                  className="w-full flex items-center gap-2 px-2.5 py-1.5 rounded hover:bg-[#282a30] text-[#cbc3d7] hover:text-white text-left cursor-pointer"
+                >
+                  <span className="material-symbols-outlined text-sm">inventory_2</span>
+                  <span>Kho ROM & Quét Google Drive</span>
                 </button>
               </div>
 
-              <div className="pt-2 border-t border-[#494454]/40 mt-2">
-                {currentUser ? (
+              {currentUser && (
+                <div className="pt-2 border-t border-[#494454]/40 mt-2">
                   <button
                     onClick={handleLogout}
-                    className="w-full py-1.5 rounded bg-rose-950/40 hover:bg-rose-900/60 border border-rose-500/30 text-rose-300 font-bold flex items-center justify-center gap-1.5"
+                    className="w-full flex items-center gap-2 px-2.5 py-1.5 rounded hover:bg-rose-950/40 text-rose-300 transition-colors text-left cursor-pointer"
                   >
                     <span className="material-symbols-outlined text-sm">logout</span>
-                    <span>Sign Out</span>
+                    <span>Đăng xuất tài khoản</span>
                   </button>
-                ) : (
-                  <button
-                    onClick={handleGoogleLogin}
-                    className="w-full py-1.5 rounded bg-[#a078ff] hover:bg-[#a078ff]/90 text-[#340080] font-bold flex items-center justify-center gap-1.5 shadow-md"
-                  >
-                    <span className="material-symbols-outlined text-sm">login</span>
-                    <span>Sign In with Google</span>
-                  </button>
-                )}
-              </div>
+                </div>
+              )}
             </div>
           )}
         </div>

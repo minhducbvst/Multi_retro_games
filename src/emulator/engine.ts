@@ -44,6 +44,7 @@ export class RetroEmulatorEngine {
 
   // Audio Context
   private audioCtx: AudioContext | null = null;
+  private audioDestNode: MediaStreamAudioDestinationNode | null = null;
   private isMuted: boolean = false;
   private volume: number = 0.8;
 
@@ -51,7 +52,7 @@ export class RetroEmulatorEngine {
   private rewindBuffer: Array<{ player: PlayerState; tick: number }> = [];
   private readonly MAX_REWIND_FRAMES = 600;
 
-  // Input state
+  // Input state (Port 1 & Port 2)
   public inputs: EmulatorInputState = {
     up: false,
     down: false,
@@ -67,10 +68,45 @@ export class RetroEmulatorEngine {
     select: false
   };
 
+  public inputs2: EmulatorInputState = {
+    up: false,
+    down: false,
+    left: false,
+    right: false,
+    a: false,
+    b: false,
+    x: false,
+    y: false,
+    l: false,
+    r: false,
+    start: false,
+    select: false
+  };
+
+  public player2Active: boolean = false;
+
   // Game internal state
   public player: PlayerState = {
-    x: 120,
-    y: 130,
+    x: 96,
+    y: 136,
+    vx: 0,
+    vy: 0,
+    direction: 'down',
+    isAttacking: false,
+    attackFrame: 0,
+    isDashing: false,
+    hearts: 14,
+    maxHearts: 14,
+    magic: 85,
+    rupees: 180,
+    bombs: 10,
+    arrows: 30,
+    scene: 'castle_courtyard'
+  };
+
+  public player2: PlayerState = {
+    x: 160,
+    y: 136,
     vx: 0,
     vy: 0,
     direction: 'down',
@@ -151,8 +187,25 @@ export class RetroEmulatorEngine {
 
   public reset(): void {
     this.player = {
-      x: 120,
-      y: 130,
+      x: 96,
+      y: 136,
+      vx: 0,
+      vy: 0,
+      direction: 'down',
+      isAttacking: false,
+      attackFrame: 0,
+      isDashing: false,
+      hearts: 14,
+      maxHearts: 14,
+      magic: 85,
+      rupees: 180,
+      bombs: 10,
+      arrows: 30,
+      scene: 'castle_courtyard'
+    };
+    this.player2 = {
+      x: 160,
+      y: 136,
       vx: 0,
       vy: 0,
       direction: 'down',
@@ -177,21 +230,39 @@ export class RetroEmulatorEngine {
 
     if (pressed && !wasPressed) {
       if (btn === 'b') {
-        // Sword attack
-        this.triggerAttack();
+        this.triggerAttack(this.player);
       } else if (btn === 'a') {
-        // Dash / Interaction
-        this.triggerDash();
+        this.triggerDash(this.player);
       } else if (btn === 'y') {
-        // Boomerang / Magic item
-        this.triggerMagicItem();
+        this.triggerMagicItem(this.player);
       }
     }
+  }
+
+  public setPlayer2Input(btn: keyof EmulatorInputState, pressed: boolean): void {
+    this.player2Active = true;
+    const wasPressed = this.inputs2[btn];
+    this.inputs2[btn] = pressed;
+
+    if (pressed && !wasPressed) {
+      if (btn === 'b') {
+        this.triggerAttack(this.player2);
+      } else if (btn === 'a') {
+        this.triggerDash(this.player2);
+      } else if (btn === 'y') {
+        this.triggerMagicItem(this.player2);
+      }
+    }
+  }
+
+  public setPlayer2Active(active: boolean): void {
+    this.player2Active = active;
   }
 
   public releaseAllInputs(): void {
     for (const key in this.inputs) {
       this.inputs[key as keyof EmulatorInputState] = false;
+      this.inputs2[key as keyof EmulatorInputState] = false;
     }
   }
 
@@ -274,11 +345,19 @@ export class RetroEmulatorEngine {
       const AudioContextClass = window.AudioContext || (window as unknown as { webkitAudioContext: typeof AudioContext }).webkitAudioContext;
       if (AudioContextClass) {
         this.audioCtx = new AudioContextClass();
+        try {
+          this.audioDestNode = this.audioCtx.createMediaStreamDestination();
+        } catch {}
       }
     }
     if (this.audioCtx && this.audioCtx.state === 'suspended') {
-      this.audioCtx.resume();
+      this.audioCtx.resume().catch(() => {});
     }
+  }
+
+  public getAudioStream(): MediaStream | null {
+    this.initAudio();
+    return this.audioDestNode?.stream || null;
   }
 
   private playBeep(freq: number, duration: number, type: OscillatorType = 'square'): void {
@@ -292,6 +371,9 @@ export class RetroEmulatorEngine {
       gain.gain.exponentialRampToValueAtTime(0.001, this.audioCtx.currentTime + duration);
       osc.connect(gain);
       gain.connect(this.audioCtx.destination);
+      if (this.audioDestNode) {
+        gain.connect(this.audioDestNode);
+      }
       osc.start();
       osc.stop(this.audioCtx.currentTime + duration);
     } catch {
@@ -299,36 +381,73 @@ export class RetroEmulatorEngine {
     }
   }
 
-  private triggerAttack(): void {
-    if (this.player.isAttacking) return;
-    this.player.isAttacking = true;
-    this.player.attackFrame = 0;
-    // Authentic sword slash sound
-    this.playBeep(440, 0.05, 'sawtooth');
+  private triggerAttack(target: PlayerState = this.player): void {
+    if (target.isAttacking) return;
+    target.isAttacking = true;
+    target.attackFrame = 0;
+    this.playBeep(target === this.player ? 440 : 520, 0.05, 'sawtooth');
     setTimeout(() => {
-      this.playBeep(660, 0.08, 'square');
+      this.playBeep(target === this.player ? 660 : 740, 0.08, 'square');
     }, 40);
   }
 
-  private triggerDash(): void {
-    this.player.isDashing = true;
+  private triggerDash(target: PlayerState = this.player): void {
+    target.isDashing = true;
     this.playBeep(220, 0.1, 'triangle');
     setTimeout(() => {
-      this.player.isDashing = false;
+      target.isDashing = false;
     }, 500);
   }
 
-  private triggerMagicItem(): void {
-    if (this.player.magic >= 4) {
-      this.player.magic -= 4;
+  private triggerMagicItem(target: PlayerState = this.player): void {
+    if (target.magic >= 4) {
+      target.magic -= 4;
       this.playBeep(784, 0.15, 'sine');
+    }
+  }
+
+  private stepPlayer(target: PlayerState, inputs: EmulatorInputState): void {
+    const speed = target.isDashing ? 3.2 : 1.5;
+    let dx = 0;
+    let dy = 0;
+
+    if (inputs.up) {
+      dy -= speed;
+      target.direction = 'up';
+    }
+    if (inputs.down) {
+      dy += speed;
+      target.direction = 'down';
+    }
+    if (inputs.left) {
+      dx -= speed;
+      target.direction = 'left';
+    }
+    if (inputs.right) {
+      dx += speed;
+      target.direction = 'right';
+    }
+
+    if (dx !== 0 && dy !== 0) {
+      dx *= 0.7071;
+      dy *= 0.7071;
+    }
+
+    target.x = Math.max(20, Math.min(236, target.x + dx));
+    target.y = Math.max(30, Math.min(200, target.y + dy));
+
+    if (target.isAttacking) {
+      target.attackFrame++;
+      if (target.attackFrame > 12) {
+        target.isAttacking = false;
+        target.attackFrame = 0;
+      }
     }
   }
 
   private update(): void {
     this.tickCount++;
 
-    // Random lightning flash in Hyrule Castle night
     if (Math.random() < 0.004) {
       this.lightningFlash = 4;
       this.playBeep(110, 0.35, 'sawtooth');
@@ -336,7 +455,6 @@ export class RetroEmulatorEngine {
       this.lightningFlash--;
     }
 
-    // Save history in ring buffer for rewind
     if (this.tickCount % 2 === 0) {
       this.rewindBuffer.push({
         player: { ...this.player },
@@ -347,51 +465,14 @@ export class RetroEmulatorEngine {
       }
     }
 
-    // Movement speeds
-    const speed = this.player.isDashing ? 3.2 : 1.5;
-    let dx = 0;
-    let dy = 0;
-
-    if (this.inputs.up) {
-      dy -= speed;
-      this.player.direction = 'up';
-    }
-    if (this.inputs.down) {
-      dy += speed;
-      this.player.direction = 'down';
-    }
-    if (this.inputs.left) {
-      dx -= speed;
-      this.player.direction = 'left';
-    }
-    if (this.inputs.right) {
-      dx += speed;
-      this.player.direction = 'right';
+    this.stepPlayer(this.player, this.inputs);
+    if (this.player2Active) {
+      this.stepPlayer(this.player2, this.inputs2);
     }
 
-    // Diagonal normalization
-    if (dx !== 0 && dy !== 0) {
-      dx *= 0.7071;
-      dy *= 0.7071;
-    }
-
-    // Boundary constraints (256 x 224)
-    this.player.x = Math.max(20, Math.min(236, this.player.x + dx));
-    this.player.y = Math.max(30, Math.min(200, this.player.y + dy));
-
-    // Attack frame progression
-    if (this.player.isAttacking) {
-      this.player.attackFrame++;
-      if (this.player.attackFrame > 12) {
-        this.player.isAttacking = false;
-        this.player.attackFrame = 0;
-      }
-    }
-
-    // Update rain particles
     for (const drop of this.rainDrops) {
       drop.y += drop.speed;
-      drop.x -= 1.2; // wind slant
+      drop.x -= 1.2;
       if (drop.y > 224) {
         drop.y = -drop.len;
         drop.x = Math.random() * 280;
@@ -466,95 +547,9 @@ export class RetroEmulatorEngine {
     ctx.ellipse(180, 160, 30, 9, 0, 0, Math.PI * 2);
     ctx.fill();
 
-    // Render Player Character (Link in iconic green tunic & cap)
-    const px = Math.round(this.player.x);
-    const py = Math.round(this.player.y);
-
-    // Shadow
-    ctx.fillStyle = 'rgba(0,0,0,0.4)';
-    ctx.beginPath();
-    ctx.ellipse(px, py + 8, 8, 4, 0, 0, Math.PI * 2);
-    ctx.fill();
-
-    // Tunic Body (Green)
-    ctx.fillStyle = '#27ae60';
-    ctx.fillRect(px - 5, py - 4, 10, 10);
-
-    // Belt
-    ctx.fillStyle = '#8e44ad';
-    ctx.fillRect(px - 5, py + 2, 10, 2);
-
-    // Cap (Green)
-    ctx.fillStyle = '#2ecc71';
-    ctx.fillRect(px - 6, py - 12, 12, 6);
-    // Cap tip drooping
-    if (this.player.direction === 'left') {
-      ctx.fillRect(px + 4, py - 10, 4, 4);
-    } else {
-      ctx.fillRect(px - 8, py - 10, 4, 4);
-    }
-
-    // Face / Head (Flesh tone)
-    ctx.fillStyle = '#f5cba7';
-    ctx.fillRect(px - 4, py - 7, 8, 5);
-
-    // Eyes
-    ctx.fillStyle = '#111';
-    if (this.player.direction === 'left') {
-      ctx.fillRect(px - 3, py - 6, 2, 2);
-    } else if (this.player.direction === 'right') {
-      ctx.fillRect(px + 1, py - 6, 2, 2);
-    } else if (this.player.direction === 'up') {
-      // Back of head (Brown hair)
-      ctx.fillStyle = '#a04000';
-      ctx.fillRect(px - 4, py - 7, 8, 5);
-    } else {
-      ctx.fillRect(px - 3, py - 6, 2, 2);
-      ctx.fillRect(px + 1, py - 6, 2, 2);
-    }
-
-    // Shield (Blue Hylian Shield with red triforce crest)
-    ctx.fillStyle = '#2980b9';
-    if (this.player.direction === 'left') {
-      ctx.fillRect(px + 4, py - 3, 4, 9);
-      ctx.fillStyle = '#e74c3c';
-      ctx.fillRect(px + 5, py, 2, 3);
-    } else if (this.player.direction === 'right') {
-      ctx.fillRect(px - 8, py - 3, 4, 9);
-      ctx.fillStyle = '#e74c3c';
-      ctx.fillRect(px - 7, py, 2, 3);
-    } else {
-      ctx.fillRect(px - 8, py - 1, 5, 8);
-      ctx.fillStyle = '#e74c3c';
-      ctx.fillRect(px - 7, py + 1, 3, 3);
-    }
-
-    // Master Sword
-    if (this.player.isAttacking) {
-      ctx.fillStyle = '#e8f8f5';
-      ctx.strokeStyle = '#4cd7f6';
-      ctx.lineWidth = 1;
-
-      // Sword slash swing arc
-      if (this.player.direction === 'down') {
-        ctx.fillRect(px + 4, py + 2, 16, 3);
-        ctx.strokeRect(px + 4, py + 2, 16, 3);
-      } else if (this.player.direction === 'up') {
-        ctx.fillRect(px + 4, py - 18, 4, 16);
-        ctx.strokeRect(px + 4, py - 18, 4, 16);
-      } else if (this.player.direction === 'left') {
-        ctx.fillRect(px - 18, py - 1, 16, 4);
-        ctx.strokeRect(px - 18, py - 1, 16, 4);
-      } else {
-        ctx.fillRect(px + 4, py - 1, 16, 4);
-        ctx.strokeRect(px + 4, py - 1, 16, 4);
-      }
-    } else {
-      // Sheathed sword / held ready
-      ctx.fillStyle = '#bdc3c7';
-      ctx.fillRect(px + 5, py - 6, 2, 10);
-      ctx.fillStyle = '#34495e';
-      ctx.fillRect(px + 4, py - 7, 4, 2);
+    this.renderCharacter(ctx, this.player, '#27ae60', '#2ecc71', '#2980b9', 'P1');
+    if (this.player2Active) {
+      this.renderCharacter(ctx, this.player2, '#b91c1c', '#ef4444', '#7c3aed', 'P2');
     }
 
     // Rain Streaks
@@ -566,7 +561,107 @@ export class RetroEmulatorEngine {
       ctx.lineTo(drop.x - 2, drop.y + drop.len);
       ctx.stroke();
     }
+  }
 
+  private renderCharacter(
+    ctx: CanvasRenderingContext2D,
+    target: PlayerState,
+    tunicColor: string,
+    capColor: string,
+    shieldColor: string,
+    label: string
+  ): void {
+    const px = Math.round(target.x);
+    const py = Math.round(target.y);
+
+    // Shadow
+    ctx.fillStyle = 'rgba(0,0,0,0.4)';
+    ctx.beginPath();
+    ctx.ellipse(px, py + 8, 8, 4, 0, 0, Math.PI * 2);
+    ctx.fill();
+
+    // Tunic Body
+    ctx.fillStyle = tunicColor;
+    ctx.fillRect(px - 5, py - 4, 10, 10);
+
+    // Belt
+    ctx.fillStyle = '#8e44ad';
+    ctx.fillRect(px - 5, py + 2, 10, 2);
+
+    // Cap
+    ctx.fillStyle = capColor;
+    ctx.fillRect(px - 6, py - 12, 12, 6);
+    if (target.direction === 'left') {
+      ctx.fillRect(px + 4, py - 10, 4, 4);
+    } else {
+      ctx.fillRect(px - 8, py - 10, 4, 4);
+    }
+
+    // Face / Head
+    ctx.fillStyle = '#f5cba7';
+    ctx.fillRect(px - 4, py - 7, 8, 5);
+
+    // Eyes
+    ctx.fillStyle = '#111';
+    if (target.direction === 'left') {
+      ctx.fillRect(px - 3, py - 6, 2, 2);
+    } else if (target.direction === 'right') {
+      ctx.fillRect(px + 1, py - 6, 2, 2);
+    } else if (target.direction === 'up') {
+      ctx.fillStyle = '#a04000';
+      ctx.fillRect(px - 4, py - 7, 8, 5);
+    } else {
+      ctx.fillRect(px - 3, py - 6, 2, 2);
+      ctx.fillRect(px + 1, py - 6, 2, 2);
+    }
+
+    // Shield
+    ctx.fillStyle = shieldColor;
+    if (target.direction === 'left') {
+      ctx.fillRect(px + 4, py - 3, 4, 9);
+      ctx.fillStyle = '#facc15';
+      ctx.fillRect(px + 5, py, 2, 3);
+    } else if (target.direction === 'right') {
+      ctx.fillRect(px - 8, py - 3, 4, 9);
+      ctx.fillStyle = '#facc15';
+      ctx.fillRect(px - 7, py, 2, 3);
+    } else {
+      ctx.fillRect(px - 8, py - 1, 5, 8);
+      ctx.fillStyle = '#facc15';
+      ctx.fillRect(px - 7, py + 1, 3, 3);
+    }
+
+    // Master Sword
+    if (target.isAttacking) {
+      ctx.fillStyle = '#e8f8f5';
+      ctx.strokeStyle = '#4cd7f6';
+      ctx.lineWidth = 1;
+
+      if (target.direction === 'down') {
+        ctx.fillRect(px + 4, py + 2, 16, 3);
+        ctx.strokeRect(px + 4, py + 2, 16, 3);
+      } else if (target.direction === 'up') {
+        ctx.fillRect(px + 4, py - 18, 4, 16);
+        ctx.strokeRect(px + 4, py - 18, 4, 16);
+      } else if (target.direction === 'left') {
+        ctx.fillRect(px - 18, py - 1, 16, 4);
+        ctx.strokeRect(px - 18, py - 1, 16, 4);
+      } else {
+        ctx.fillRect(px + 4, py - 1, 16, 4);
+        ctx.strokeRect(px + 4, py - 1, 16, 4);
+      }
+    } else {
+      ctx.fillStyle = '#bdc3c7';
+      ctx.fillRect(px + 5, py - 6, 2, 10);
+      ctx.fillStyle = '#34495e';
+      ctx.fillRect(px + 4, py - 7, 4, 2);
+    }
+
+    // Player Port Tag
+    ctx.font = 'bold 7px monospace';
+    ctx.textAlign = 'center';
+    ctx.fillStyle = label === 'P1' ? '#4cd7f6' : '#fca5a5';
+    ctx.fillText(label, px, py - 15);
   }
 
   private gameLoop = (): void => {

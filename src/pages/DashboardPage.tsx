@@ -35,6 +35,7 @@ export const DashboardPage: React.FC<DashboardPageProps> = ({
   const [sortBy, setSortBy] = useState<string>('recent');
   const [dragActive, setDragActive] = useState<boolean>(false);
   const [toastMessage, setToastMessage] = useState<string | null>(null);
+  const [gameToDelete, setGameToDelete] = useState<Game | null>(null);
 
   const showToast = (msg: string) => {
     setToastMessage(msg);
@@ -67,8 +68,53 @@ export const DashboardPage: React.FC<DashboardPageProps> = ({
   const nesCount = games.filter((g) => g.platform === 'NES').length;
   const snesCount = games.filter((g) => g.platform === 'SNES').length;
   const gbaCount = games.filter((g) => g.platform === 'GBA').length;
+  const genesisCount = games.filter((g) => g.platform === 'GENESIS').length;
 
   const featuredHeroGame = games.length > 0 ? games[0] : null;
+
+  const fileInputRef = React.useRef<HTMLInputElement | null>(null);
+
+  const handleFileInputChange = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    if (e.target.files && e.target.files.length > 0) {
+      const files = Array.from(e.target.files);
+      let added = 0;
+      for (const file of files) {
+        try {
+          const buffer = await file.arrayBuffer();
+          const bytes = new Uint8Array(buffer);
+          const header = parseRom(bytes, file.name);
+          const plat = header.platform === 'UNKNOWN' ? 'NES' : header.platform;
+          const title = header.internalTitle || file.name.replace(/\.[^/.]+$/, '');
+
+          const newGame: Game = {
+            id: `custom-${Date.now()}-${Math.floor(Math.random() * 10000)}`,
+            title,
+            platform: plat,
+            year: 1995,
+            developer: 'Tải lên từ máy',
+            genre: 'Personal ROM',
+            rating: 5.0,
+            ratingCount: 1,
+            boxArt: getCartridgeCoverArt(title, plat),
+            description: `Tệp ROM "${file.name}" đã được nạp trực tiếp vào kho lưu trữ của trình duyệt.`,
+            features: ['Local Storage Verified', 'Direct Load', 'Battery Save Ready'],
+            source: 'local',
+            romFilename: file.name,
+          };
+
+          romStorage.saveRom(newGame.id, file.name, plat, bytes);
+          libraryStore.addGame(newGame);
+          added++;
+        } catch (err) {
+          console.error('Error importing ROM:', err);
+        }
+      }
+      if (added > 0) {
+        showToast(`Đã thêm thành công ${added} tựa game mới vào thư viện!`);
+      }
+      e.target.value = '';
+    }
+  };
 
   // Direct Drag & Drop onto Dashboard
   const handleDrop = async (e: React.DragEvent) => {
@@ -128,13 +174,9 @@ export const DashboardPage: React.FC<DashboardPageProps> = ({
     setDragActive(false);
   };
 
-  const handleDeleteGame = (e: React.MouseEvent, gameId: string, gameTitle: string) => {
+  const handleDeleteGame = (e: React.MouseEvent, targetGame: Game) => {
     e.stopPropagation();
-    if (window.confirm(`Bạn có chắc muốn xóa "${gameTitle}" khỏi thư viện?`)) {
-      libraryStore.removeGame(gameId);
-      romStorage.clear(gameId);
-      showToast(`Đã xóa "${gameTitle}" khỏi thư viện.`);
-    }
+    setGameToDelete(targetGame);
   };
 
   return (
@@ -149,6 +191,74 @@ export const DashboardPage: React.FC<DashboardPageProps> = ({
         <div className="fixed top-20 right-8 z-50 px-4 py-2.5 rounded-xl bg-[#1e1f26] border border-[#4cd7f6] text-[#4cd7f6] font-mono text-xs flex items-center gap-2 shadow-2xl animate-fade-in">
           <span className="material-symbols-outlined text-sm">check_circle</span>
           <span>{toastMessage}</span>
+        </div>
+      )}
+
+      {/* Delete Confirmation In-App Modal */}
+      {gameToDelete && (
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/80 backdrop-blur-sm animate-fade-in"
+          onClick={() => setGameToDelete(null)}
+        >
+          <div
+            className="w-full max-w-md rounded-2xl bg-[#191b22] border border-rose-500/50 p-6 shadow-2xl space-y-4"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="flex items-center gap-3">
+              <div className="w-11 h-11 rounded-xl bg-rose-950/70 border border-rose-500/50 flex items-center justify-center text-rose-400 shrink-0 shadow-inner">
+                <span className="material-symbols-outlined text-2xl">delete_forever</span>
+              </div>
+              <div>
+                <h3 className="text-base font-bold text-white">Xác nhận xóa trò chơi</h3>
+                <p className="text-xs text-[#958ea0] font-mono">Dọn dẹp và giải phóng bộ nhớ lưu trữ</p>
+              </div>
+            </div>
+
+            <div className="p-3.5 rounded-xl bg-[#0c0e14] border border-[#494454]/40 flex items-center gap-3">
+              <div className="w-12 h-14 bg-[#191b22] rounded overflow-hidden shrink-0 border border-[#494454]/40">
+                <img src={gameToDelete.boxArt} alt={gameToDelete.title} className="w-full h-full object-contain p-0.5" />
+              </div>
+              <div className="min-w-0 flex-1">
+                <div className="flex items-center gap-2">
+                  <span className="px-1.5 py-0.5 rounded text-[10px] font-mono font-bold bg-rose-950/80 text-rose-300 border border-rose-500/40">
+                    {gameToDelete.platform}
+                  </span>
+                  <span className="text-[10px] font-mono text-[#4cd7f6]">
+                    {gameToDelete.source === 'drive' ? 'Google Drive' : 'Máy tính'}
+                  </span>
+                </div>
+                <h4 className="text-sm font-bold text-white truncate mt-1">{gameToDelete.title}</h4>
+                <p className="text-[11px] font-mono text-[#958ea0] truncate">{gameToDelete.romFilename || 'ROM file'}</p>
+              </div>
+            </div>
+
+            <p className="text-xs text-[#cbc3d7] leading-relaxed">
+              Bạn có chắc chắn muốn xóa tựa game này khỏi thư viện? Dữ liệu trò chơi và tệp ROM trong bộ nhớ trình duyệt sẽ bị gỡ bỏ hoàn toàn.
+            </p>
+
+            <div className="flex items-center justify-end gap-2.5 pt-2 border-t border-[#494454]/30">
+              <button
+                type="button"
+                onClick={() => setGameToDelete(null)}
+                className="px-4 py-2 rounded-lg bg-[#282a30] hover:bg-[#34373f] text-[#cbc3d7] hover:text-white font-mono text-xs font-bold transition-colors cursor-pointer"
+              >
+                Hủy bỏ
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  libraryStore.removeGame(gameToDelete.id);
+                  romStorage.clear(gameToDelete.id);
+                  showToast(`Đã xóa thành công "${gameToDelete.title}" khỏi thư viện.`);
+                  setGameToDelete(null);
+                }}
+                className="px-4 py-2 rounded-lg bg-rose-600 hover:bg-rose-500 text-white font-mono text-xs font-bold flex items-center gap-1.5 shadow-lg shadow-rose-900/40 transition-all cursor-pointer"
+              >
+                <span className="material-symbols-outlined text-sm">delete</span>
+                <span>Xác nhận xóa</span>
+              </button>
+            </div>
+          </div>
         </div>
       )}
 
@@ -385,6 +495,21 @@ export const DashboardPage: React.FC<DashboardPageProps> = ({
               {gbaCount}
             </span>
           </button>
+
+          <button
+            onClick={() => setSelectedPlatform('GENESIS')}
+            className={`px-3.5 py-1.5 rounded-lg font-mono text-xs flex items-center gap-2 transition-all ${
+              selectedPlatform === 'GENESIS'
+                ? 'bg-[#33343b] text-emerald-300 border border-emerald-500/50 shadow-sm font-bold'
+                : 'bg-[#191b22] hover:bg-[#282a30] border border-[#494454]/30 text-[#cbc3d7]'
+            }`}
+          >
+            <span className="w-2 h-2 rounded-full bg-emerald-400"></span>
+            <span>Sega Genesis</span>
+            <span className="text-[10px] px-1.5 py-0.2 rounded bg-emerald-950/60 text-emerald-300 border border-emerald-500/40">
+              {genesisCount}
+            </span>
+          </button>
         </div>
 
         {/* Sorting Controls */}
@@ -408,6 +533,16 @@ export const DashboardPage: React.FC<DashboardPageProps> = ({
 
       {/* ================= MAIN GAME LIBRARY GRID ================= */}
       <section className="space-y-4">
+        {/* Hidden Direct File Picker */}
+        <input
+          ref={fileInputRef}
+          type="file"
+          multiple
+          accept=".nes,.sfc,.smc,.gba,.gb,.gbc,.md,.gen,.smd,.zip"
+          className="hidden"
+          onChange={handleFileInputChange}
+        />
+
         <div className="flex flex-wrap items-center justify-between gap-3">
           <div>
             <h3 className="text-lg text-white font-bold">
@@ -421,7 +556,7 @@ export const DashboardPage: React.FC<DashboardPageProps> = ({
           <div className="flex items-center gap-2">
             <button
               onClick={() => onOpenRomVault('drive')}
-              className="px-3 py-1.5 rounded-lg bg-[#4cd7f6]/10 hover:bg-[#4cd7f6]/20 border border-[#4cd7f6]/40 text-[#4cd7f6] font-mono text-xs font-bold flex items-center gap-1.5 transition-colors"
+              className="px-3 py-1.5 rounded-lg bg-[#4cd7f6]/10 hover:bg-[#4cd7f6]/20 border border-[#4cd7f6]/40 text-[#4cd7f6] font-mono text-xs font-bold flex items-center gap-1.5 transition-colors cursor-pointer"
               title="Quét ROM từ Google Drive"
             >
               <span className="material-symbols-outlined text-sm">cloud_sync</span>
@@ -429,9 +564,9 @@ export const DashboardPage: React.FC<DashboardPageProps> = ({
             </button>
 
             <button
-              onClick={() => onOpenRomVault('local')}
-              className="px-3 py-1.5 rounded-lg bg-[#282a30] hover:bg-[#34373f] border border-[#494454]/40 text-[#cbc3d7] hover:text-white font-mono text-xs flex items-center gap-1.5 transition-colors"
-              title="Tải ROM từ máy tính"
+              onClick={() => fileInputRef.current?.click()}
+              className="px-3 py-1.5 rounded-lg bg-[#282a30] hover:bg-[#34373f] border border-[#494454]/40 text-[#cbc3d7] hover:text-white font-mono text-xs flex items-center gap-1.5 transition-colors cursor-pointer"
+              title="Chọn tệp ROM từ máy tính để thêm vào thư viện ngay"
             >
               <span className="material-symbols-outlined text-sm">upload_file</span>
               <span>Tải Tệp ROM</span>
@@ -547,8 +682,9 @@ export const DashboardPage: React.FC<DashboardPageProps> = ({
                           <span className="material-symbols-outlined text-xs">info</span>
                         </button>
                         <button
-                          onClick={(e) => handleDeleteGame(e, game.id, game.title)}
-                          className="p-1.5 rounded bg-rose-950/40 text-rose-300 hover:bg-rose-900/60 border border-rose-500/30"
+                          type="button"
+                          onClick={(e) => handleDeleteGame(e, game)}
+                          className="p-1.5 rounded bg-rose-950/40 text-rose-300 hover:bg-rose-900/60 border border-rose-500/30 transition-colors cursor-pointer"
                           title="Xóa khỏi thư viện"
                         >
                           <span className="material-symbols-outlined text-xs">delete</span>

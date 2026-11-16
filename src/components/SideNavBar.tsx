@@ -55,7 +55,9 @@ export const SideNavBar: React.FC<SideNavBarProps> = ({
           recommendedCore: header.platform === 'GBA' ? 'mGBA v0.10.2' : header.platform === 'NES' ? 'Nestopia UE v1.52' : 'Snes9x 2010',
           compatibility: 100,
           crc32: header.crc32,
-          md5: header.md5
+          md5: header.md5,
+          source: 'local',
+          romFilename: file.name,
         };
 
         if (onCustomRomLoaded) {

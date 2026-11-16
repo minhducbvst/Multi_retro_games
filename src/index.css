@@ -66,6 +66,56 @@
   image-rendering: crisp-edges;
 }
 
+/* 4. Nokia CSTN LCD Ghosting (Nokia 6100, 6610, 7210 4096-color passive matrix with 200ms lag) */
+.filter-nokia-cstn-grid {
+  background-image: 
+    repeating-linear-gradient(
+      90deg,
+      rgba(255, 60, 60, 0.05) 0px,
+      rgba(60, 255, 60, 0.05) 1px,
+      rgba(60, 100, 255, 0.06) 2px,
+      rgba(0, 0, 0, 0.32) 3px
+    ),
+    repeating-linear-gradient(
+      180deg,
+      rgba(0, 0, 0, 0) 0px,
+      rgba(0, 0, 0, 0) 2px,
+      rgba(0, 0, 0, 0.25) 3px
+    ),
+    linear-gradient(
+      0deg,
+      rgba(255, 255, 230, 0.12) 0%,
+      rgba(0, 0, 0, 0.02) 40%,
+      rgba(0, 0, 0, 0.1) 100%
+    );
+  background-size: 3px 100%, 100% 3px, 100% 100%;
+  pointer-events: none;
+}
+
+.filter-nokia-cstn-vignette {
+  box-shadow: inset 0 0 20px rgba(0, 15, 30, 0.45), inset 0 -6px 12px rgba(255, 255, 220, 0.15);
+  pointer-events: none;
+}
+
+/* 5. Nokia 3310 Monochrome Green LCD (PCD8544 84x48 graphic display with 4 corner LEDs) */
+.filter-nokia-3310-grid {
+  background-image:
+    linear-gradient(to right, rgba(20, 36, 12, 0.35) 1px, transparent 1px),
+    linear-gradient(to bottom, rgba(20, 36, 12, 0.35) 1px, transparent 1px),
+    radial-gradient(circle at center, rgba(145, 175, 65, 0.18) 1px, transparent 1px),
+    radial-gradient(circle at 6% 6%, rgba(195, 235, 90, 0.38) 0%, transparent 45%),
+    radial-gradient(circle at 94% 6%, rgba(195, 235, 90, 0.38) 0%, transparent 45%),
+    radial-gradient(circle at 6% 94%, rgba(195, 235, 90, 0.38) 0%, transparent 45%),
+    radial-gradient(circle at 94% 94%, rgba(195, 235, 90, 0.38) 0%, transparent 45%);
+  background-size: 4px 4px, 4px 4px, 4px 4px, 100% 100%, 100% 100%, 100% 100%, 100% 100%;
+  pointer-events: none;
+}
+
+.filter-nokia-3310-frame {
+  box-shadow: inset 0 0 16px rgba(20, 38, 12, 0.6), 0 0 25px rgba(150, 190, 60, 0.2);
+  border-radius: 6px;
+}
+
 .crt-scanlines {
   background: linear-gradient(rgba(18, 16, 16, 0) 50%, rgba(0, 0, 0, 0.35) 50%);
   background-size: 100% 4px;
@@ -83,6 +133,46 @@
 
 .crt-bloom {
   box-shadow: inset 0 0 80px rgba(0, 0, 0, 0.8), 0 0 35px rgba(76, 215, 246, 0.12);
+}
+
+/* 6. Game Boy DMG Dot-Matrix LCD (Original 1989 Pea-Soup Olive Green with pixel grid) */
+.filter-gb-dmg {
+  background-color: #8bac0f;
+  background-image:
+    linear-gradient(to right, rgba(15, 56, 15, 0.35) 1px, transparent 1px),
+    linear-gradient(to bottom, rgba(15, 56, 15, 0.35) 1px, transparent 1px);
+  background-size: 3px 3px;
+  box-shadow: inset 0 0 30px rgba(15, 56, 15, 0.4);
+  mix-blend-mode: multiply;
+  pointer-events: none;
+}
+
+/* 7. Game Boy Pocket Monochrome LCD (1996 High-contrast silver-grey matrix) */
+.filter-gb-pocket {
+  background-image:
+    linear-gradient(to right, rgba(40, 40, 40, 0.22) 1px, transparent 1px),
+    linear-gradient(to bottom, rgba(40, 40, 40, 0.22) 1px, transparent 1px);
+  background-size: 3px 3px;
+  filter: grayscale(100%) contrast(1.15);
+  pointer-events: none;
+}
+
+/* 8. Arcade Trinitron Pro (RGB Aperture Grille phosphor stripes + 240p scanlines) */
+.filter-arcade-trinitron {
+  background-image:
+    linear-gradient(90deg, rgba(255, 0, 0, 0.08), rgba(0, 255, 0, 0.08), rgba(0, 0, 255, 0.08)),
+    linear-gradient(0deg, rgba(0, 0, 0, 0.45) 50%, transparent 50%);
+  background-size: 3px 100%, 100% 4px;
+  pointer-events: none;
+}
+
+/* 9. NTSC Composite Video (1990s analog CRT chroma fringing & phosphor glow) */
+.filter-ntsc-composite {
+  background-image:
+    linear-gradient(rgba(18, 16, 16, 0) 50%, rgba(0, 0, 0, 0.25) 50%),
+    radial-gradient(circle at center, transparent 65%, rgba(0, 0, 0, 0.4) 100%);
+  background-size: 100% 3px, 100% 100%;
+  pointer-events: none;
 }
 
 .scanlines-overlay {

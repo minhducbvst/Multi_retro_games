@@ -219,7 +219,12 @@ export const VirtualGamepad: React.FC<VirtualGamepadProps> = ({
     };
   }, []);
 
-  const isNES = platform.toUpperCase() === 'NES';
+  const upperPlat = (platform || 'SNES').toUpperCase();
+  const isNES = upperPlat === 'NES';
+  const isGBA = upperPlat === 'GBA' || upperPlat.includes('ADVANCE') || upperPlat === 'GB' || upperPlat === 'GBC';
+  const isGenesis = upperPlat === 'GENESIS' || upperPlat === 'MEGADRIVE' || upperPlat === 'SEGA';
+  const isSNES = !isNES && !isGBA && !isGenesis;
+  const hasShoulders = isSNES || isGBA;
 
   // Dynamic Scale multiplier classes
   const scaleClass =
@@ -249,17 +254,19 @@ export const VirtualGamepad: React.FC<VirtualGamepadProps> = ({
         {/* Top Floating Unified System & Triggers Bar */}
         <div className="w-full flex items-center justify-between px-3 sm:px-5 py-2 pointer-events-auto relative z-50">
           {/* Left: Shoulder L */}
-          {config.showShoulders ? (
+          {config.showShoulders && hasShoulders ? (
             <button
               onPointerDown={(e) => handlePress('l', e)}
               onPointerUp={(e) => handleRelease('l', e)}
               onPointerCancel={(e) => handleRelease('l', e)}
-              className={`h-9 px-3.5 sm:px-5 rounded-xl bg-[#171922]/90 border border-[#494454]/70 text-white font-mono font-bold text-xs flex items-center gap-1.5 active:bg-[#4cd7f6] active:text-[#003641] shadow-lg backdrop-blur-md active:scale-95 transition-all shrink-0 ${
-                isNES ? 'opacity-30 pointer-events-none' : ''
-              }`}
+              className={`h-9 px-3.5 sm:px-5 rounded-xl ${
+                isGBA
+                  ? 'bg-gradient-to-b from-[#2d3045] to-[#1c1e2b] border-[#818cf8]/60 text-[#c7d2fe]'
+                  : 'bg-[#171922]/90 border-[#494454]/70 text-white'
+              } border font-mono font-bold text-xs flex items-center gap-1.5 active:bg-[#4cd7f6] active:text-[#003641] shadow-lg backdrop-blur-md active:scale-95 transition-all shrink-0`}
             >
               <span className="text-[#4cd7f6] text-sm font-bold">L</span>
-              <span className="text-[10px] text-[#958ea0]">TRIG</span>
+              <span className="text-[10px] text-[#958ea0]">{isGBA ? 'BUMPER' : 'TRIG'}</span>
             </button>
           ) : (
             <div className="w-12 shrink-0"></div>
@@ -614,16 +621,18 @@ export const VirtualGamepad: React.FC<VirtualGamepadProps> = ({
           </div>
 
           {/* Right: Shoulder R */}
-          {config.showShoulders ? (
+          {config.showShoulders && hasShoulders ? (
             <button
               onPointerDown={(e) => handlePress('r', e)}
               onPointerUp={(e) => handleRelease('r', e)}
               onPointerCancel={(e) => handleRelease('r', e)}
-              className={`h-9 px-3.5 sm:px-5 rounded-xl bg-[#171922]/90 border border-[#494454]/70 text-white font-mono font-bold text-xs flex items-center gap-1.5 active:bg-[#4cd7f6] active:text-[#003641] shadow-lg backdrop-blur-md active:scale-95 transition-all shrink-0 ${
-                isNES ? 'opacity-30 pointer-events-none' : ''
-              }`}
+              className={`h-9 px-3.5 sm:px-5 rounded-xl ${
+                isGBA
+                  ? 'bg-gradient-to-b from-[#2d3045] to-[#1c1e2b] border-[#818cf8]/60 text-[#c7d2fe]'
+                  : 'bg-[#171922]/90 border-[#494454]/70 text-white'
+              } border font-mono font-bold text-xs flex items-center gap-1.5 active:bg-[#4cd7f6] active:text-[#003641] shadow-lg backdrop-blur-md active:scale-95 transition-all shrink-0`}
             >
-              <span className="text-[10px] text-[#958ea0]">TRIG</span>
+              <span className="text-[10px] text-[#958ea0]">{isGBA ? 'BUMPER' : 'TRIG'}</span>
               <span className="text-[#4cd7f6] text-sm font-bold">R</span>
             </button>
           ) : (
@@ -634,7 +643,13 @@ export const VirtualGamepad: React.FC<VirtualGamepadProps> = ({
         {/* Bottom Clusters: Left Thumb (Movement), Center Bottom (Select & Start), Right Thumb (Actions) */}
         <div className="w-full flex items-end justify-between px-4 sm:px-6 pb-3 sm:pb-4 pointer-events-none">
           {/* LEFT THUMB ZONE */}
-          <div className="pointer-events-auto flex flex-col items-center">
+          <div
+            className="pointer-events-auto flex flex-col items-center transition-transform duration-75"
+            style={{
+              transform: `translate(${config.touchOffsets?.dpadOffsetX || 0}px, ${config.touchOffsets?.dpadOffsetY || 0}px) scale(${config.touchOffsets?.dpadScale || 1})`,
+              transformOrigin: 'bottom left',
+            }}
+          >
             {config.showMovement && (
               <div className="p-1">
                 {config.movementType === 'joystick' ? (
@@ -661,10 +676,10 @@ export const VirtualGamepad: React.FC<VirtualGamepadProps> = ({
                   onPointerUp={(e) => handleRelease('select', e)}
                   onPointerCancel={(e) => handleRelease('select', e)}
                   className="w-11 h-4 sm:w-13 sm:h-4.5 rounded-full bg-[#252733] border border-[#494454]/80 -rotate-12 active:bg-[#4cd7f6] active:scale-95 transition-all shadow-md"
-                  title="SELECT"
+                  title={isGenesis ? "MODE" : "SELECT"}
                 ></button>
                 <span className="font-mono text-[9px] text-[#958ea0] tracking-wider uppercase mt-1">
-                  Select
+                  {isGenesis ? 'Mode' : 'Select'}
                 </span>
               </div>
 
@@ -685,9 +700,15 @@ export const VirtualGamepad: React.FC<VirtualGamepadProps> = ({
           )}
 
           {/* RIGHT THUMB ZONE */}
-          <div className="pointer-events-auto flex flex-col items-end gap-2 sm:gap-3">
+          <div
+            className="pointer-events-auto flex flex-col items-end gap-2 sm:gap-3 transition-transform duration-75"
+            style={{
+              transform: `translate(${config.touchOffsets?.actionOffsetX || 0}px, ${config.touchOffsets?.actionOffsetY || 0}px) scale(${config.touchOffsets?.actionScale || 1})`,
+              transformOrigin: 'bottom right',
+            }}
+          >
             {/* Auto Buttons Row (Auto-A & Auto-B) */}
-            {config.showAutoButtons && (
+            {config.showAutoButtons && !isGenesis && (
               <div className="flex items-center gap-2 mb-1">
                 <button
                   onPointerDown={(e) => handleAutoButtonPointerDown('b', e)}
@@ -722,7 +743,7 @@ export const VirtualGamepad: React.FC<VirtualGamepadProps> = ({
             {/* Action Face Buttons Cluster */}
             {config.showActionButtons && (
               <ActionButtonsCluster
-                isNES={isNES}
+                platform={platform}
                 onPress={handlePress}
                 onRelease={handleRelease}
               />
@@ -752,17 +773,19 @@ export const VirtualGamepad: React.FC<VirtualGamepadProps> = ({
       {/* 1. TOP ROW: Shoulders L/R, Platform Tag & Quick Tools Bar */}
       <div className="flex items-center justify-between gap-1 sm:gap-2 px-0 mb-1 w-full">
         {/* Left Shoulder L */}
-        {config.showShoulders ? (
+        {config.showShoulders && hasShoulders ? (
           <button
             onPointerDown={(e) => handlePress('l', e)}
             onPointerUp={(e) => handleRelease('l', e)}
             onPointerCancel={(e) => handleRelease('l', e)}
-            className={`h-8 sm:h-9 px-2 sm:px-3 rounded-xl bg-[#242735] border border-[#494454]/70 flex items-center justify-center gap-1 text-[#cbc3d7] font-mono text-xs active:bg-[#4cd7f6] active:text-[#003641] active:scale-95 transition-all shadow-md shrink-0 min-w-[44px] xs:min-w-[52px] sm:min-w-[60px] ${
-              isNES ? 'opacity-30 pointer-events-none' : ''
-            }`}
+            className={`h-8 sm:h-9 px-2 sm:px-3 rounded-xl ${
+              isGBA
+                ? 'bg-gradient-to-b from-[#2d3045] to-[#1c1e2b] border-[#818cf8]/60 text-[#c7d2fe]'
+                : 'bg-[#242735] border-[#494454]/70 text-[#cbc3d7]'
+            } border flex items-center justify-center gap-1 font-mono text-xs active:bg-[#4cd7f6] active:text-[#003641] active:scale-95 transition-all shadow-md shrink-0 min-w-[44px] xs:min-w-[52px] sm:min-w-[60px]`}
           >
             <span className="font-bold text-[#4cd7f6] text-sm">L</span>
-            <span className="text-[9px] text-[#958ea0] font-mono hidden xs:inline">BUMPER</span>
+            <span className="text-[9px] text-[#958ea0] font-mono hidden xs:inline">{isGBA ? 'BUMPER' : 'TRIG'}</span>
           </button>
         ) : (
           <div className="w-11 shrink-0"></div>
@@ -853,16 +876,18 @@ export const VirtualGamepad: React.FC<VirtualGamepadProps> = ({
         </div>
 
         {/* Right Shoulder R */}
-        {config.showShoulders ? (
+        {config.showShoulders && hasShoulders ? (
           <button
             onPointerDown={(e) => handlePress('r', e)}
             onPointerUp={(e) => handleRelease('r', e)}
             onPointerCancel={(e) => handleRelease('r', e)}
-            className={`h-8 sm:h-9 px-2 sm:px-3 rounded-xl bg-[#242735] border border-[#494454]/70 flex items-center justify-center gap-1 text-[#cbc3d7] font-mono text-xs active:bg-[#4cd7f6] active:text-[#003641] active:scale-95 transition-all shadow-md shrink-0 min-w-[44px] xs:min-w-[52px] sm:min-w-[60px] ${
-              isNES ? 'opacity-30 pointer-events-none' : ''
-            }`}
+            className={`h-8 sm:h-9 px-2 sm:px-3 rounded-xl ${
+              isGBA
+                ? 'bg-gradient-to-b from-[#2d3045] to-[#1c1e2b] border-[#818cf8]/60 text-[#c7d2fe]'
+                : 'bg-[#242735] border-[#494454]/70 text-[#cbc3d7]'
+            } border flex items-center justify-center gap-1 font-mono text-xs active:bg-[#4cd7f6] active:text-[#003641] active:scale-95 transition-all shadow-md shrink-0 min-w-[44px] xs:min-w-[52px] sm:min-w-[60px]`}
           >
-            <span className="text-[9px] text-[#958ea0] font-mono hidden xs:inline">BUMPER</span>
+            <span className="text-[9px] text-[#958ea0] font-mono hidden xs:inline">{isGBA ? 'BUMPER' : 'TRIG'}</span>
             <span className="font-bold text-[#4cd7f6] text-sm">R</span>
           </button>
         ) : (
@@ -871,7 +896,7 @@ export const VirtualGamepad: React.FC<VirtualGamepadProps> = ({
       </div>
 
       {/* 2. AUTO-FIRE BUTTONS ROW (Auto A & Auto B) */}
-      {config.showAutoButtons && (
+      {config.showAutoButtons && !isGenesis && (
         <div className="flex items-center justify-center gap-2 sm:gap-3 px-1 py-0.5 mb-1">
           <div className="flex items-center gap-1.5 sm:gap-2 bg-[#12141d]/90 px-2.5 py-0.5 rounded-full border border-[#494454]/40 shadow-inner">
             <span className="text-[10px] font-mono text-[#958ea0] uppercase tracking-wider flex items-center gap-0.5">
@@ -915,7 +940,13 @@ export const VirtualGamepad: React.FC<VirtualGamepadProps> = ({
       {/* 3. MAIN CONTROLS ROW: Left (Movement), Center (Select/Start), Right (Face Buttons) */}
       <div className="flex items-center justify-between px-0 sm:px-1 py-0.5 w-full max-w-full">
         {/* Left Side: D-Pad or Joystick */}
-        <div className="flex-1 flex justify-start items-center min-w-0">
+        <div
+          className="flex-1 flex justify-start items-center min-w-0 transition-transform duration-75"
+          style={{
+            transform: `translate(${config.touchOffsets?.dpadOffsetX || 0}px, ${config.touchOffsets?.dpadOffsetY || 0}px) scale(${config.touchOffsets?.dpadScale || 1})`,
+            transformOrigin: 'center left',
+          }}
+        >
           {config.showMovement ? (
             config.movementType === 'joystick' ? (
               <VirtualJoystick
@@ -949,10 +980,10 @@ export const VirtualGamepad: React.FC<VirtualGamepadProps> = ({
                   onPointerUp={(e) => handleRelease('select', e)}
                   onPointerCancel={(e) => handleRelease('select', e)}
                   className="w-8 h-3.5 sm:w-10 sm:h-4 rounded-full bg-[#2a2d3b] border border-[#494454]/80 -rotate-12 active:bg-[#4cd7f6] active:scale-90 transition-all shadow-inner"
-                  title="SELECT"
+                  title={isGenesis ? "MODE" : "SELECT"}
                 ></button>
                 <span className="font-mono text-[8px] sm:text-[9px] tracking-wider text-[#958ea0] uppercase mt-0.5">
-                  Select
+                  {isGenesis ? 'Mode' : 'Select'}
                 </span>
               </div>
 
@@ -973,10 +1004,16 @@ export const VirtualGamepad: React.FC<VirtualGamepadProps> = ({
         </div>
 
         {/* Right Side: Action Face Buttons */}
-        <div className="flex-1 flex justify-end items-center min-w-0 pr-0 sm:pr-0.5">
+        <div
+          className="flex-1 flex justify-end items-center min-w-0 pr-0 sm:pr-0.5 transition-transform duration-75"
+          style={{
+            transform: `translate(${config.touchOffsets?.actionOffsetX || 0}px, ${config.touchOffsets?.actionOffsetY || 0}px) scale(${config.touchOffsets?.actionScale || 1})`,
+            transformOrigin: 'center right',
+          }}
+        >
           {config.showActionButtons ? (
             <ActionButtonsCluster
-              isNES={isNES}
+              platform={platform}
               onPress={handlePress}
               onRelease={handleRelease}
             />
@@ -1028,7 +1065,7 @@ export const VirtualGamepad: React.FC<VirtualGamepadProps> = ({
 };
 
 // =========================================================================
-// SUB-COMPONENT: CLASSIC 8-WAY D-PAD WITH DIAGONAL SLIDERS
+// SUB-COMPONENT: ADVANCED 8-WAY D-PAD WITH TOUCH-SLIDING & DIAGONALS
 // =========================================================================
 interface DPadClusterProps {
   onInput: (btn: keyof EmulatorInputState, pressed: boolean) => void;
@@ -1036,70 +1073,205 @@ interface DPadClusterProps {
 }
 
 const DPadCluster: React.FC<DPadClusterProps> = ({ onInput, onHaptic }) => {
-  const handleDir = (
-    btn: keyof EmulatorInputState,
-    pressed: boolean,
-    e: React.PointerEvent
-  ) => {
+  const containerRef = useRef<HTMLDivElement | null>(null);
+  const activeDirsRef = useRef<{ up: boolean; down: boolean; left: boolean; right: boolean }>({
+    up: false,
+    down: false,
+    left: false,
+    right: false,
+  });
+  const [activeVisuals, setActiveVisuals] = useState<{ up: boolean; down: boolean; left: boolean; right: boolean }>({
+    up: false,
+    down: false,
+    left: false,
+    right: false,
+  });
+
+  const updateDirections = useCallback(
+    (dirs: { up: boolean; down: boolean; left: boolean; right: boolean }) => {
+      const current = activeDirsRef.current;
+      let changed = false;
+
+      (['up', 'down', 'left', 'right'] as const).forEach((d) => {
+        if (current[d] !== dirs[d]) {
+          current[d] = dirs[d];
+          onInput(d, dirs[d]);
+          changed = true;
+        }
+      });
+
+      if (changed) {
+        setActiveVisuals({ ...current });
+        if (dirs.up || dirs.down || dirs.left || dirs.right) {
+          onHaptic?.(14);
+        }
+      }
+    },
+    [onInput, onHaptic]
+  );
+
+  const resolvePointer = useCallback(
+    (clientX: number, clientY: number) => {
+      if (!containerRef.current) return;
+      const rect = containerRef.current.getBoundingClientRect();
+      const centerX = rect.left + rect.width / 2;
+      const centerY = rect.top + rect.height / 2;
+      const dx = clientX - centerX;
+      const dy = clientY - centerY;
+      const dist = Math.hypot(dx, dy);
+
+      // Deadzone threshold (under 12px from center counts as released)
+      if (dist < 12) {
+        updateDirections({ up: false, down: false, left: false, right: false });
+        return;
+      }
+
+      // Convert dx, dy to angle in degrees (-180 to 180)
+      const angle = (Math.atan2(dy, dx) * 180) / Math.PI;
+
+      // 8-way sector resolving:
+      let up = false;
+      let down = false;
+      let left = false;
+      let right = false;
+
+      if (angle >= -67.5 && angle <= 67.5) right = true;
+      if (angle >= 22.5 && angle <= 157.5) down = true;
+      if (angle >= 112.5 || angle <= -112.5) left = true;
+      if (angle >= -157.5 && angle <= -22.5) up = true;
+
+      updateDirections({ up, down, left, right });
+    },
+    [updateDirections]
+  );
+
+  const handlePointerDown = (e: React.PointerEvent) => {
     e.preventDefault();
     e.stopPropagation();
     try {
-      if (pressed) {
-        e.currentTarget.setPointerCapture(e.pointerId);
-        onHaptic?.(16);
-      } else {
-        e.currentTarget.releasePointerCapture(e.pointerId);
-      }
+      e.currentTarget.setPointerCapture(e.pointerId);
     } catch {}
-    onInput(btn, pressed);
+    resolvePointer(e.clientX, e.clientY);
+  };
+
+  const handlePointerMove = (e: React.PointerEvent) => {
+    e.preventDefault();
+    e.stopPropagation();
+    if (e.buttons > 0 || e.pressure > 0) {
+      resolvePointer(e.clientX, e.clientY);
+    }
+  };
+
+  const handlePointerUp = (e: React.PointerEvent) => {
+    e.preventDefault();
+    e.stopPropagation();
+    try {
+      e.currentTarget.releasePointerCapture(e.pointerId);
+    } catch {}
+    updateDirections({ up: false, down: false, left: false, right: false });
   };
 
   return (
-    <div className="relative w-[118px] h-[118px] sm:w-32 sm:h-32 rounded-full bg-[#0c0e14]/90 p-1 flex items-center justify-center border-2 border-[#494454]/50 shadow-2xl backdrop-blur-sm select-none shrink-0">
-      <div className="relative w-[104px] h-[104px] sm:w-28 sm:h-28">
-        {/* UP */}
-        <button
-          onPointerDown={(e) => handleDir('up', true, e)}
-          onPointerUp={(e) => handleDir('up', false, e)}
-          onPointerCancel={(e) => handleDir('up', false, e)}
-          className="absolute top-0 left-[34px] sm:left-9 w-9 h-9 sm:w-10 sm:h-10 rounded-t-xl bg-gradient-to-b from-[#2a2c3a] to-[#1c1e28] border-t-2 border-x border-[#494454]/80 text-[#958ea0] flex items-center justify-center active:bg-[#4cd7f6] active:text-[#003641] active:scale-95 transition-all shadow-lg"
+    <div
+      ref={containerRef}
+      onPointerDown={handlePointerDown}
+      onPointerMove={handlePointerMove}
+      onPointerUp={handlePointerUp}
+      onPointerCancel={handlePointerUp}
+      className="relative w-[122px] h-[122px] sm:w-34 sm:h-34 rounded-full bg-[#0c0e14]/95 p-1 flex items-center justify-center border-2 border-[#494454]/60 shadow-[0_4px_24px_rgba(0,0,0,0.8)] backdrop-blur-md select-none shrink-0 touch-none cursor-pointer"
+      title="Cụm D-Pad 8 hướng cảm ứng (chạm hoặc trượt ngón tay để di chuyển chéo)"
+    >
+      {/* 4 Diagonal Guide Indicators in Background */}
+      <div className="absolute inset-0 pointer-events-none flex items-center justify-center">
+        {/* Up-Left */}
+        <div
+          className={`absolute top-2 left-2 w-5 h-5 rounded-full transition-all duration-150 ${
+            activeVisuals.up && activeVisuals.left
+              ? 'bg-[#4cd7f6]/40 scale-125 shadow-[0_0_8px_#4cd7f6]'
+              : 'opacity-10 bg-white/20'
+          }`}
+        />
+        {/* Up-Right */}
+        <div
+          className={`absolute top-2 right-2 w-5 h-5 rounded-full transition-all duration-150 ${
+            activeVisuals.up && activeVisuals.right
+              ? 'bg-[#4cd7f6]/40 scale-125 shadow-[0_0_8px_#4cd7f6]'
+              : 'opacity-10 bg-white/20'
+          }`}
+        />
+        {/* Down-Left */}
+        <div
+          className={`absolute bottom-2 left-2 w-5 h-5 rounded-full transition-all duration-150 ${
+            activeVisuals.down && activeVisuals.left
+              ? 'bg-[#4cd7f6]/40 scale-125 shadow-[0_0_8px_#4cd7f6]'
+              : 'opacity-10 bg-white/20'
+          }`}
+        />
+        {/* Down-Right */}
+        <div
+          className={`absolute bottom-2 right-2 w-5 h-5 rounded-full transition-all duration-150 ${
+            activeVisuals.down && activeVisuals.right
+              ? 'bg-[#4cd7f6]/40 scale-125 shadow-[0_0_8px_#4cd7f6]'
+              : 'opacity-10 bg-white/20'
+          }`}
+        />
+      </div>
+
+      {/* D-Pad Cross */}
+      <div className="relative w-[108px] h-[108px] sm:w-[116px] sm:h-[116px] pointer-events-none">
+        {/* UP ARM */}
+        <div
+          className={`absolute top-0 left-[35px] sm:left-[39px] w-[38px] h-[38px] rounded-t-xl border-t-2 border-x border-[#494454]/80 flex items-center justify-center transition-all ${
+            activeVisuals.up
+              ? 'bg-[#4cd7f6] text-[#003641] shadow-[0_0_12px_#4cd7f6] scale-105 z-10'
+              : 'bg-gradient-to-b from-[#2a2c3a] to-[#1c1e28] text-[#958ea0]'
+          }`}
         >
           <span className="material-symbols-outlined text-xl sm:text-2xl">arrow_drop_up</span>
-        </button>
+        </div>
 
-        {/* DOWN */}
-        <button
-          onPointerDown={(e) => handleDir('down', true, e)}
-          onPointerUp={(e) => handleDir('down', false, e)}
-          onPointerCancel={(e) => handleDir('down', false, e)}
-          className="absolute bottom-0 left-[34px] sm:left-9 w-9 h-9 sm:w-10 sm:h-10 rounded-b-xl bg-gradient-to-t from-[#2a2c3a] to-[#1c1e28] border-b-2 border-x border-[#494454]/80 text-[#958ea0] flex items-center justify-center active:bg-[#4cd7f6] active:text-[#003641] active:scale-95 transition-all shadow-lg"
+        {/* DOWN ARM */}
+        <div
+          className={`absolute bottom-0 left-[35px] sm:left-[39px] w-[38px] h-[38px] rounded-b-xl border-b-2 border-x border-[#494454]/80 flex items-center justify-center transition-all ${
+            activeVisuals.down
+              ? 'bg-[#4cd7f6] text-[#003641] shadow-[0_0_12px_#4cd7f6] scale-105 z-10'
+              : 'bg-gradient-to-t from-[#2a2c3a] to-[#1c1e28] text-[#958ea0]'
+          }`}
         >
           <span className="material-symbols-outlined text-xl sm:text-2xl">arrow_drop_down</span>
-        </button>
+        </div>
 
-        {/* LEFT */}
-        <button
-          onPointerDown={(e) => handleDir('left', true, e)}
-          onPointerUp={(e) => handleDir('left', false, e)}
-          onPointerCancel={(e) => handleDir('left', false, e)}
-          className="absolute top-[34px] sm:top-9 left-0 w-9 h-9 sm:w-10 sm:h-10 rounded-l-xl bg-gradient-to-r from-[#2a2c3a] to-[#1c1e28] border-l-2 border-y border-[#494454]/80 text-[#958ea0] flex items-center justify-center active:bg-[#4cd7f6] active:text-[#003641] active:scale-95 transition-all shadow-lg"
+        {/* LEFT ARM */}
+        <div
+          className={`absolute top-[35px] sm:top-[39px] left-0 w-[38px] h-[38px] rounded-l-xl border-l-2 border-y border-[#494454]/80 flex items-center justify-center transition-all ${
+            activeVisuals.left
+              ? 'bg-[#4cd7f6] text-[#003641] shadow-[0_0_12px_#4cd7f6] scale-105 z-10'
+              : 'bg-gradient-to-r from-[#2a2c3a] to-[#1c1e28] text-[#958ea0]'
+          }`}
         >
           <span className="material-symbols-outlined text-xl sm:text-2xl">arrow_left</span>
-        </button>
+        </div>
 
-        {/* RIGHT */}
-        <button
-          onPointerDown={(e) => handleDir('right', true, e)}
-          onPointerUp={(e) => handleDir('right', false, e)}
-          onPointerCancel={(e) => handleDir('right', false, e)}
-          className="absolute top-[34px] sm:top-9 right-0 w-9 h-9 sm:w-10 sm:h-10 rounded-r-xl bg-gradient-to-l from-[#2a2c3a] to-[#1c1e28] border-r-2 border-y border-[#494454]/80 text-[#958ea0] flex items-center justify-center active:bg-[#4cd7f6] active:text-[#003641] active:scale-95 transition-all shadow-lg"
+        {/* RIGHT ARM */}
+        <div
+          className={`absolute top-[35px] sm:top-[39px] right-0 w-[38px] h-[38px] rounded-r-xl border-r-2 border-y border-[#494454]/80 flex items-center justify-center transition-all ${
+            activeVisuals.right
+              ? 'bg-[#4cd7f6] text-[#003641] shadow-[0_0_12px_#4cd7f6] scale-105 z-10'
+              : 'bg-gradient-to-l from-[#2a2c3a] to-[#1c1e28] text-[#958ea0]'
+          }`}
         >
           <span className="material-symbols-outlined text-xl sm:text-2xl">arrow_right</span>
-        </button>
+        </div>
 
-        {/* Center Pivot Bevel */}
-        <div className="absolute top-[34px] sm:top-9 left-[34px] sm:left-9 w-9 h-9 sm:w-10 sm:h-10 bg-[#151722] rounded-sm border border-[#494454]/50 flex items-center justify-center shadow-inner pointer-events-none">
-          <div className="w-2.5 h-2.5 sm:w-3 sm:h-3 rounded-full bg-[#252837] border border-[#494454]"></div>
+        {/* CENTER PIVOT */}
+        <div className="absolute top-[35px] sm:top-[39px] left-[35px] sm:left-[39px] w-[38px] h-[38px] bg-[#151722] rounded-sm border border-[#494454]/50 flex items-center justify-center shadow-inner">
+          <div
+            className={`w-3 h-3 rounded-full transition-all ${
+              activeVisuals.up || activeVisuals.down || activeVisuals.left || activeVisuals.right
+                ? 'bg-[#4cd7f6] scale-110 shadow-[0_0_6px_#4cd7f6]'
+                : 'bg-[#252837] border border-[#494454]'
+            }`}
+          ></div>
         </div>
       </div>
     </div>
@@ -1107,65 +1279,217 @@ const DPadCluster: React.FC<DPadClusterProps> = ({ onInput, onHaptic }) => {
 };
 
 // =========================================================================
-// SUB-COMPONENT: ACTION FACE BUTTONS CLUSTER (SNES DIAMOND OR NES DUAL)
+// SUB-COMPONENT: PLATFORM-OPTIMIZED ACTION FACE BUTTONS CLUSTER
+// (NES 2-Button / GBA Angled / GENESIS 3-Arc / SNES Diamond)
 // =========================================================================
 interface ActionButtonsClusterProps {
-  isNES: boolean;
+  platform: string;
   onPress: (btn: keyof EmulatorInputState, e: React.PointerEvent) => void;
   onRelease: (btn: keyof EmulatorInputState, e: React.PointerEvent) => void;
 }
 
 const ActionButtonsCluster: React.FC<ActionButtonsClusterProps> = ({
-  isNES,
+  platform,
   onPress,
   onRelease,
 }) => {
+  const upperPlat = (platform || 'SNES').toUpperCase();
+  const isNES = upperPlat === 'NES';
+  const isGBA = upperPlat === 'GBA' || upperPlat.includes('ADVANCE') || upperPlat === 'GB' || upperPlat === 'GBC';
+  const isGenesis = upperPlat === 'GENESIS' || upperPlat === 'MEGADRIVE' || upperPlat === 'SEGA';
+
+  // 1. NES AUTHENTIC DUAL BUTTON CLUSTER (CLASSIC HORIZONTAL B & A)
+  if (isNES) {
+    return (
+      <div className="relative w-[126px] h-[122px] sm:w-36 sm:h-34 rounded-2xl bg-gradient-to-b from-[#1a1c24] to-[#0c0e14] p-2 flex flex-col items-center justify-between border-2 border-[#d9383a]/60 shadow-[0_4px_24px_rgba(0,0,0,0.8)] backdrop-blur-md select-none shrink-0">
+        <div className="w-full flex items-center justify-between px-1">
+          <span className="text-[9px] font-mono font-bold tracking-widest text-[#d9383a] uppercase">NES PAD</span>
+          <span className="text-[8px] font-mono text-[#958ea0]">DUAL ACTION</span>
+        </div>
+
+        <div className="flex items-center justify-center gap-3 my-auto -rotate-6">
+          {/* Button B (Left - Crimson) */}
+          <div className="flex flex-col items-center">
+            <button
+              onPointerDown={(e) => onPress('b', e)}
+              onPointerUp={(e) => onRelease('b', e)}
+              onPointerCancel={(e) => onRelease('b', e)}
+              className="w-11 h-11 sm:w-12 sm:h-12 rounded-full bg-gradient-to-b from-[#e74c3c] to-[#992d22] border-2 border-[#ff7979] text-white font-mono font-black text-sm sm:text-base flex items-center justify-center shadow-lg active:scale-90 active:from-[#ff7675] active:to-[#d63031] transition-all"
+              title="NES Nút B"
+            >
+              B
+            </button>
+            <span className="font-mono text-[9px] text-[#ff7979] font-bold mt-1 uppercase">Run / Atk</span>
+          </div>
+
+          {/* Button A (Right - Crimson) */}
+          <div className="flex flex-col items-center">
+            <button
+              onPointerDown={(e) => onPress('a', e)}
+              onPointerUp={(e) => onRelease('a', e)}
+              onPointerCancel={(e) => onRelease('a', e)}
+              className="w-11 h-11 sm:w-12 sm:h-12 rounded-full bg-gradient-to-b from-[#e74c3c] to-[#992d22] border-2 border-[#ff7979] text-white font-mono font-black text-sm sm:text-base flex items-center justify-center shadow-lg active:scale-90 active:from-[#ff7675] active:to-[#d63031] transition-all"
+              title="NES Nút A"
+            >
+              A
+            </button>
+            <span className="font-mono text-[9px] text-[#ff7979] font-bold mt-1 uppercase">Jump / OK</span>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  // 2. GBA AUTHENTIC ANGLED DUAL CLUSTER (INDIGO B & A)
+  if (isGBA) {
+    return (
+      <div className="relative w-[124px] h-[122px] sm:w-36 sm:h-34 rounded-2xl bg-gradient-to-b from-[#1c1e2b] to-[#0c0e14] p-2 flex flex-col items-center justify-between border-2 border-[#818cf8]/60 shadow-[0_4px_24px_rgba(0,0,0,0.8)] backdrop-blur-md select-none shrink-0">
+        <div className="w-full flex items-center justify-between px-1">
+          <span className="text-[9px] font-mono font-bold tracking-widest text-[#818cf8] uppercase">GBA ACTION</span>
+          <span className="text-[8px] font-mono text-[#958ea0]">32-BIT</span>
+        </div>
+
+        <div className="relative w-full h-[84px] flex items-center justify-center">
+          {/* Button B (Lower-Left) */}
+          <div className="absolute bottom-1 left-2 flex flex-col items-center">
+            <button
+              onPointerDown={(e) => onPress('b', e)}
+              onPointerUp={(e) => onRelease('b', e)}
+              onPointerCancel={(e) => onRelease('b', e)}
+              className="w-11 h-11 sm:w-12 sm:h-12 rounded-full bg-gradient-to-b from-[#4f46e5] to-[#312e81] border-2 border-[#a5b4fc] text-white font-mono font-black text-sm sm:text-base flex items-center justify-center shadow-lg active:scale-90 active:from-[#6366f1] active:to-[#3730a3] transition-all"
+              title="GBA Nút B"
+            >
+              B
+            </button>
+            <span className="font-mono text-[9px] text-[#a5b4fc] font-bold mt-0.5">B</span>
+          </div>
+
+          {/* Button A (Upper-Right) */}
+          <div className="absolute top-1 right-2 flex flex-col items-center">
+            <button
+              onPointerDown={(e) => onPress('a', e)}
+              onPointerUp={(e) => onRelease('a', e)}
+              onPointerCancel={(e) => onRelease('a', e)}
+              className="w-11 h-11 sm:w-12 sm:h-12 rounded-full bg-gradient-to-b from-[#4f46e5] to-[#312e81] border-2 border-[#a5b4fc] text-white font-mono font-black text-sm sm:text-base flex items-center justify-center shadow-lg active:scale-90 active:from-[#6366f1] active:to-[#3730a3] transition-all"
+              title="GBA Nút A"
+            >
+              A
+            </button>
+            <span className="font-mono text-[9px] text-[#a5b4fc] font-bold mt-0.5">A</span>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  // 3. GENESIS 3-BUTTON CURVED ARC (A, B, C)
+  if (isGenesis) {
+    return (
+      <div className="relative w-[132px] h-[122px] sm:w-40 sm:h-34 rounded-2xl bg-gradient-to-b from-[#1a1b24] to-[#0c0e14] p-2 flex flex-col items-center justify-between border-2 border-[#38bdf8]/50 shadow-[0_4px_24px_rgba(0,0,0,0.8)] backdrop-blur-md select-none shrink-0">
+        <div className="w-full flex items-center justify-between px-1">
+          <span className="text-[9px] font-mono font-bold tracking-widest text-[#38bdf8] uppercase">SEGA ARC</span>
+          <span className="text-[8px] font-mono text-[#958ea0]">3-BUTTON</span>
+        </div>
+
+        <div className="flex items-center justify-center gap-1.5 sm:gap-2 my-auto">
+          {/* Genesis A (Maps to 'b') */}
+          <div className="flex flex-col items-center">
+            <button
+              onPointerDown={(e) => onPress('b', e)}
+              onPointerUp={(e) => onRelease('b', e)}
+              onPointerCancel={(e) => onRelease('b', e)}
+              className="w-9 h-9 sm:w-10 sm:h-10 rounded-full bg-gradient-to-b from-[#252837] to-[#12131b] border-2 border-[#38bdf8]/80 text-[#38bdf8] font-mono font-black text-xs sm:text-sm flex items-center justify-center shadow-md active:scale-90 active:bg-[#38bdf8] active:text-[#002b36] transition-all"
+              title="Genesis Nút A"
+            >
+              A
+            </button>
+            <span className="font-mono text-[8px] text-[#958ea0] mt-0.5">Btn A</span>
+          </div>
+
+          {/* Genesis B (Maps to 'a') */}
+          <div className="flex flex-col items-center -translate-y-1">
+            <button
+              onPointerDown={(e) => onPress('a', e)}
+              onPointerUp={(e) => onRelease('a', e)}
+              onPointerCancel={(e) => onRelease('a', e)}
+              className="w-9 h-9 sm:w-10 sm:h-10 rounded-full bg-gradient-to-b from-[#252837] to-[#12131b] border-2 border-[#38bdf8]/80 text-[#38bdf8] font-mono font-black text-xs sm:text-sm flex items-center justify-center shadow-md active:scale-90 active:bg-[#38bdf8] active:text-[#002b36] transition-all"
+              title="Genesis Nút B"
+            >
+              B
+            </button>
+            <span className="font-mono text-[8px] text-[#958ea0] mt-0.5">Btn B</span>
+          </div>
+
+          {/* Genesis C (Maps to 'y') */}
+          <div className="flex flex-col items-center -translate-y-2">
+            <button
+              onPointerDown={(e) => onPress('y', e)}
+              onPointerUp={(e) => onRelease('y', e)}
+              onPointerCancel={(e) => onRelease('y', e)}
+              className="w-9 h-9 sm:w-10 sm:h-10 rounded-full bg-gradient-to-b from-[#252837] to-[#12131b] border-2 border-[#38bdf8]/80 text-[#38bdf8] font-mono font-black text-xs sm:text-sm flex items-center justify-center shadow-md active:scale-90 active:bg-[#38bdf8] active:text-[#002b36] transition-all"
+              title="Genesis Nút C"
+            >
+              C
+            </button>
+            <span className="font-mono text-[8px] text-[#958ea0] mt-0.5">Btn C</span>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  // 4. SNES 4-BUTTON DIAMOND (SUPER FAMICOM / SNES ICONIC)
   return (
-    <div className="relative w-[118px] h-[118px] sm:w-32 sm:h-32 rounded-full bg-[#0c0e14]/90 p-1.5 sm:p-2 flex items-center justify-center border-2 border-[#494454]/50 shadow-2xl backdrop-blur-sm select-none shrink-0">
-      <div className="relative w-[104px] h-[104px] sm:w-28 sm:h-28">
-        {/* X (Top - Violet) */}
+    <div className="relative w-[122px] h-[122px] sm:w-34 sm:h-34 rounded-full bg-[#0c0e14]/95 p-1.5 sm:p-2 flex items-center justify-center border-2 border-[#494454]/60 shadow-[0_4px_24px_rgba(0,0,0,0.8)] backdrop-blur-md select-none shrink-0">
+      <div className="relative w-[108px] h-[108px] sm:w-28 sm:h-28">
+        {/* X (Top - Sky Blue) */}
         <button
           onPointerDown={(e) => onPress('x', e)}
           onPointerUp={(e) => onRelease('x', e)}
           onPointerCancel={(e) => onRelease('x', e)}
-          className={`absolute top-0 left-[34px] sm:left-9 w-9 h-9 sm:w-10 sm:h-10 rounded-full bg-gradient-to-b from-[#333647] to-[#1f212d] border-2 border-[#d0bcff]/60 text-[#d0bcff] font-bold text-xs sm:text-sm flex items-center justify-center shadow-lg active:scale-90 active:bg-[#a078ff] active:text-[#340080] transition-all ${
-            isNES ? 'opacity-20 pointer-events-none' : ''
-          }`}
+          className="absolute top-0 left-[36px] sm:left-9 w-9 h-9 sm:w-10 sm:h-10 rounded-full bg-gradient-to-b from-[#2a3749] to-[#16202c] border-2 border-[#38bdf8] text-[#38bdf8] font-bold text-xs sm:text-sm flex items-center justify-center shadow-lg active:scale-90 active:bg-[#38bdf8] active:text-[#082f49] transition-all"
+          title="SNES Nút X"
         >
           X
         </button>
 
-        {/* Y (Left - Lavender) */}
+        {/* Y (Left - Emerald) */}
         <button
           onPointerDown={(e) => onPress('y', e)}
           onPointerUp={(e) => onRelease('y', e)}
           onPointerCancel={(e) => onRelease('y', e)}
-          className={`absolute top-[34px] sm:top-9 left-0 w-9 h-9 sm:w-10 sm:h-10 rounded-full bg-gradient-to-b from-[#333647] to-[#1f212d] border-2 border-[#a078ff]/70 text-[#e9ddff] font-bold text-xs sm:text-sm flex items-center justify-center shadow-lg active:scale-90 active:bg-[#a078ff] active:text-[#340080] transition-all ${
-            isNES ? 'opacity-20 pointer-events-none' : ''
-          }`}
+          className="absolute top-[36px] sm:top-9 left-0 w-9 h-9 sm:w-10 sm:h-10 rounded-full bg-gradient-to-b from-[#233f37] to-[#132520] border-2 border-[#34d399] text-[#34d399] font-bold text-xs sm:text-sm flex items-center justify-center shadow-lg active:scale-90 active:bg-[#34d399] active:text-[#022c22] transition-all"
+          title="SNES Nút Y"
         >
           Y
         </button>
 
-        {/* A (Right - Amber Flame) */}
+        {/* A (Right - Crimson Red) */}
         <button
           onPointerDown={(e) => onPress('a', e)}
           onPointerUp={(e) => onRelease('a', e)}
           onPointerCancel={(e) => onRelease('a', e)}
-          className="absolute top-[34px] sm:top-9 right-0 w-9 h-9 sm:w-10 sm:h-10 rounded-full bg-gradient-to-b from-[#38322c] to-[#211d1a] border-2 border-[#ffb95f]/70 text-[#ffddb8] font-bold text-xs sm:text-sm flex items-center justify-center shadow-lg active:scale-90 active:bg-[#ffb95f] active:text-[#2a1700] transition-all"
+          className="absolute top-[36px] sm:top-9 right-0 w-9 h-9 sm:w-10 sm:h-10 rounded-full bg-gradient-to-b from-[#42252b] to-[#261317] border-2 border-[#f43f5e] text-[#f43f5e] font-bold text-xs sm:text-sm flex items-center justify-center shadow-lg active:scale-90 active:bg-[#f43f5e] active:text-[#4c0519] transition-all"
+          title="SNES Nút A"
         >
           A
         </button>
 
-        {/* B (Bottom - Electric Cyan) */}
+        {/* B (Bottom - Golden Amber) */}
         <button
           onPointerDown={(e) => onPress('b', e)}
           onPointerUp={(e) => onRelease('b', e)}
           onPointerCancel={(e) => onRelease('b', e)}
-          className="absolute bottom-0 left-[34px] sm:left-9 w-9 h-9 sm:w-10 sm:h-10 rounded-full bg-gradient-to-b from-[#26373f] to-[#182329] border-2 border-[#4cd7f6]/70 text-[#4cd7f6] font-bold text-xs sm:text-sm flex items-center justify-center shadow-lg active:scale-90 active:bg-[#4cd7f6] active:text-[#001f26] transition-all"
+          className="absolute bottom-0 left-[36px] sm:left-9 w-9 h-9 sm:w-10 sm:h-10 rounded-full bg-gradient-to-b from-[#42331d] to-[#261c0e] border-2 border-[#fbbf24] text-[#fbbf24] font-bold text-xs sm:text-sm flex items-center justify-center shadow-lg active:scale-90 active:bg-[#fbbf24] active:text-[#451a03] transition-all"
+          title="SNES Nút B"
         >
           B
         </button>
+
+        {/* Center Cross Accent */}
+        <div className="absolute top-[38px] sm:top-[38px] left-[38px] sm:left-[38px] w-8 h-8 rounded-full bg-[#12141c]/80 border border-[#494454]/40 flex items-center justify-center pointer-events-none">
+          <div className="w-2 h-2 rounded-full bg-[#494454]"></div>
+        </div>
       </div>
     </div>
   );

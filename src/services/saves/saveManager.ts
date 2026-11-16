@@ -1,4 +1,4 @@
-import { SaveMetadata, SaveConflict } from '../../types';
+import { SaveMetadata, SaveConflict, Platform } from '../../types';
 import { db, auth, handleFirestoreError, OperationType } from '../firebase';
 import { collection, doc, setDoc, getDocs, deleteDoc } from 'firebase/firestore';
 
@@ -141,8 +141,16 @@ export class SaveManager {
     }
   }
 
-  public exportSram(gameId: string): Uint8Array {
-    const save = Array.from(this.localSaves.values()).find(s => s.gameId === gameId && (s.type === 'sram' || s.type === 'battery'));
+  public hasSram(gameId: string): boolean {
+    return Array.from(this.localSaves.values()).some(
+      (s) => s.gameId === gameId && (s.type === 'sram' || s.type === 'battery') && !!s.rawBase64Data
+    );
+  }
+
+  public getSramBytes(gameId: string): Uint8Array | null {
+    const save = Array.from(this.localSaves.values()).find(
+      (s) => s.gameId === gameId && (s.type === 'sram' || s.type === 'battery')
+    );
     if (save && save.rawBase64Data) {
       try {
         const binaryString = atob(save.rawBase64Data);
@@ -152,10 +160,81 @@ export class SaveManager {
         }
         return bytes;
       } catch {
-        return new Uint8Array(8192);
+        return null;
       }
     }
-    return new Uint8Array(8192);
+    return null;
+  }
+
+  public async importSram(
+    gameId: string,
+    gameTitle: string,
+    platform: Platform | string,
+    bytes: Uint8Array
+  ): Promise<void> {
+    let binary = '';
+    for (let i = 0; i < bytes.byteLength; i++) {
+      binary += String.fromCharCode(bytes[i]);
+    }
+    const base64 = btoa(binary);
+    await this.saveLocal({
+      id: `${gameId}-sram-battery`,
+      ownerUid: auth.currentUser?.uid || 'local-user',
+      gameId,
+      gameTitle,
+      platform: platform as Platform,
+      slot: 0,
+      type: 'sram',
+      locationName: `Bộ nhớ Pin SRAM (${(bytes.byteLength / 1024).toFixed(1)} KB)`,
+      sizeBytes: bytes.byteLength,
+      checksum: 'sram-sync',
+      rawBase64Data: base64,
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+    });
+  }
+
+  public exportSram(gameId: string): Uint8Array {
+    const bytes = this.getSramBytes(gameId);
+    if (bytes && bytes.byteLength > 0 && typeof document !== 'undefined') {
+      const blob = new Blob([bytes as unknown as BlobPart], { type: 'application/octet-stream' });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = `${gameId}.sav`;
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      URL.revokeObjectURL(url);
+    }
+    return bytes || new Uint8Array(0);
+  }
+
+  public exportSave(save: SaveMetadata): void {
+    if (typeof document === 'undefined') return;
+    let blob: Blob;
+    if (save.rawBase64Data) {
+      try {
+        const binStr = atob(save.rawBase64Data);
+        const bytes = new Uint8Array(binStr.length);
+        for (let i = 0; i < binStr.length; i++) {
+          bytes[i] = binStr.charCodeAt(i);
+        }
+        blob = new Blob([bytes as unknown as BlobPart], { type: 'application/octet-stream' });
+      } catch {
+        blob = new Blob([JSON.stringify(save, null, 2)], { type: 'application/json' });
+      }
+    } else {
+      blob = new Blob([JSON.stringify(save, null, 2)], { type: 'application/json' });
+    }
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `${save.gameTitle || save.gameId}_slot${save.slot}.state`;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url);
   }
 
   public cleanOrphanStates(): number {

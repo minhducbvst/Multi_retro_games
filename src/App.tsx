@@ -10,29 +10,45 @@ import { SearchModal } from './components/SearchModal';
 import { DashboardPage } from './pages/DashboardPage';
 import { GameDetailPage } from './pages/GameDetailPage';
 import { EmulatorPage } from './pages/EmulatorPage';
-import { NetPlayLobbyPage } from './pages/NetPlayLobbyPage';
+import { NetPlayLobbyPage, ActiveNetplayLaunch } from './pages/NetPlayLobbyPage';
 import { SettingsPage } from './pages/SettingsPage';
 import { SavesPage } from './pages/SavesPage';
 import { RomVaultPage } from './pages/RomVaultPage';
 import { ProfilePage } from './pages/ProfilePage';
 import { ChangelogPage } from './pages/ChangelogPage';
-import { FEATURED_GAMES, getGameById } from './services/games/catalog';
 import { Game } from './types';
 import { RomHeaderInfo } from './emulator/romParser';
 import { romStorage } from './services/roms/romStorage';
+import { roomService } from './services/multiplayer/roomService';
 
 import { libraryStore, useLibraryStore, getCartridgeCoverArt } from './services/games/libraryStore';
 
+function getInitialRoomCodeFromUrl(): string | undefined {
+  if (typeof window === 'undefined') return undefined;
+  try {
+    const params = new URLSearchParams(window.location.search);
+    const code = params.get('room')?.trim();
+    return code ? code.toUpperCase() : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
 export default function App() {
   const libraryGames = useLibraryStore();
-  const [currentTab, setCurrentTab] = useState<string>('browse');
-  const [activeView, setActiveView] = useState<'main' | 'game-detail' | 'emulator' | 'netplay'>('main');
+  const [initialRoomCode, setInitialRoomCode] = useState<string | undefined>(() => getInitialRoomCodeFromUrl());
+  const [currentTab, setCurrentTab] = useState<string>(() => (getInitialRoomCodeFromUrl() ? 'rooms' : 'browse'));
+  const [activeView, setActiveView] = useState<'main' | 'game-detail' | 'emulator' | 'netplay'>(() =>
+    getInitialRoomCodeFromUrl() ? 'netplay' : 'main'
+  );
   const [selectedGameId, setSelectedGameId] = useState<string>(() => libraryStore.getGames()[0]?.id || '');
   const [activeSaveSlot, setActiveSaveSlot] = useState<number>(1);
   const [searchModalOpen, setSearchModalOpen] = useState<boolean>(false);
   const [searchQuery, setSearchQuery] = useState<string>('');
   const [vaultSourceMode, setVaultSourceMode] = useState<'local' | 'drive'>('local');
   const [netplayRoomId, setNetplayRoomId] = useState<string | undefined>(undefined);
+  const [preselectedNetplayGameId, setPreselectedNetplayGameId] = useState<string | undefined>(undefined);
+  const [netplaySession, setNetplaySession] = useState<ActiveNetplayLaunch | null>(null);
 
   // User State (Clean production: starts empty, populates on user actions)
   const [favorites, setFavorites] = useState<string[]>(() => {
@@ -152,6 +168,7 @@ export default function App() {
     }
     if (tab === 'rooms' || tab === 'netplay') {
       setNetplayRoomId(param || undefined);
+      setPreselectedNetplayGameId(undefined);
       setActiveView('netplay');
       setCurrentTab('rooms');
       return;
@@ -167,6 +184,21 @@ export default function App() {
 
     setCurrentTab(tab);
     setActiveView('main');
+  };
+
+  const handleLeaveNetplayMatch = () => {
+    if (!netplaySession) {
+      setActiveView(selectedGameId ? 'game-detail' : 'main');
+      return;
+    }
+    const returnRoomId = netplaySession.room.id;
+    if (netplaySession.role === 'host') {
+      roomService.stopMatch();
+    }
+    setNetplaySession(null);
+    setNetplayRoomId(returnRoomId);
+    setCurrentTab('rooms');
+    setActiveView('netplay');
   };
 
   return (
@@ -205,10 +237,30 @@ export default function App() {
             <EmulatorPage
               gameId={selectedGameId}
               initialSlot={activeSaveSlot}
-              onExit={() => setActiveView(selectedGameId ? 'game-detail' : 'main')}
+              netplaySession={
+                netplaySession
+                  ? {
+                      room: netplaySession.room,
+                      role: netplaySession.role,
+                      playerUid: netplaySession.playerUid,
+                      onLeaveMatch: handleLeaveNetplayMatch,
+                    }
+                  : null
+              }
+              onExit={() => {
+                if (netplaySession) {
+                  handleLeaveNetplayMatch();
+                } else {
+                  setActiveView(selectedGameId ? 'game-detail' : 'main');
+                }
+              }}
               onOpenSettings={() => {
-                setActiveView('main');
-                setCurrentTab('settings');
+                if (netplaySession) {
+                  handleLeaveNetplayMatch();
+                } else {
+                  setActiveView('main');
+                  setCurrentTab('settings');
+                }
               }}
             />
           )}
@@ -219,7 +271,10 @@ export default function App() {
               gameId={selectedGameId}
               onBack={() => setActiveView('main')}
               onPlayGame={(id, slot) => handlePlayGame(id, slot)}
-              onOpenNetPlay={() => {
+              onOpenNetPlay={(gId) => {
+                setPreselectedNetplayGameId(gId || selectedGameId);
+                setNetplayRoomId(undefined);
+                setInitialRoomCode(undefined);
                 setActiveView('netplay');
                 setCurrentTab('rooms');
               }}
@@ -232,9 +287,19 @@ export default function App() {
           {activeView === 'netplay' && (
             <NetPlayLobbyPage
               roomId={netplayRoomId}
-              onLaunchGame={(gameId) => handlePlayGame(gameId)}
+              initialRoomCode={initialRoomCode}
+              preselectedGameId={preselectedNetplayGameId}
+              onLaunchNetplayMatch={(launch) => {
+                setNetplaySession(launch);
+                setSelectedGameId(launch.room.gameId);
+                setNetplayRoomId(launch.room.id);
+                setActiveView('emulator');
+              }}
               onLeaveRoom={() => {
                 setNetplayRoomId(undefined);
+                setInitialRoomCode(undefined);
+                setPreselectedNetplayGameId(undefined);
+                setNetplaySession(null);
                 setActiveView('main');
                 setCurrentTab('browse');
               }}
@@ -250,10 +315,14 @@ export default function App() {
                   onPlayGame={(id) => handlePlayGame(id, 1)}
                   onOpenNetPlay={() => {
                     setNetplayRoomId(undefined);
+                    setPreselectedNetplayGameId(undefined);
                     setActiveView('netplay');
                     setCurrentTab('rooms');
                   }}
-                  onOpenRomVault={() => setCurrentTab('vault')}
+                  onOpenRomVault={(mode) => {
+                    setVaultSourceMode(mode || 'local');
+                    setCurrentTab('vault');
+                  }}
                   favorites={favorites}
                   onToggleFavorite={handleToggleFavorite}
                   filterMode={

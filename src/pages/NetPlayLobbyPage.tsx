@@ -1,22 +1,59 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { roomService, PlayerProfile } from '../services/multiplayer/roomService';
-import { FEATURED_GAMES } from '../services/games/catalog';
+import {
+  roomService,
+  getOrCreatePlayerProfile,
+  setLocalPlayerName,
+  ServerConnectionStatus,
+} from '../services/multiplayer/roomService';
+import { webrtcNetplay, NetplayTelemetryStats } from '../services/multiplayer/webrtcNetplay';
+import { useLibraryStore, libraryStore, getCartridgeCoverArt } from '../services/games/libraryStore';
 import { NetPlayRoom, ChatMessage, Platform, Game } from '../types';
 import { auth, loginWithGoogle } from '../services/firebase';
 import { onAuthStateChanged, User } from 'firebase/auth';
+import { parseRom } from '../emulator/romParser';
+import { romStorage } from '../services/roms/romStorage';
+
+export interface ActiveNetplayLaunch {
+  room: NetPlayRoom;
+  role: 'host' | 'guest' | 'spectator';
+  playerUid: string;
+}
 
 interface NetPlayLobbyPageProps {
   roomId?: string;
-  onLaunchGame: (gameId: string) => void;
+  initialRoomCode?: string;
+  preselectedGameId?: string;
+  onLaunchNetplayMatch: (launch: ActiveNetplayLaunch) => void;
   onLeaveRoom: () => void;
 }
 
+const ARENA_FALLBACK_GAME: Game = {
+  id: 'arena-coop',
+  title: 'RetroVerse Co-Op Arena (2P Sandbox)',
+  platform: 'SNES',
+  year: 1995,
+  developer: 'RetroVerse Engine',
+  genre: 'Co-Op Arena / Ready-to-Play',
+  rating: 5.0,
+  ratingCount: 1,
+  boxArt: getCartridgeCoverArt('RetroVerse Co-Op Arena', 'SNES'),
+  description: 'Đấu trường 2 người chơi tích hợp sẵn, vào trận ngay không cần tải ROM hoặc thay băng ROM của bạn bất cứ lúc nào.',
+  features: ['2-Player Simultaneous', 'Zero-ROM Ready', 'WebRTC 60FPS'],
+};
+
 export const NetPlayLobbyPage: React.FC<NetPlayLobbyPageProps> = ({
   roomId,
-  onLaunchGame,
-  onLeaveRoom
+  initialRoomCode,
+  preselectedGameId,
+  onLaunchNetplayMatch,
+  onLeaveRoom,
 }) => {
+  const libraryGames = useLibraryStore();
   const [currentUser, setCurrentUser] = useState<User | null>(auth.currentUser);
+  const [playerProfile, setPlayerProfile] = useState(() => getOrCreatePlayerProfile());
+  const [editingNickname, setEditingNickname] = useState<boolean>(false);
+  const [nicknameDraft, setNicknameDraft] = useState<string>(() => getOrCreatePlayerProfile().displayName);
+
   const [activeRoomId, setActiveRoomId] = useState<string | undefined>(roomId);
   const [room, setRoom] = useState<NetPlayRoom | null>(null);
   const [messages, setMessages] = useState<ChatMessage[]>([]);
@@ -26,63 +63,105 @@ export const NetPlayLobbyPage: React.FC<NetPlayLobbyPageProps> = ({
   const [copiedLink, setCopiedLink] = useState<boolean>(false);
   const [toastMessage, setToastMessage] = useState<string | null>(null);
 
-  // Sync with prop
-  useEffect(() => {
-    setActiveRoomId(roomId);
-  }, [roomId]);
+  // Real Server & WebRTC Network Telemetry
+  const [serverStatus, setServerStatus] = useState<ServerConnectionStatus>('connecting');
+  const [serverRttMs, setServerRttMs] = useState<number>(0);
+  const [rtcStats, setRtcStats] = useState<NetplayTelemetryStats>(() => webrtcNetplay.getStats());
 
-  // Modals state
-  const [showCreateModal, setShowCreateModal] = useState<boolean>(false);
+  // Modals
+  const [showCreateModal, setShowCreateModal] = useState<boolean>(() => Boolean(preselectedGameId));
   const [showJoinModal, setShowJoinModal] = useState<boolean>(false);
-  const [showPublicRoomsModal, setShowPublicRoomsModal] = useState<boolean>(false);
   const [showChangeCartridgeModal, setShowChangeCartridgeModal] = useState<boolean>(false);
 
-  // Create Room form inputs
-  const [createGameId, setCreateGameId] = useState<string>('smw');
-  const [createPlatform, setCreatePlatform] = useState<Platform>('SNES');
+  // Create Room Form
+  const availableGames = libraryGames.length > 0 ? libraryGames : [ARENA_FALLBACK_GAME];
+  const [createGameId, setCreateGameId] = useState<string>(
+    () => preselectedGameId || libraryGames[0]?.id || ARENA_FALLBACK_GAME.id
+  );
+  const [createPlatform, setCreatePlatform] = useState<Platform>(
+    () =>
+      (preselectedGameId ? libraryGames.find((g) => g.id === preselectedGameId)?.platform : libraryGames[0]?.platform) ||
+      'SNES'
+  );
   const [createIsPublic, setCreateIsPublic] = useState<boolean>(true);
-  const [createRollback, setCreateRollback] = useState<number>(2);
+  const [createRollback, setCreateRollback] = useState<number>(1);
 
-  // Join Room form input
+  // Join Room Form
   const [joinCodeInput, setJoinCodeInput] = useState<string>('');
   const [joinError, setJoinError] = useState<string | null>(null);
   const [isSubmitting, setIsSubmitting] = useState<boolean>(false);
 
-  // WebRTC status
-  const [webRtcStatus, setWebRtcStatus] = useState<'connecting' | 'connected' | 'disconnected'>('connected');
   const chatScrollRef = useRef<HTMLDivElement | null>(null);
+  const romUploadInputRef = useRef<HTMLInputElement | null>(null);
+  const autoJoinedCodeRef = useRef<string | null>(null);
 
   const showToast = (msg: string) => {
     setToastMessage(msg);
-    setTimeout(() => setToastMessage(null), 2500);
+    setTimeout(() => setToastMessage(null), 2800);
   };
+
+  // Sync props
+  useEffect(() => {
+    setActiveRoomId(roomId);
+  }, [roomId]);
+
+  useEffect(() => {
+    if (preselectedGameId) {
+      const found = libraryGames.find((g) => g.id === preselectedGameId);
+      if (found) {
+        setCreateGameId(found.id);
+        setCreatePlatform(found.platform);
+        setShowCreateModal(true);
+      }
+    }
+  }, [preselectedGameId, libraryGames]);
 
   // Auth tracking
   useEffect(() => {
     const unsub = onAuthStateChanged(auth, (usr) => {
       setCurrentUser(usr);
+      const nextProfile = getOrCreatePlayerProfile();
+      setPlayerProfile(nextProfile);
+      setNicknameDraft(nextProfile.displayName);
+      roomService.sendHello();
     });
     return () => unsub();
   }, []);
 
-  // Listen for ?room= in URL params on load
+  // WebSocket Server connection & RTT monitoring
+  useEffect(() => {
+    const unsubConn = roomService.subscribeToConnectionStatus((st, rtt) => {
+      setServerStatus(st);
+      setServerRttMs(rtt);
+    });
+    const unsubRtc = webrtcNetplay.subscribeStats((st) => {
+      setRtcStats(st);
+    });
+    return () => {
+      unsubConn();
+      unsubRtc();
+    };
+  }, []);
+
+  // Auto-join from ?room=CODE prop or URL query
   useEffect(() => {
     const params = new URLSearchParams(window.location.search);
-    const roomParam = params.get('room');
-    if (roomParam) {
-      handleJoinByCode(roomParam);
+    const code = initialRoomCode || params.get('room');
+    if (code && autoJoinedCodeRef.current !== code) {
+      autoJoinedCodeRef.current = code;
+      handleJoinByCode(code);
     }
-  }, []);
+  }, [initialRoomCode]);
 
-  // Subscribe to public rooms list
+  // Subscribe to public rooms lobby
   useEffect(() => {
-    const unsub = roomService.subscribeToPublicRooms((rooms) => {
-      setPublicRooms(rooms);
+    const unsub = roomService.subscribeToPublicRooms((roomsList) => {
+      setPublicRooms(roomsList);
     });
     return () => unsub();
   }, []);
 
-  // Subscribe to current room in Firestore
+  // Subscribe to active room state, messages, launch events & WebRTC signaling
   useEffect(() => {
     if (!activeRoomId) {
       setRoom(null);
@@ -96,32 +175,59 @@ export const NetPlayLobbyPage: React.FC<NetPlayLobbyPageProps> = ({
       } else {
         setRoom(null);
         setActiveRoomId(undefined);
+        webrtcNetplay.stopSession();
+        showToast('Phòng chơi đã đóng.');
       }
     });
 
     const unsubMessages = roomService.subscribeToMessages(activeRoomId, (msgs) => {
-      if (msgs.length > 0) {
-        setMessages(msgs);
-      }
+      setMessages(msgs);
     });
 
-    const unsubSignals = roomService.subscribeToSignals(
-      activeRoomId,
-      currentUser?.uid || 'local-player',
-      (signal) => {
-        if (signal.type === 'offer') {
-          setWebRtcStatus('connecting');
-          setTimeout(() => setWebRtcStatus('connected'), 300);
-        }
-      }
-    );
+    const unsubLaunch = roomService.subscribeToLaunch((launchedRoom) => {
+      if (launchedRoom.id !== activeRoomId) return;
+      const myUid = playerProfile.uid;
+      const myRole: 'host' | 'guest' | 'spectator' =
+        launchedRoom.hostUid === myUid
+          ? 'host'
+          : launchedRoom.guestUid === myUid
+          ? 'guest'
+          : 'spectator';
+      onLaunchNetplayMatch({
+        room: launchedRoom,
+        role: myRole,
+        playerUid: myUid,
+      });
+    });
 
     return () => {
       unsubRoom();
       unsubMessages();
-      unsubSignals();
+      unsubLaunch();
     };
-  }, [activeRoomId, currentUser]);
+  }, [activeRoomId, playerProfile.uid]);
+
+  // Establish live WebRTC DataChannel peer connection while in Lobby for instant RTT measurement & warm NAT punch!
+  useEffect(() => {
+    if (!room) return;
+    const myUid = playerProfile.uid;
+    const role: 'host' | 'guest' | 'spectator' =
+      room.hostUid === myUid ? 'host' : room.guestUid === myUid ? 'guest' : 'spectator';
+
+    webrtcNetplay.startSession(room.id, myUid, role);
+
+    if (role === 'host') {
+      if (room.guestUid) {
+        webrtcNetplay.connectToPeer(room.guestUid, true);
+      }
+      for (const spec of room.spectators || []) {
+        webrtcNetplay.connectToPeer(spec.id, true);
+      }
+    } else if (room.hostUid) {
+      // Guest prepares peer link (polite peer waits for Host's offer)
+      webrtcNetplay.connectToPeer(room.hostUid, false);
+    }
+  }, [room?.id, room?.hostUid, room?.guestUid, room?.spectators?.length, playerProfile.uid]);
 
   // Auto-scroll chat
   useEffect(() => {
@@ -130,19 +236,20 @@ export const NetPlayLobbyPage: React.FC<NetPlayLobbyPageProps> = ({
     }
   }, [messages]);
 
-  const getPlayerProfile = (): PlayerProfile => {
-    return {
-      uid: currentUser?.uid || 'guest-' + Math.floor(Math.random() * 10000),
-      displayName: currentUser?.displayName || 'Player ' + Math.floor(100 + Math.random() * 900),
-      photoURL: currentUser?.photoURL || undefined
-    };
+  const handleSaveNickname = () => {
+    if (!nicknameDraft.trim()) return;
+    setLocalPlayerName(nicknameDraft);
+    const updated = getOrCreatePlayerProfile();
+    setPlayerProfile(updated);
+    setEditingNickname(false);
+    showToast(`Đã đổi tên hiển thị thành "${updated.displayName}"`);
   };
 
   const handleCopyCode = () => {
     if (!room) return;
     navigator.clipboard.writeText(room.code);
     setCopiedCode(true);
-    showToast(`Room code ${room.code} copied to clipboard`);
+    showToast(`Đã sao chép mã phòng ${room.code}`);
     setTimeout(() => setCopiedCode(false), 2000);
   };
 
@@ -151,116 +258,135 @@ export const NetPlayLobbyPage: React.FC<NetPlayLobbyPageProps> = ({
     const url = `${window.location.origin}${window.location.pathname}?room=${room.code}`;
     navigator.clipboard.writeText(url);
     setCopiedLink(true);
-    showToast(`Invite link copied to clipboard`);
+    showToast('Đã sao chép đường link mời chơi qua Internet!');
     setTimeout(() => setCopiedLink(false), 2000);
   };
 
   const handleSendMessage = async (textToSend?: string) => {
     const text = textToSend || inputText;
     if (!text.trim() || !room) return;
-    const profile = getPlayerProfile();
-
     try {
-      await roomService.sendChatMessage(room.id, text.trim(), profile);
+      await roomService.sendChatMessage(room.id, text.trim(), playerProfile);
       setInputText('');
     } catch {
-      // Optimistic local fallback
-      const localMsg: ChatMessage = {
-        id: `msg-${Date.now()}`,
-        roomId: room.id,
-        senderUid: profile.uid,
-        senderName: profile.displayName + ' (You)',
-        senderAvatar: profile.photoURL,
-        text: text.trim(),
-        timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' })
-      };
-      setMessages((prev) => [...prev, localMsg]);
-      setInputText('');
+      showToast('Không gửi được tin nhắn — kiểm tra kết nối máy chủ.');
     }
   };
 
   const handleToggleReady = async () => {
     if (!room) return;
-    const isHost = !currentUser || room.hostUid === currentUser.uid;
-    const currentReady = isHost ? room.hostReady : room.guestReady;
+    const amIHost = room.hostUid === playerProfile.uid;
+    const currentReady = amIHost ? room.hostReady : room.guestReady;
     const nextReady = !currentReady;
 
-    // Optimistic UI update
-    setRoom((prev) => {
-      if (!prev) return null;
-      const hostReady = isHost ? nextReady : prev.hostReady;
-      const guestReady = isHost ? prev.guestReady : nextReady;
-      return {
-        ...prev,
-        hostReady,
-        guestReady,
-        status: hostReady && guestReady ? 'ready' : 'waiting'
-      };
-    });
-
     try {
-      await roomService.toggleReady(room.id, isHost, nextReady);
-      showToast(nextReady ? 'You are READY TO PLAY!' : 'Ready state cancelled.');
+      await roomService.toggleReady(room.id, amIHost, nextReady);
+      showToast(nextReady ? 'Bạn đã SẴN SÀNG!' : 'Đã hủy trạng thái sẵn sàng.');
     } catch {
-      showToast(nextReady ? 'Status set to READY' : 'Status set to Awaiting');
+      showToast('Lỗi cập nhật trạng thái sẵn sàng');
+    }
+  };
+
+  const handleUploadRomInLobby = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    try {
+      const buf = await file.arrayBuffer();
+      const bytes = new Uint8Array(buf);
+      const header = parseRom(bytes, file.name);
+      const plat = header.platform === 'UNKNOWN' ? 'SNES' : header.platform;
+      const title = header.internalTitle || file.name.replace(/\.[^/.]+$/, '');
+      const customGame: Game = {
+        id: `custom-${Date.now()}-${Math.floor(Math.random() * 1000)}`,
+        title,
+        platform: plat,
+        year: 1995,
+        developer: 'Tải lên từ máy',
+        genre: 'NetPlay ROM',
+        rating: 5.0,
+        ratingCount: 1,
+        boxArt: getCartridgeCoverArt(title, plat),
+        description: `ROM ${file.name} (${header.crc32}) sẵn sàng stream cho Port 2 qua WebRTC.`,
+        features: ['2-Player NetPlay', 'WebRTC 60FPS'],
+        source: 'local',
+        romFilename: file.name,
+        crc32: header.crc32,
+      };
+      romStorage.saveRom(customGame.id, file.name, plat, bytes);
+      libraryStore.addGame(customGame);
+      setCreateGameId(customGame.id);
+      setCreatePlatform(plat);
+
+      if (room && room.hostUid === playerProfile.uid) {
+        await roomService.updateRoomGame(room.id, customGame.id, customGame.title, plat);
+        setShowChangeCartridgeModal(false);
+      }
+      showToast(`Đã nạp ROM "${title}" (${plat}) sẵn sàng tạo phòng!`);
+    } catch {
+      showToast('Không thể đọc tệp ROM đã chọn.');
+    } finally {
+      e.target.value = '';
     }
   };
 
   const handleCreateRoom = async () => {
     setIsSubmitting(true);
     try {
-      const fallbackNetGame: Game = {
-        id: 'custom-netplay',
-        title: 'Trò chơi nhiều người',
-        platform: createPlatform,
-        year: 1995,
-        developer: 'RetroVerse',
-        genre: 'Multiplayer',
-        rating: 5.0,
-        ratingCount: 1,
-        boxArt: '',
-        description: 'Phòng chơi NetPlay',
-        features: [],
-      };
-      const selectedGame = FEATURED_GAMES.find((g) => g.id === createGameId) || FEATURED_GAMES[0] || fallbackNetGame;
+      const selectedGame =
+        libraryGames.find((g) => g.id === createGameId) ||
+        (createGameId === ARENA_FALLBACK_GAME.id ? ARENA_FALLBACK_GAME : libraryGames[0] || ARENA_FALLBACK_GAME);
+
       const newRoom = await roomService.createRoom({
         gameId: selectedGame.id,
         gameTitle: selectedGame.title,
-        platform: createPlatform,
+        platform: selectedGame.platform || createPlatform,
         isPublic: createIsPublic,
         rollbackFrames: createRollback,
-        hostName: currentUser?.displayName || 'RetroHost'
+        inputDelayTarget: createRollback <= 1 ? '0-1 Frame (<16ms)' : `${createRollback} Frames`,
+        hostName: playerProfile.displayName,
       });
+
+      // Update browser URL cleanly so refreshing keeps or shares room cleanly
+      try {
+        const nextUrl = `${window.location.pathname}?room=${newRoom.code}`;
+        window.history.replaceState({}, '', nextUrl);
+      } catch {}
+
       setActiveRoomId(newRoom.id);
       setRoom(newRoom);
       setShowCreateModal(false);
-      showToast(`Đã tạo phòng ${newRoom.code}`);
-    } catch {
-      showToast('Đã khởi tạo phòng chơi');
-      setShowCreateModal(false);
+      showToast(`Đã tạo phòng ${newRoom.code}!`);
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : 'Không thể tạo phòng lúc này.';
+      showToast(msg);
     } finally {
       setIsSubmitting(false);
     }
   };
 
   const handleJoinByCode = async (codeToJoin?: string) => {
-    const code = codeToJoin || joinCodeInput;
-    if (!code.trim()) return;
+    const code = (codeToJoin || joinCodeInput).trim();
+    if (!code) return;
 
     setIsSubmitting(true);
     setJoinError(null);
-    const profile = getPlayerProfile();
+    const profile = getOrCreatePlayerProfile();
 
     try {
-      const joinedRoom = await roomService.joinRoomByCode(code.trim(), profile);
+      const joinedRoom = await roomService.joinRoomByCode(code, profile);
+      try {
+        const nextUrl = `${window.location.pathname}?room=${joinedRoom.code}`;
+        window.history.replaceState({}, '', nextUrl);
+      } catch {}
       setActiveRoomId(joinedRoom.id);
       setRoom(joinedRoom);
       setShowJoinModal(false);
       setJoinCodeInput('');
-      showToast(`Đã kết nối thành công vào phòng ${joinedRoom.code}!`);
+      showToast(`Đã tham gia phòng ${joinedRoom.code}!`);
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : 'Không tìm thấy phòng với mã này.';
       setJoinError(msg);
+      showToast(msg);
     } finally {
       setIsSubmitting(false);
     }
@@ -270,7 +396,6 @@ export const NetPlayLobbyPage: React.FC<NetPlayLobbyPageProps> = ({
     if (!room) return;
     try {
       await roomService.updateRoomGame(room.id, game.id, game.title, game.platform);
-      setRoom((prev) => (prev ? { ...prev, gameId: game.id, gameTitle: game.title, platform: game.platform } : null));
       setShowChangeCartridgeModal(false);
       showToast(`Đã đổi băng game sang: ${game.title}`);
     } catch {
@@ -279,38 +404,74 @@ export const NetPlayLobbyPage: React.FC<NetPlayLobbyPageProps> = ({
   };
 
   const handleLeave = async () => {
-    if (room && currentUser) {
-      await roomService.leaveRoom(room.id, currentUser.uid);
-    }
+    webrtcNetplay.stopSession();
+    await roomService.leaveRoom(room?.id, playerProfile.uid);
+    try {
+      window.history.replaceState({}, '', window.location.pathname);
+    } catch {}
     setActiveRoomId(undefined);
     setRoom(null);
     onLeaveRoom();
   };
 
-  // Determine current player status
-  const isHost = !currentUser || !room || room.hostUid === currentUser.uid;
-  const isGuest = currentUser && room && room.guestUid === currentUser.uid;
-  const isSpectator = !isHost && !isGuest;
+  const handleHostLaunch = async () => {
+    if (!room) return;
+    await roomService.launchMatch();
+  };
+
+  const handleJoinActiveMatch = () => {
+    if (!room) return;
+    const myRole: 'host' | 'guest' | 'spectator' =
+      room.hostUid === playerProfile.uid ? 'host' : room.guestUid === playerProfile.uid ? 'guest' : 'spectator';
+    onLaunchNetplayMatch({
+      room,
+      role: myRole,
+      playerUid: playerProfile.uid,
+    });
+  };
+
+  // Correct role detection
+  const isHost = Boolean(room && room.hostUid === playerProfile.uid);
+  const isGuest = Boolean(room && room.guestUid === playerProfile.uid);
+  const isSpectator = Boolean(room && !isHost && !isGuest);
+
   const activeGame =
-    FEATURED_GAMES.find((g) => g.id === room?.gameId) ||
-    FEATURED_GAMES[0] || {
-      id: 'custom-netplay',
-      title: room?.gameTitle || 'Phòng NetPlay',
-      platform: room?.platform || 'SNES',
-      year: 1995,
-      developer: 'RetroVerse',
-      genre: 'Multiplayer',
-      rating: 5,
-      ratingCount: 1,
-      boxArt: '',
-      description: '',
-      features: [],
-    };
-  const bothPlayersReady = !!(room?.hostReady && room?.guestReady);
+    libraryGames.find((g) => g.id === room?.gameId) ||
+    (room
+      ? {
+          ...ARENA_FALLBACK_GAME,
+          id: room.gameId,
+          title: room.gameTitle,
+          platform: room.platform,
+          boxArt: getCartridgeCoverArt(room.gameTitle, room.platform),
+        }
+      : ARENA_FALLBACK_GAME);
+
+  const bothPlayersReady = Boolean(room?.hostUid && room?.guestUid && room?.hostReady && room?.guestReady);
+  const liveLatencyMs = rtcStats.rttMs > 0 ? rtcStats.rttMs : room?.pingMs || serverRttMs || 0;
+
+  const transportLabel =
+    rtcStats.transportMode === 'p2p-lan'
+      ? 'P2P LAN Direct (Tốc độ tối đa)'
+      : rtcStats.transportMode === 'p2p-stun'
+      ? 'WebRTC P2P Internet (STUN Direct)'
+      : rtcStats.transportMode === 'ws-relay'
+      ? 'WebSocket Relay (Qua NAT nghiêm ngặt)'
+      : room?.guestUid
+      ? 'Đang bắt tay WebRTC ICE...'
+      : 'Chờ người chơi kết nối';
 
   return (
     <div className="w-full max-w-[1440px] mx-auto space-y-6 select-none font-sans">
-      {/* Toast Notification */}
+      <input
+        ref={romUploadInputRef}
+        type="file"
+        accept=".nes,.sfc,.smc,.gba,.gb,.gbc,.md,.gen,.zip"
+        className="hidden"
+        onChange={handleUploadRomInLobby}
+      />
+
+      {/* Toast */}
       {toastMessage && (
         <div className="fixed top-20 right-8 z-50 px-4 py-2.5 rounded-lg bg-[#1e1f26] border border-[#4cd7f6] text-[#4cd7f6] font-mono text-xs flex items-center gap-2 shadow-2xl animate-fade-in">
           <span className="material-symbols-outlined text-sm">wifi_channel</span>
@@ -318,53 +479,104 @@ export const NetPlayLobbyPage: React.FC<NetPlayLobbyPageProps> = ({
         </div>
       )}
 
-      {/* 1. Sub-Nav / Breadcrumb Strip */}
-      <section className="w-full px-4 py-2.5 bg-[#0c0e14]/60 border-b border-[#494454]/20 flex flex-wrap items-center justify-between text-xs font-mono text-[#cbc3d7]">
-        <div className="flex items-center gap-2">
-          <button onClick={handleLeave} className="hover:text-white transition-colors flex items-center gap-1">
+      {/* 1. Sub-Nav & Live Server Telemetry Strip */}
+      <section className="w-full px-4 py-2.5 bg-[#0c0e14]/70 border-b border-[#494454]/20 flex flex-wrap items-center justify-between gap-3 text-xs font-mono text-[#cbc3d7]">
+        <div className="flex items-center gap-2 flex-wrap">
+          <button onClick={handleLeave} className="hover:text-white transition-colors flex items-center gap-1 cursor-pointer">
             <span className="material-symbols-outlined text-sm">arrow_back</span>
-            {room ? 'Rời Phòng / Leave' : 'Trang Chủ / Back'}
+            {room ? 'Rời Phòng' : 'Trang Chủ'}
           </button>
           <span className="text-[#958ea0]">/</span>
           {room ? (
             <>
               <span className="text-[#4cd7f6] font-bold flex items-center gap-1">
                 <span className="material-symbols-outlined text-base">meeting_room</span>
-                Phòng #{room.code} - NetPlay Matchmaking
+                Phòng #{room.code}
               </span>
-              <span className="ml-2 px-2 py-0.5 rounded bg-[#1e1f26] text-[10px] text-white">
-                Host: {room.hostName}
+              <span className="px-2 py-0.5 rounded bg-[#1e1f26] text-[10px] text-white border border-[#494454]/40">
+                {isHost ? 'Bạn là Host (Port 1)' : isGuest ? 'Bạn là Challenger (Port 2)' : 'Khán giả (Spectator)'}
               </span>
             </>
           ) : (
             <span className="text-[#4cd7f6] font-bold flex items-center gap-1">
               <span className="material-symbols-outlined text-base">hub</span>
-              Sảnh Thi Đấu Trực Tuyến WebRTC NetPlay
+              Sảnh Thi Đấu Online Qua Internet (WebRTC P2P + WS Relay)
             </span>
           )}
         </div>
 
-        {/* Global Matchmaking Management Buttons */}
-        <div className="flex items-center gap-2 mt-2 sm:mt-0">
-          <button
-            onClick={() => setShowJoinModal(true)}
-            className="px-2.5 py-1 rounded bg-[#1e1f26] hover:bg-[#282a30] text-[#cbc3d7] hover:text-white border border-[#494454]/30 text-xs font-mono transition-colors flex items-center gap-1.5"
-          >
-            <span className="material-symbols-outlined text-sm text-emerald-400">login</span>
-            Vào Bằng Mã ({publicRooms.length} phòng)
-          </button>
-          <button
-            onClick={() => setShowCreateModal(true)}
-            className="px-3 py-1 rounded bg-[#4cd7f6] hover:bg-[#70e0f8] text-[#003641] font-bold text-xs font-mono shadow-md shadow-[#4cd7f6]/20 transition-all flex items-center gap-1.5"
-          >
-            <span className="material-symbols-outlined text-sm">add_circle</span>
-            Tạo Phòng Mới
-          </button>
+        {/* Player Identity & Server Status */}
+        <div className="flex items-center gap-2 flex-wrap">
+          <div className="flex items-center gap-1.5 px-2.5 py-1 rounded bg-[#111319] border border-[#494454]/30 text-[11px]">
+            <span
+              className={`w-2 h-2 rounded-full ${
+                serverStatus === 'connected'
+                  ? 'bg-emerald-400 animate-pulse'
+                  : serverStatus === 'reconnecting'
+                  ? 'bg-amber-400 animate-pulse'
+                  : 'bg-rose-400'
+              }`}
+            ></span>
+            <span className="text-[#cbc3d7]">
+              {serverStatus === 'connected'
+                ? `Server Online (${serverRttMs}ms)`
+                : serverStatus === 'reconnecting'
+                ? 'Đang kết nối lại...'
+                : 'Đang kết nối...'}
+            </span>
+          </div>
+
+          {!currentUser && (
+            editingNickname ? (
+              <div className="flex items-center gap-1 bg-[#1e1f26] border border-[#4cd7f6]/50 rounded px-2 py-0.5">
+                <input
+                  type="text"
+                  value={nicknameDraft}
+                  onChange={(e) => setNicknameDraft(e.target.value)}
+                  onKeyDown={(e) => e.key === 'Enter' && handleSaveNickname()}
+                  className="bg-transparent text-white text-xs w-28 focus:outline-none"
+                  autoFocus
+                />
+                <button onClick={handleSaveNickname} className="text-emerald-400 hover:text-emerald-300">
+                  <span className="material-symbols-outlined text-sm">check</span>
+                </button>
+              </div>
+            ) : (
+              <button
+                onClick={() => setEditingNickname(true)}
+                className="px-2.5 py-1 rounded bg-[#1e1f26] hover:bg-[#282a30] border border-[#494454]/30 text-[#cbc3d7] hover:text-white flex items-center gap-1 cursor-pointer"
+                title="Đổi tên hiển thị của bạn"
+              >
+                <span className="material-symbols-outlined text-xs text-[#4cd7f6]">badge</span>
+                <span>{playerProfile.displayName}</span>
+                <span className="material-symbols-outlined text-[11px] text-[#958ea0]">edit</span>
+              </button>
+            )
+          )}
+
+          {!room && (
+            <>
+              <button
+                onClick={() => setShowJoinModal(true)}
+                className="px-2.5 py-1 rounded bg-[#1e1f26] hover:bg-[#282a30] text-[#cbc3d7] hover:text-white border border-[#494454]/30 text-xs font-mono transition-colors flex items-center gap-1.5 cursor-pointer"
+              >
+                <span className="material-symbols-outlined text-sm text-emerald-400">login</span>
+                Vào Bằng Mã ({publicRooms.length})
+              </button>
+              <button
+                onClick={() => setShowCreateModal(true)}
+                className="px-3 py-1 rounded bg-[#4cd7f6] hover:bg-[#70e0f8] text-[#003641] font-bold text-xs font-mono shadow-md shadow-[#4cd7f6]/20 transition-all flex items-center gap-1.5 cursor-pointer"
+              >
+                <span className="material-symbols-outlined text-sm">add_circle</span>
+                Tạo Phòng Mới
+              </button>
+            </>
+          )}
         </div>
       </section>
 
       {!room ? (
-        /* NETPLAY LOBBY HUB VIEW (When no room is active) */
+        /* NETPLAY LOBBY HUB VIEW */
         <div className="space-y-6">
           {/* Hero Banner */}
           <div className="relative rounded-2xl overflow-hidden bg-gradient-to-r from-[#1c1d24] via-[#161720] to-[#0c0e14] border border-[#494454]/30 p-6 md:p-8">
@@ -372,32 +584,41 @@ export const NetPlayLobbyPage: React.FC<NetPlayLobbyPageProps> = ({
               <div className="space-y-2 text-center md:text-left">
                 <div className="inline-flex items-center gap-2 px-2.5 py-1 rounded-full bg-[#4cd7f6]/10 border border-[#4cd7f6]/30 text-[#4cd7f6] font-mono text-xs font-bold">
                   <span className="w-2 h-2 rounded-full bg-[#4cd7f6] animate-pulse"></span>
-                  P2P ROLLBACK NETCODE (GGPO)
+                  WEBRTC P2P STREAM + UDP-LIKE INPUT CHANNEL
                 </div>
                 <h1 className="text-2xl md:text-3xl font-bold font-headline text-white">
-                  Sảnh Thi Đấu Trực Tuyến Nhiều Người Chơi
+                  Chơi Cùng Bạn Bè Từ Mọi Nơi Qua Internet
                 </h1>
-                <p className="text-xs md:text-sm font-mono text-[#958ea0] max-w-xl">
-                  Chơi game đối kháng và co-op 2 người qua WebRTC ngang hàng (Peer-to-Peer) thời gian thực.
-                  Độ trễ thấp, hỗ trợ 60 FPS mượt mà không cần cài đặt thêm phần mềm.
+                <p className="text-xs md:text-sm font-mono text-[#958ea0] max-w-2xl">
+                  Host chạy ROM trên máy và phát hình 60 FPS + âm thanh độ trễ siêu thấp qua WebRTC STUN trực tiếp tới Port 2.
+                  Người tham gia chỉ cần nhấn link mời — không cần tải lại tệp ROM, tự động chuyển WS Relay nếu gặp tường lửa NAT nghiêm ngặt.
                 </p>
               </div>
 
-              <div className="flex flex-col sm:flex-row items-center gap-3">
+              <div className="flex flex-col sm:flex-row items-center gap-3 shrink-0">
                 <button
                   onClick={() => setShowCreateModal(true)}
-                  className="w-full sm:w-auto px-5 py-2.5 rounded-xl bg-[#4cd7f6] hover:bg-[#70e0f8] text-[#003641] font-mono font-bold text-xs shadow-lg shadow-[#4cd7f6]/20 transition-all flex items-center justify-center gap-2"
+                  className="w-full sm:w-auto px-5 py-2.5 rounded-xl bg-[#4cd7f6] hover:bg-[#70e0f8] text-[#003641] font-mono font-bold text-xs shadow-lg shadow-[#4cd7f6]/20 transition-all flex items-center justify-center gap-2 cursor-pointer"
                 >
                   <span className="material-symbols-outlined text-base">add_circle</span>
-                  Tạo Phòng Mới (Host Room)
+                  Tạo Phòng Mới (Host)
                 </button>
                 <button
                   onClick={() => setShowJoinModal(true)}
-                  className="w-full sm:w-auto px-5 py-2.5 rounded-xl bg-[#282a30] hover:bg-[#34373f] text-[#cbc3d7] hover:text-white border border-[#494454]/40 font-mono text-xs transition-all flex items-center justify-center gap-2"
+                  className="w-full sm:w-auto px-5 py-2.5 rounded-xl bg-[#282a30] hover:bg-[#34373f] text-[#cbc3d7] hover:text-white border border-[#494454]/40 font-mono text-xs transition-all flex items-center justify-center gap-2 cursor-pointer"
                 >
                   <span className="material-symbols-outlined text-base">login</span>
-                  Nhập Mã Phòng (Join by Code)
+                  Nhập Mã Phòng
                 </button>
+                {!currentUser && (
+                  <button
+                    onClick={() => loginWithGoogle().catch(() => {})}
+                    className="w-full sm:w-auto px-4 py-2.5 rounded-xl bg-[#191b22] hover:bg-[#232632] text-[#d0bcff] border border-[#a078ff]/30 font-mono text-xs transition-all flex items-center justify-center gap-1.5 cursor-pointer"
+                  >
+                    <span className="material-symbols-outlined text-sm">account_circle</span>
+                    Đăng nhập Google
+                  </button>
+                )}
               </div>
             </div>
           </div>
@@ -408,17 +629,17 @@ export const NetPlayLobbyPage: React.FC<NetPlayLobbyPageProps> = ({
               <div className="flex items-center gap-2">
                 <span className="material-symbols-outlined text-[#4cd7f6]">meeting_room</span>
                 <h3 className="font-headline font-bold text-white text-base">
-                  Phòng Chơi Đang Mở (Public Matchmaking Rooms)
+                  Phòng Chơi Công Khai Đang Mở
                 </h3>
                 <span className="px-2 py-0.5 rounded-full bg-[#1e1f26] text-[11px] font-mono text-[#4cd7f6] border border-[#4cd7f6]/30">
-                  {publicRooms.length} phòng khả dụng
+                  {publicRooms.length} phòng online
                 </span>
               </div>
               <button
                 onClick={() => setShowCreateModal(true)}
-                className="text-xs font-mono text-[#4cd7f6] hover:underline flex items-center gap-1"
+                className="text-xs font-mono text-[#4cd7f6] hover:underline flex items-center gap-1 cursor-pointer"
               >
-                + Khởi tạo phòng mới
+                + Tạo phòng mới
               </button>
             </div>
 
@@ -434,9 +655,16 @@ export const NetPlayLobbyPage: React.FC<NetPlayLobbyPageProps> = ({
                         <span className="font-mono text-xs text-[#4cd7f6] font-bold tracking-wider">
                           {pubRoom.code}
                         </span>
-                        <span className="px-2 py-0.5 rounded text-[10px] font-mono font-bold bg-[#111319] text-[#cbc3d7] border border-[#494454]/40">
-                          {pubRoom.platform}
-                        </span>
+                        <div className="flex items-center gap-1.5">
+                          {pubRoom.status === 'playing' && (
+                            <span className="px-1.5 py-0.5 rounded text-[9px] font-mono font-bold bg-rose-500/20 text-rose-300 border border-rose-500/30 animate-pulse">
+                              LIVE
+                            </span>
+                          )}
+                          <span className="px-2 py-0.5 rounded text-[10px] font-mono font-bold bg-[#111319] text-[#cbc3d7] border border-[#494454]/40">
+                            {pubRoom.platform}
+                          </span>
+                        </div>
                       </div>
                       <h4 className="font-headline font-bold text-white text-sm line-clamp-1">
                         {pubRoom.gameTitle}
@@ -444,17 +672,19 @@ export const NetPlayLobbyPage: React.FC<NetPlayLobbyPageProps> = ({
                       <p className="text-xs font-mono text-[#958ea0] mt-1 flex items-center gap-2">
                         <span>Host: {pubRoom.hostName}</span>
                         <span>•</span>
-                        <span className="text-emerald-400">{pubRoom.pingMs}ms</span>
+                        <span className="text-emerald-400">
+                          {pubRoom.pingMs > 0 ? `${pubRoom.pingMs}ms` : 'Online'}
+                        </span>
                       </p>
                     </div>
 
                     <div className="flex items-center justify-between pt-3 border-t border-[#494454]/20">
                       <span className={`text-[11px] font-mono ${pubRoom.guestUid ? 'text-amber-400' : 'text-emerald-400'}`}>
-                        {pubRoom.guestUid ? '2/2 Đã Đầy (Xem)' : '1/2 Sẵn Sàng Thách Đấu'}
+                        {pubRoom.guestUid ? '2/2 Đã Đủ Người (Vào Xem)' : '1/2 Trống Port 2'}
                       </span>
                       <button
                         onClick={() => handleJoinByCode(pubRoom.code)}
-                        className="px-3.5 py-1.5 rounded-lg bg-[#4cd7f6] hover:bg-[#70e0f8] text-[#003641] font-mono font-bold text-xs shadow-md transition-all flex items-center gap-1"
+                        className="px-3.5 py-1.5 rounded-lg bg-[#4cd7f6] hover:bg-[#70e0f8] text-[#003641] font-mono font-bold text-xs shadow-md transition-all flex items-center gap-1 cursor-pointer"
                       >
                         <span className="material-symbols-outlined text-sm">
                           {pubRoom.guestUid ? 'visibility' : 'sports_esports'}
@@ -466,23 +696,32 @@ export const NetPlayLobbyPage: React.FC<NetPlayLobbyPageProps> = ({
                 ))}
               </div>
             ) : (
-              <div className="bg-[#1e1f26] rounded-2xl border border-[#494454]/30 p-12 text-center flex flex-col items-center justify-center max-w-xl mx-auto my-4">
+              <div className="bg-[#1e1f26] rounded-2xl border border-[#494454]/30 p-10 text-center flex flex-col items-center justify-center max-w-xl mx-auto my-4">
                 <div className="w-16 h-16 rounded-2xl bg-[#4cd7f6]/10 border border-[#4cd7f6]/30 flex items-center justify-center text-[#4cd7f6] mb-4">
                   <span className="material-symbols-outlined text-3xl">sports_esports</span>
                 </div>
                 <h3 className="text-base font-bold font-headline text-white mb-2">
-                  Chưa Có Phòng Công Khai Nào
+                  Chưa Có Phòng Công Khai Nào Đang Mở
                 </h3>
                 <p className="text-xs font-mono text-[#958ea0] max-w-md leading-relaxed mb-6">
-                  Dữ liệu chạy thử đã được làm sạch hoàn toàn. Hãy là người đầu tiên tạo phòng chơi mới để bạn bè hoặc đối thủ có thể tìm và so tài!
+                  Hãy tạo phòng mới và gửi mã phòng hoặc đường link mời cho bạn bè trên máy tính hoặc điện thoại khác để cùng chơi ngay lập tức.
                 </p>
-                <button
-                  onClick={() => setShowCreateModal(true)}
-                  className="px-5 py-2.5 rounded-xl bg-[#4cd7f6] hover:bg-[#70e0f8] text-[#003641] font-mono font-bold text-xs shadow-lg shadow-[#4cd7f6]/20 transition-all flex items-center gap-2"
-                >
-                  <span className="material-symbols-outlined text-base">add_circle</span>
-                  Tạo Phòng Mới Ngay
-                </button>
+                <div className="flex flex-wrap items-center justify-center gap-3">
+                  <button
+                    onClick={() => setShowCreateModal(true)}
+                    className="px-5 py-2.5 rounded-xl bg-[#4cd7f6] hover:bg-[#70e0f8] text-[#003641] font-mono font-bold text-xs shadow-lg shadow-[#4cd7f6]/20 transition-all flex items-center gap-2 cursor-pointer"
+                  >
+                    <span className="material-symbols-outlined text-base">add_circle</span>
+                    Tạo Phòng Mới Ngay
+                  </button>
+                  <button
+                    onClick={() => setShowJoinModal(true)}
+                    className="px-5 py-2.5 rounded-xl bg-[#282a30] hover:bg-[#34373f] text-white border border-[#494454]/50 font-mono text-xs flex items-center gap-2 cursor-pointer"
+                  >
+                    <span className="material-symbols-outlined text-base">login</span>
+                    Nhập Mã Phòng
+                  </button>
+                </div>
               </div>
             )}
           </div>
@@ -490,356 +729,386 @@ export const NetPlayLobbyPage: React.FC<NetPlayLobbyPageProps> = ({
       ) : (
         /* ACTIVE IN-ROOM CHAMBER VIEW */
         <>
-        <div className="bg-[#191b22] rounded-xl p-5 border border-[#494454]/30 shadow-2xl relative overflow-hidden backdrop-blur-md">
-          <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-5 relative z-10">
-            {/* Room Code & Access Control */}
-            <div className="flex flex-wrap items-center gap-4">
-              <div className="flex items-center bg-[#0c0e14] border border-[#494454]/60 rounded-lg p-1 pl-3.5 pr-2 gap-3 shadow-inner">
-                <span className="text-[#958ea0] font-mono text-[11px]">ROOM CODE:</span>
-                <span className="font-mono text-sm tracking-widest text-[#4cd7f6] font-bold">
-                  {room.code}
-                </span>
-                <button
-                  onClick={handleCopyCode}
-                  className="p-1.5 rounded hover:bg-[#1e1f26] text-[#cbc3d7] hover:text-[#4cd7f6] transition-colors"
-                  title="Copy Room Code"
-                >
-                  <span className="material-symbols-outlined text-sm">
-                    {copiedCode ? 'check' : 'content_copy'}
+          <div className="bg-[#191b22] rounded-xl p-5 border border-[#494454]/30 shadow-2xl relative overflow-hidden backdrop-blur-md">
+            <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-5 relative z-10">
+              {/* Room Code & Invite Link */}
+              <div className="flex flex-wrap items-center gap-3">
+                <div className="flex items-center bg-[#0c0e14] border border-[#494454]/60 rounded-lg p-1 pl-3.5 pr-2 gap-2.5 shadow-inner">
+                  <span className="text-[#958ea0] font-mono text-[11px]">MÃ PHÒNG:</span>
+                  <span className="font-mono text-sm tracking-widest text-[#4cd7f6] font-bold">
+                    {room.code}
                   </span>
-                </button>
-                <button
-                  onClick={handleCopyInviteLink}
-                  className="p-1.5 rounded hover:bg-[#1e1f26] text-[#cbc3d7] hover:text-emerald-400 transition-colors"
-                  title="Copy Direct URL Invite Link"
-                >
-                  <span className="material-symbols-outlined text-sm">
-                    {copiedLink ? 'link_off' : 'share'}
-                  </span>
-                </button>
-              </div>
-
-              {/* Public / Private Indicator */}
-              <div className="flex items-center gap-2 px-3 py-1 rounded-lg bg-[#0c0e14] border border-[#494454]/40 text-xs font-mono">
-                <span className="material-symbols-outlined text-xs text-[#4cd7f6]">
-                  {room.isPublic ? 'public' : 'lock'}
-                </span>
-                <span className="text-[#cbc3d7]">{room.isPublic ? 'Public Lobby' : 'Private Invite-Only'}</span>
-              </div>
-
-              {/* Netcode Status Pill */}
-              <div className="flex items-center gap-2 px-3 py-1 rounded-lg bg-[#1e1f26] border border-[#494454]/40 text-xs font-mono">
-                <span className="text-[#ffb95f] flex items-center gap-1">
-                  <span className="material-symbols-outlined text-xs">sync_alt</span>
-                  Rollback: {room.rollbackFrames} Frames
-                </span>
-                <span className="text-[#494454]">|</span>
-                <span className="text-emerald-400 flex items-center gap-1">
-                  <span className="w-2 h-2 rounded-full bg-emerald-400 animate-pulse"></span>
-                  Latency: {room.pingMs}ms
-                </span>
-              </div>
-            </div>
-
-            {/* Launch / Ready Action CTAs */}
-            <div className="flex items-center gap-3">
-              <button
-                onClick={handleToggleReady}
-                className={`px-4 py-2 rounded-lg font-mono text-xs font-bold transition-all flex items-center gap-2 shadow-lg ${
-                  (isHost ? room.hostReady : room.guestReady)
-                    ? 'bg-emerald-500/20 text-emerald-400 border border-emerald-500/40 hover:bg-emerald-500/30'
-                    : 'bg-amber-500/20 text-amber-300 border border-amber-500/40 hover:bg-amber-500/30'
-                }`}
-              >
-                <span className="material-symbols-outlined text-base">
-                  {(isHost ? room.hostReady : room.guestReady) ? 'check_circle' : 'radio_button_unchecked'}
-                </span>
-                {(isHost ? room.hostReady : room.guestReady) ? 'YOU ARE READY' : 'CLICK TO READY UP'}
-              </button>
-
-              {isHost ? (
-                <button
-                  onClick={() => onLaunchGame(room.gameId)}
-                  disabled={!bothPlayersReady}
-                  className={`px-5 py-2 rounded-lg font-mono font-bold text-xs flex items-center gap-2 transition-all ${
-                    bothPlayersReady
-                      ? 'bg-gradient-to-r from-[#4cd7f6] to-[#70e0f8] text-[#003641] shadow-xl shadow-[#4cd7f6]/30 animate-pulse cursor-pointer hover:scale-105'
-                      : 'bg-[#282a30] text-[#958ea0] border border-[#494454]/30 opacity-60 cursor-not-allowed'
-                  }`}
-                >
-                  <span className="material-symbols-outlined text-base">sports_esports</span>
-                  {bothPlayersReady ? 'LAUNCH SYNCHRONIZED MATCH' : 'WAITING FOR PLAYERS READY'}
-                </button>
-              ) : (
-                <div className="px-4 py-2 rounded-lg bg-[#111319] border border-[#494454]/30 text-xs font-mono text-[#958ea0]">
-                  {bothPlayersReady ? 'Host will launch match momentarily...' : 'Waiting for both players to ready up...'}
-                </div>
-              )}
-            </div>
-          </div>
-        </div>
-
-      {/* 3. MAIN GRID: CONNECTED PLAYERS (LEFT) & CHAT / DIAGNOSTICS (RIGHT) */}
-      <div className="grid grid-cols-1 lg:grid-cols-12 gap-6">
-        {/* Left Column (7 cols): Connected Players & Active Cartridge */}
-        <div className="lg:col-span-7 space-y-6">
-          {/* Connected Players Section */}
-          <div className="bg-[#191b22] border border-[#494454]/30 rounded-2xl p-6 space-y-4">
-            <div className="flex items-center justify-between border-b border-[#494454]/20 pb-3">
-              <h3 className="font-headline font-bold text-white text-base flex items-center gap-2">
-                <span className="material-symbols-outlined text-[#4cd7f6]">group</span>
-                Connected Players & Controller Ports
-              </h3>
-              <span className="text-xs font-mono text-emerald-400 flex items-center gap-1">
-                <span className="w-2 h-2 rounded-full bg-emerald-400"></span>
-                WebRTC DataChannel: Active
-              </span>
-            </div>
-
-            <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-              {/* Port 1: Host */}
-              <div className="p-4 bg-[#111319] border border-[#4cd7f6]/40 rounded-xl relative overflow-hidden space-y-3">
-                <div className="flex items-center justify-between">
-                  <span className="px-2 py-0.5 rounded bg-[#4cd7f6]/10 text-[#4cd7f6] border border-[#4cd7f6]/30 font-mono text-[10px] font-bold">
-                    PORT 1 • HOST
-                  </span>
-                  <span
-                    className={`px-2 py-0.5 rounded font-mono text-[10px] font-bold flex items-center gap-1 ${
-                      room?.hostReady
-                        ? 'bg-emerald-500/10 text-emerald-400 border border-emerald-500/30'
-                        : 'bg-amber-500/10 text-amber-300 border border-amber-500/30'
-                    }`}
+                  <button
+                    onClick={handleCopyCode}
+                    className="p-1.5 rounded hover:bg-[#1e1f26] text-[#cbc3d7] hover:text-[#4cd7f6] transition-colors cursor-pointer"
+                    title="Sao chép mã phòng"
+                  >
+                    <span className="material-symbols-outlined text-sm">
+                      {copiedCode ? 'check' : 'content_copy'}
+                    </span>
+                  </button>
+                  <button
+                    onClick={handleCopyInviteLink}
+                    className="px-2 py-1 rounded bg-[#4cd7f6]/15 hover:bg-[#4cd7f6]/25 text-[#4cd7f6] font-mono text-[11px] font-bold flex items-center gap-1 transition-colors cursor-pointer"
+                    title="Sao chép đường link mời trực tiếp"
                   >
                     <span className="material-symbols-outlined text-xs">
-                      {room?.hostReady ? 'check' : 'hourglass_empty'}
+                      {copiedLink ? 'check' : 'share'}
                     </span>
-                    {room?.hostReady ? 'READY' : 'AWAITING'}
-                  </span>
+                    <span>{copiedLink ? 'Đã chép' : 'Link mời'}</span>
+                  </button>
                 </div>
 
-                <div className="flex items-center gap-3">
-                  <img
-                    src={room?.hostAvatar || 'https://images.unsplash.com/photo-1566492031773-4f4e44671857?w=150&auto=format&fit=crop&q=80'}
-                    alt={room?.hostName || 'Host'}
-                    className="w-14 h-14 rounded-xl object-cover border border-[#4cd7f6]/50 shadow-md"
-                  />
-                  <div>
-                    <h4 className="font-headline font-bold text-white text-sm">
-                      {room?.hostName || 'Alex Carter'}
-                    </h4>
-                    <p className="text-[11px] font-mono text-[#958ea0]">Latency: 14ms (Direct Node)</p>
-                    <span className="text-[10px] font-mono text-[#4cd7f6]">Assigned: Controller #1</span>
-                  </div>
+                {/* Visibility Pill */}
+                <div className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-[#0c0e14] border border-[#494454]/40 text-xs font-mono">
+                  <span className="material-symbols-outlined text-xs text-[#4cd7f6]">
+                    {room.isPublic ? 'public' : 'lock'}
+                  </span>
+                  <span className="text-[#cbc3d7]">{room.isPublic ? 'Công khai' : 'Riêng tư'}</span>
+                </div>
+
+                {/* Real Transport & Latency Diagnostics */}
+                <div className="flex items-center gap-2 px-3 py-1.5 rounded-lg bg-[#1e1f26] border border-[#494454]/40 text-xs font-mono">
+                  <span
+                    className={`w-2 h-2 rounded-full ${
+                      rtcStats.dataChannelState === 'open'
+                        ? 'bg-emerald-400 animate-pulse'
+                        : rtcStats.transportMode === 'ws-relay'
+                        ? 'bg-amber-400 animate-pulse'
+                        : 'bg-sky-400 animate-pulse'
+                    }`}
+                  ></span>
+                  <span className="text-white font-bold">
+                    {liveLatencyMs > 0 ? `${liveLatencyMs}ms` : `${serverRttMs}ms`}
+                  </span>
+                  <span className="text-[#494454]">|</span>
+                  <span className="text-[#cbc3d7]">{transportLabel}</span>
                 </div>
               </div>
 
-              {/* Port 2: Guest / Challenger */}
-              <div
-                className={`p-4 rounded-xl relative overflow-hidden space-y-3 transition-all ${
-                  room?.guestUid
-                    ? 'bg-[#111319] border border-[#d0bcff]/40'
-                    : 'bg-[#111319]/40 border-2 border-dashed border-[#494454]/40 flex flex-col justify-center items-center text-center'
-                }`}
-              >
-                {room?.guestUid ? (
-                  <>
+              {/* Ready & Launch CTAs */}
+              <div className="flex flex-wrap items-center gap-3">
+                {!isSpectator && (
+                  <button
+                    onClick={handleToggleReady}
+                    className={`px-4 py-2 rounded-lg font-mono text-xs font-bold transition-all flex items-center gap-2 shadow-lg cursor-pointer ${
+                      (isHost ? room.hostReady : room.guestReady)
+                        ? 'bg-emerald-500/20 text-emerald-400 border border-emerald-500/40 hover:bg-emerald-500/30'
+                        : 'bg-amber-500/20 text-amber-300 border border-amber-500/40 hover:bg-amber-500/30'
+                    }`}
+                  >
+                    <span className="material-symbols-outlined text-base">
+                      {(isHost ? room.hostReady : room.guestReady) ? 'check_circle' : 'radio_button_unchecked'}
+                    </span>
+                    {(isHost ? room.hostReady : room.guestReady) ? 'ĐÃ SẴN SÀNG' : 'BẤM ĐỂ SẴN SÀNG'}
+                  </button>
+                )}
+
+                {isHost ? (
+                  <button
+                    onClick={handleHostLaunch}
+                    className={`px-5 py-2 rounded-lg font-mono font-bold text-xs flex items-center gap-2 transition-all cursor-pointer ${
+                      bothPlayersReady
+                        ? 'bg-gradient-to-r from-[#4cd7f6] to-[#70e0f8] text-[#003641] shadow-xl shadow-[#4cd7f6]/30 animate-pulse hover:scale-105'
+                        : 'bg-[#4cd7f6]/80 hover:bg-[#4cd7f6] text-[#003641] shadow-md'
+                    }`}
+                  >
+                    <span className="material-symbols-outlined text-base">sports_esports</span>
+                    {bothPlayersReady
+                      ? 'BẮT ĐẦU TRẬN ĐẤU (2P ĐỒNG BỘ)'
+                      : room.guestUid
+                      ? 'KHỞI CHẠY NGAY (CHỜ P2 SẴN SÀNG)'
+                      : 'VÀO GAME & MỞ PORT 2 CHỜ BẠN'}
+                  </button>
+                ) : room.status === 'playing' ? (
+                  <button
+                    onClick={handleJoinActiveMatch}
+                    className="px-5 py-2 rounded-lg bg-emerald-400 hover:bg-emerald-300 text-[#00291c] font-mono font-bold text-xs flex items-center gap-2 shadow-xl animate-pulse cursor-pointer"
+                  >
+                    <span className="material-symbols-outlined text-base">play_circle</span>
+                    VÀO TRẬN ĐẤU ĐANG DIỄN RA
+                  </button>
+                ) : (
+                  <div className="px-4 py-2 rounded-lg bg-[#111319] border border-[#494454]/30 text-xs font-mono text-[#958ea0]">
+                    {bothPlayersReady ? 'Chờ Host bấm Bắt Đầu Trận Đấu...' : 'Bấm Sẵn Sàng để Host khởi chạy...'}
+                  </div>
+                )}
+              </div>
+            </div>
+          </div>
+
+          {/* MAIN GRID */}
+          <div className="grid grid-cols-1 lg:grid-cols-12 gap-6">
+            {/* Left Column: Players & Active Game */}
+            <div className="lg:col-span-7 space-y-6">
+              <div className="bg-[#191b22] border border-[#494454]/30 rounded-2xl p-6 space-y-4">
+                <div className="flex items-center justify-between border-b border-[#494454]/20 pb-3">
+                  <h3 className="font-headline font-bold text-white text-base flex items-center gap-2">
+                    <span className="material-symbols-outlined text-[#4cd7f6]">group</span>
+                    Người Chơi &amp; Cổng Tay Cầm
+                  </h3>
+                  <span className="text-xs font-mono text-emerald-400 flex items-center gap-1.5">
+                    <span
+                      className={`w-2 h-2 rounded-full ${
+                        rtcStats.dataChannelState === 'open' ? 'bg-emerald-400' : 'bg-amber-400'
+                      }`}
+                    ></span>
+                    {rtcStats.dataChannelState === 'open'
+                      ? 'DataChannel: Unreliable Binary 0-Retransmit'
+                      : `Kênh tín hiệu: ${serverStatus === 'connected' ? 'Sẵn sàng' : 'Đang kết nối'}`}
+                  </span>
+                </div>
+
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                  {/* Port 1: Host */}
+                  <div className="p-4 bg-[#111319] border border-[#4cd7f6]/40 rounded-xl relative overflow-hidden space-y-3">
                     <div className="flex items-center justify-between">
-                      <span className="px-2 py-0.5 rounded bg-[#d0bcff]/10 text-[#d0bcff] border border-[#d0bcff]/30 font-mono text-[10px] font-bold">
-                        PORT 2 • CHALLENGER
+                      <span className="px-2 py-0.5 rounded bg-[#4cd7f6]/10 text-[#4cd7f6] border border-[#4cd7f6]/30 font-mono text-[10px] font-bold">
+                        PORT 1 • HOST {isHost ? '(BẠN)' : ''}
                       </span>
                       <span
                         className={`px-2 py-0.5 rounded font-mono text-[10px] font-bold flex items-center gap-1 ${
-                          room?.guestReady
+                          room.hostReady
                             ? 'bg-emerald-500/10 text-emerald-400 border border-emerald-500/30'
                             : 'bg-amber-500/10 text-amber-300 border border-amber-500/30'
                         }`}
                       >
                         <span className="material-symbols-outlined text-xs">
-                          {room?.guestReady ? 'check' : 'hourglass_empty'}
+                          {room.hostReady ? 'check' : 'hourglass_empty'}
                         </span>
-                        {room?.guestReady ? 'READY' : 'AWAITING'}
+                        {room.hostReady ? 'READY' : 'WAITING'}
                       </span>
                     </div>
 
                     <div className="flex items-center gap-3">
-                      <img
-                        src={room.guestAvatar || 'https://images.unsplash.com/photo-1535713875002-d1d0cf377fde?w=150&auto=format&fit=crop&q=80'}
-                        alt={room.guestName || 'Guest'}
-                        className="w-14 h-14 rounded-xl object-cover border border-[#d0bcff]/50 shadow-md"
-                      />
-                      <div>
-                        <h4 className="font-headline font-bold text-white text-sm">
-                          {room.guestName || 'PixelSamurai'}
-                        </h4>
-                        <p className="text-[11px] font-mono text-[#958ea0]">Latency: 18ms (Tunnel)</p>
-                        <span className="text-[10px] font-mono text-[#d0bcff]">Assigned: Controller #2</span>
+                      <div className="w-12 h-12 rounded-xl bg-[#4cd7f6]/20 border border-[#4cd7f6]/50 flex items-center justify-center text-[#4cd7f6] font-bold text-lg shrink-0 overflow-hidden">
+                        {room.hostAvatar ? (
+                          <img src={room.hostAvatar} alt={room.hostName} className="w-full h-full object-cover" />
+                        ) : (
+                          room.hostName.charAt(0).toUpperCase()
+                        )}
+                      </div>
+                      <div className="min-w-0">
+                        <h4 className="font-headline font-bold text-white text-sm truncate">{room.hostName}</h4>
+                        <p className="text-[11px] font-mono text-[#958ea0]">
+                          Ping Server: {room.hostPingMs || serverRttMs || 1}ms
+                        </p>
+                        <span className="text-[10px] font-mono text-[#4cd7f6]">Điều khiển Port #1</span>
                       </div>
                     </div>
-                  </>
-                ) : (
-                  <div className="py-4 space-y-2">
-                    <span className="material-symbols-outlined text-3xl text-[#494454]">person_add</span>
-                    <p className="font-mono text-xs text-white font-bold">PORT 2 IS VACANT</p>
-                    <p className="text-[11px] font-mono text-[#958ea0]">Share code or click below to invite friend</p>
-                    <button
-                      onClick={handleCopyInviteLink}
-                      className="mt-2 px-3 py-1 rounded bg-[#282a30] hover:bg-[#34373f] text-[#4cd7f6] font-mono text-xs border border-[#4cd7f6]/30 transition-colors"
-                    >
-                      Copy Share Link
-                    </button>
                   </div>
-                )}
-              </div>
-            </div>
 
-            {/* Spectators Bar */}
-            {room && room.spectators && room.spectators.length > 0 && (
-              <div className="pt-3 border-t border-[#494454]/20 flex items-center justify-between text-xs font-mono">
-                <span className="text-[#958ea0] flex items-center gap-1.5">
-                  <span className="material-symbols-outlined text-sm">visibility</span>
-                  Live Spectators ({room.spectators.length}):
-                </span>
-                <div className="flex items-center gap-2">
-                  {room.spectators.map((s) => (
-                    <span
-                      key={s.id}
-                      className="px-2 py-0.5 rounded bg-[#111319] text-[#cbc3d7] border border-[#494454]/30 text-[11px]"
-                    >
-                      {s.name} ({s.latencyMs}ms)
+                  {/* Port 2: Guest */}
+                  <div
+                    className={`p-4 rounded-xl relative overflow-hidden space-y-3 transition-all ${
+                      room.guestUid
+                        ? 'bg-[#111319] border border-[#d0bcff]/40'
+                        : 'bg-[#111319]/40 border-2 border-dashed border-[#494454]/40 flex flex-col justify-center items-center text-center'
+                    }`}
+                  >
+                    {room.guestUid ? (
+                      <>
+                        <div className="flex items-center justify-between">
+                          <span className="px-2 py-0.5 rounded bg-[#d0bcff]/10 text-[#d0bcff] border border-[#d0bcff]/30 font-mono text-[10px] font-bold">
+                            PORT 2 • CHALLENGER {isGuest ? '(BẠN)' : ''}
+                          </span>
+                          <span
+                            className={`px-2 py-0.5 rounded font-mono text-[10px] font-bold flex items-center gap-1 ${
+                              room.guestReady
+                                ? 'bg-emerald-500/10 text-emerald-400 border border-emerald-500/30'
+                                : 'bg-amber-500/10 text-amber-300 border border-amber-500/30'
+                            }`}
+                          >
+                            <span className="material-symbols-outlined text-xs">
+                              {room.guestReady ? 'check' : 'hourglass_empty'}
+                            </span>
+                            {room.guestReady ? 'READY' : 'WAITING'}
+                          </span>
+                        </div>
+
+                        <div className="flex items-center gap-3">
+                          <div className="w-12 h-12 rounded-xl bg-[#d0bcff]/20 border border-[#d0bcff]/50 flex items-center justify-center text-[#d0bcff] font-bold text-lg shrink-0 overflow-hidden">
+                            {room.guestAvatar ? (
+                              <img
+                                src={room.guestAvatar}
+                                alt={room.guestName || 'Guest'}
+                                className="w-full h-full object-cover"
+                              />
+                            ) : (
+                              (room.guestName || 'P2').charAt(0).toUpperCase()
+                            )}
+                          </div>
+                          <div className="min-w-0">
+                            <h4 className="font-headline font-bold text-white text-sm truncate">
+                              {room.guestName || 'Challenger'}
+                            </h4>
+                            <p className="text-[11px] font-mono text-[#958ea0]">
+                              P2P RTT: {liveLatencyMs > 0 ? `${liveLatencyMs}ms` : 'Đang đo...'}
+                            </p>
+                            <span className="text-[10px] font-mono text-[#d0bcff]">Điều khiển Port #2</span>
+                          </div>
+                        </div>
+                      </>
+                    ) : (
+                      <div className="py-3 space-y-2">
+                        <span className="material-symbols-outlined text-3xl text-[#494454]">person_add</span>
+                        <p className="font-mono text-xs text-white font-bold">PORT 2 ĐANG CHỜ NGƯỜI CHƠI</p>
+                        <p className="text-[11px] font-mono text-[#958ea0]">
+                          Gửi link mời để bạn bè vào trực tiếp từ bất kỳ máy nào
+                        </p>
+                        <button
+                          onClick={handleCopyInviteLink}
+                          className="mt-1 px-3 py-1 rounded bg-[#282a30] hover:bg-[#34373f] text-[#4cd7f6] font-mono text-xs border border-[#4cd7f6]/30 transition-colors cursor-pointer"
+                        >
+                          Sao Chép Link Mời
+                        </button>
+                      </div>
+                    )}
+                  </div>
+                </div>
+
+                {/* Spectators Bar */}
+                {room.spectators && room.spectators.length > 0 && (
+                  <div className="pt-3 border-t border-[#494454]/20 flex items-center justify-between text-xs font-mono">
+                    <span className="text-[#958ea0] flex items-center gap-1.5">
+                      <span className="material-symbols-outlined text-sm">visibility</span>
+                      Khán giả ({room.spectators.length}):
                     </span>
-                  ))}
-                </div>
-              </div>
-            )}
-          </div>
-
-          {/* Active Cartridge Showcase Card */}
-          <div className="bg-[#191b22] border border-[#494454]/30 rounded-2xl p-6 space-y-4">
-            <div className="flex items-center justify-between border-b border-[#494454]/20 pb-3">
-              <div>
-                <h3 className="font-headline font-bold text-white text-base flex items-center gap-2">
-                  <span className="material-symbols-outlined text-amber-400">sports_esports</span>
-                  Active Cartridge In Chamber
-                </h3>
-                <p className="text-xs font-mono text-[#958ea0]">Both clients synchronize to this ROM state</p>
-              </div>
-
-              {isHost && (
-                <button
-                  onClick={() => setShowChangeCartridgeModal(true)}
-                  className="px-3 py-1.5 rounded-lg bg-[#282a30] hover:bg-[#34373f] text-[#4cd7f6] border border-[#4cd7f6]/30 font-mono text-xs transition-colors flex items-center gap-1"
-                >
-                  <span className="material-symbols-outlined text-sm">swap_horiz</span>
-                  Change Cartridge
-                </button>
-              )}
-            </div>
-
-            <div className="flex flex-col sm:flex-row items-center gap-5">
-              <img
-                src={activeGame.artwork || activeGame.boxArt}
-                alt={activeGame.title}
-                className="w-28 h-28 sm:w-32 sm:h-32 rounded-xl object-cover border border-[#494454]/50 shadow-xl"
-              />
-              <div className="space-y-2 text-center sm:text-left flex-1">
-                <div className="flex flex-wrap items-center justify-center sm:justify-start gap-2">
-                  <span className="px-2 py-0.5 rounded bg-[#4cd7f6]/10 text-[#4cd7f6] border border-[#4cd7f6]/30 font-mono text-xs font-bold">
-                    {activeGame.platform}
-                  </span>
-                  <span className="px-2 py-0.5 rounded bg-emerald-500/10 text-emerald-400 border border-emerald-500/30 font-mono text-xs">
-                    2-Player Simultaneous
-                  </span>
-                </div>
-                <h4 className="font-headline font-bold text-white text-lg">{activeGame.title}</h4>
-                <p className="text-xs font-mono text-[#cbc3d7] line-clamp-2">{activeGame.description}</p>
-                <div className="flex flex-wrap items-center justify-center sm:justify-start gap-4 text-[11px] font-mono text-[#958ea0] pt-1">
-                  <span>Core: Snes9x WASM 60FPS</span>
-                  <span>•</span>
-                  <span>Input Delay: 1 Frame (16.6ms)</span>
-                  <span>•</span>
-                  <span>Audio Sync: Gaussian DSP</span>
-                </div>
-              </div>
-            </div>
-          </div>
-        </div>
-
-        {/* Right Column (5 cols): Live In-Room Chat & Signaling Diagnostics */}
-        <div className="lg:col-span-5 bg-[#191b22] border border-[#494454]/30 rounded-2xl flex flex-col justify-between overflow-hidden min-h-[580px]">
-          {/* Chat Header */}
-          <div className="p-4 bg-[#111319] border-b border-[#494454]/30 flex items-center justify-between">
-            <div className="flex items-center gap-2">
-              <span className="material-symbols-outlined text-[#4cd7f6] text-lg">chat</span>
-              <h3 className="font-headline font-bold text-white text-sm">Lobby Spectator & Player Chat</h3>
-            </div>
-            <span className="text-[10px] font-mono text-emerald-400 bg-emerald-500/10 px-2 py-0.5 rounded border border-emerald-500/30">
-              Synced @ 0ms
-            </span>
-          </div>
-
-          {/* Chat Messages Stream */}
-          <div
-            ref={chatScrollRef}
-            className="flex-1 p-4 overflow-y-auto space-y-3 font-mono text-xs max-h-[420px]"
-          >
-            {messages.map((m) => (
-              <div
-                key={m.id}
-                className={`p-2.5 rounded-xl border ${
-                  m.isSystem
-                    ? 'bg-[#111319]/50 border-[#494454]/20 text-[#958ea0] text-[11px]'
-                    : m.senderUid === currentUser?.uid
-                    ? 'bg-[#4cd7f6]/10 border-[#4cd7f6]/30 text-white ml-6'
-                    : 'bg-[#282a30]/50 border-[#494454]/30 text-[#e2e2eb] mr-6'
-                }`}
-              >
-                {!m.isSystem && (
-                  <div className="flex items-center justify-between mb-1 text-[10px] text-[#958ea0]">
-                    <span className="font-bold text-[#4cd7f6]">{m.senderName}</span>
-                    <span>{m.timestamp}</span>
+                    <div className="flex items-center gap-2 flex-wrap">
+                      {room.spectators.map((s) => (
+                        <span
+                          key={s.id}
+                          className="px-2 py-0.5 rounded bg-[#111319] text-[#cbc3d7] border border-[#494454]/30 text-[11px]"
+                        >
+                          {s.name} ({s.latencyMs}ms)
+                        </span>
+                      ))}
+                    </div>
                   </div>
                 )}
-                <p className="leading-relaxed">{m.text}</p>
               </div>
-            ))}
-          </div>
 
-          {/* Quick Reaction Emotes Chips */}
-          <div className="px-4 py-2 border-t border-[#494454]/20 bg-[#111319]/40 flex items-center gap-1.5 overflow-x-auto text-xs font-mono">
-            {['Ready!', 'One sec!', 'Rematch?', 'GG WP!', '150cc?', 'GL HF!'].map((emote) => (
-              <button
-                key={emote}
-                onClick={() => handleSendMessage(emote)}
-                className="px-2.5 py-1 rounded bg-[#282a30] hover:bg-[#34373f] text-[#cbc3d7] hover:text-[#4cd7f6] transition-colors whitespace-nowrap text-[11px]"
-              >
-                {emote}
-              </button>
-            ))}
-          </div>
+              {/* Active Cartridge Card */}
+              <div className="bg-[#191b22] border border-[#494454]/30 rounded-2xl p-6 space-y-4">
+                <div className="flex items-center justify-between border-b border-[#494454]/20 pb-3">
+                  <div>
+                    <h3 className="font-headline font-bold text-white text-base flex items-center gap-2">
+                      <span className="material-symbols-outlined text-amber-400">sports_esports</span>
+                      Băng Game Đang Chọn Trong Phòng
+                    </h3>
+                    <p className="text-xs font-mono text-[#958ea0]">
+                      Host chạy lõi game &amp; stream trực tiếp sang Port 2 (Guest không cần có sẵn file ROM)
+                    </p>
+                  </div>
 
-          {/* Chat Input Box */}
-          <div className="p-3 bg-[#111319] border-t border-[#494454]/30 flex items-center gap-2">
-            <input
-              type="text"
-              value={inputText}
-              onChange={(e) => setInputText(e.target.value)}
-              onKeyDown={(e) => e.key === 'Enter' && handleSendMessage()}
-              placeholder="Send message to lobby..."
-              className="flex-1 bg-[#1e1f26] border border-[#494454]/40 rounded-lg px-3 py-2 text-xs font-mono text-white placeholder-[#958ea0] focus:outline-none focus:border-[#4cd7f6]"
-            />
-            <button
-              onClick={() => handleSendMessage()}
-              className="px-3.5 py-2 rounded-lg bg-[#4cd7f6] hover:bg-[#70e0f8] text-[#003641] font-mono font-bold text-xs shadow-md transition-all flex items-center gap-1"
-            >
-              <span className="material-symbols-outlined text-sm">send</span>
-            </button>
+                  {isHost && (
+                    <button
+                      onClick={() => setShowChangeCartridgeModal(true)}
+                      className="px-3 py-1.5 rounded-lg bg-[#282a30] hover:bg-[#34373f] text-[#4cd7f6] border border-[#4cd7f6]/30 font-mono text-xs transition-colors flex items-center gap-1 cursor-pointer"
+                    >
+                      <span className="material-symbols-outlined text-sm">swap_horiz</span>
+                      Đổi Game
+                    </button>
+                  )}
+                </div>
+
+                <div className="flex flex-col sm:flex-row items-center gap-5">
+                  <img
+                    src={activeGame.artwork || activeGame.boxArt}
+                    alt={activeGame.title}
+                    className="w-24 h-28 rounded-xl object-contain bg-[#0c0e14] p-1 border border-[#494454]/50 shadow-xl"
+                  />
+                  <div className="space-y-2 text-center sm:text-left flex-1">
+                    <div className="flex flex-wrap items-center justify-center sm:justify-start gap-2">
+                      <span className="px-2 py-0.5 rounded bg-[#4cd7f6]/10 text-[#4cd7f6] border border-[#4cd7f6]/30 font-mono text-xs font-bold">
+                        {activeGame.platform}
+                      </span>
+                      <span className="px-2 py-0.5 rounded bg-emerald-500/10 text-emerald-400 border border-emerald-500/30 font-mono text-xs">
+                        2-Player NetPlay Ready
+                      </span>
+                    </div>
+                    <h4 className="font-headline font-bold text-white text-lg">{activeGame.title}</h4>
+                    <p className="text-xs font-mono text-[#cbc3d7] line-clamp-2">{activeGame.description}</p>
+                    <div className="flex flex-wrap items-center justify-center sm:justify-start gap-3 text-[11px] font-mono text-[#958ea0] pt-1">
+                      <span>ICE: {rtcStats.iceConnectionState}</span>
+                      <span>•</span>
+                      <span>Buffer: {room.inputDelayTarget}</span>
+                      <span>•</span>
+                      <span>Stream: 60 FPS WebRTC + Relay</span>
+                    </div>
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            {/* Right Column: Live Room Chat */}
+            <div className="lg:col-span-5 bg-[#191b22] border border-[#494454]/30 rounded-2xl flex flex-col justify-between overflow-hidden min-h-[540px]">
+              <div className="p-4 bg-[#111319] border-b border-[#494454]/30 flex items-center justify-between">
+                <div className="flex items-center gap-2">
+                  <span className="material-symbols-outlined text-[#4cd7f6] text-lg">chat</span>
+                  <h3 className="font-headline font-bold text-white text-sm">Trò Chuyện Trong Phòng</h3>
+                </div>
+                <span className="text-[10px] font-mono text-emerald-400 bg-emerald-500/10 px-2 py-0.5 rounded border border-emerald-500/30">
+                  {serverStatus === 'connected' ? `WS Live • ${serverRttMs}ms` : 'Reconnecting...'}
+                </span>
+              </div>
+
+              <div ref={chatScrollRef} className="flex-1 p-4 overflow-y-auto space-y-3 font-mono text-xs max-h-[400px]">
+                {messages.map((m) => (
+                  <div
+                    key={m.id}
+                    className={`p-2.5 rounded-xl border ${
+                      m.isSystem
+                        ? 'bg-[#111319]/50 border-[#494454]/20 text-[#958ea0] text-[11px]'
+                        : m.senderUid === playerProfile.uid
+                        ? 'bg-[#4cd7f6]/10 border-[#4cd7f6]/30 text-white ml-6'
+                        : 'bg-[#282a30]/50 border-[#494454]/30 text-[#e2e2eb] mr-6'
+                    }`}
+                  >
+                    {!m.isSystem && (
+                      <div className="flex items-center justify-between mb-1 text-[10px] text-[#958ea0]">
+                        <span className="font-bold text-[#4cd7f6]">{m.senderName}</span>
+                        <span>{m.timestamp}</span>
+                      </div>
+                    )}
+                    <p className="leading-relaxed break-words">{m.text}</p>
+                  </div>
+                ))}
+              </div>
+
+              {/* Quick Emotes */}
+              <div className="px-4 py-2 border-t border-[#494454]/20 bg-[#111319]/40 flex items-center gap-1.5 overflow-x-auto text-xs font-mono">
+                {['Sẵn sàng!', 'Đợi chút nhé!', 'Chơi lại ván nữa?', 'GG!', 'Bắt đầu thôi!'].map((emote) => (
+                  <button
+                    key={emote}
+                    onClick={() => handleSendMessage(emote)}
+                    className="px-2.5 py-1 rounded bg-[#282a30] hover:bg-[#34373f] text-[#cbc3d7] hover:text-[#4cd7f6] transition-colors whitespace-nowrap text-[11px] cursor-pointer"
+                  >
+                    {emote}
+                  </button>
+                ))}
+              </div>
+
+              <div className="p-3 bg-[#111319] border-t border-[#494454]/30 flex items-center gap-2">
+                <input
+                  type="text"
+                  value={inputText}
+                  onChange={(e) => setInputText(e.target.value)}
+                  onKeyDown={(e) => e.key === 'Enter' && handleSendMessage()}
+                  placeholder="Nhắn tin với người chơi trong phòng..."
+                  className="flex-1 bg-[#1e1f26] border border-[#494454]/40 rounded-lg px-3 py-2 text-xs font-mono text-white placeholder-[#958ea0] focus:outline-none focus:border-[#4cd7f6]"
+                />
+                <button
+                  onClick={() => handleSendMessage()}
+                  className="px-3.5 py-2 rounded-lg bg-[#4cd7f6] hover:bg-[#70e0f8] text-[#003641] font-mono font-bold text-xs shadow-md transition-all flex items-center gap-1 cursor-pointer"
+                >
+                  <span className="material-symbols-outlined text-sm">send</span>
+                </button>
+              </div>
+            </div>
           </div>
-        </div>
-      </div>
-      </>
+        </>
       )}
-
-      {/* 4. MODALS & DRAWERS */}
 
       {/* Create Room Modal */}
       {showCreateModal && (
@@ -848,39 +1117,49 @@ export const NetPlayLobbyPage: React.FC<NetPlayLobbyPageProps> = ({
             <div className="flex items-center justify-between border-b border-[#494454]/20 pb-3">
               <h3 className="font-headline font-bold text-lg text-white flex items-center gap-2">
                 <span className="material-symbols-outlined text-[#4cd7f6]">add_box</span>
-                Host New NetPlay Chamber
+                Khởi Tạo Phòng Chơi NetPlay
               </h3>
-              <button
-                onClick={() => setShowCreateModal(false)}
-                className="text-[#958ea0] hover:text-white"
-              >
+              <button onClick={() => setShowCreateModal(false)} className="text-[#958ea0] hover:text-white cursor-pointer">
                 <span className="material-symbols-outlined text-xl">close</span>
               </button>
             </div>
 
             <div className="space-y-4 font-mono text-xs">
               <div>
-                <label className="text-[#cbc3d7] block mb-1">Select Game Title</label>
+                <div className="flex items-center justify-between mb-1">
+                  <label className="text-[#cbc3d7]">Chọn Trò Chơi / Băng ROM</label>
+                  <button
+                    type="button"
+                    onClick={() => romUploadInputRef.current?.click()}
+                    className="text-[#4cd7f6] hover:underline flex items-center gap-1 cursor-pointer"
+                  >
+                    <span className="material-symbols-outlined text-xs">upload_file</span>
+                    Tải ROM từ máy
+                  </button>
+                </div>
                 <select
                   value={createGameId}
                   onChange={(e) => {
                     setCreateGameId(e.target.value);
-                    const found = FEATURED_GAMES.find((g) => g.id === e.target.value);
+                    const found = [...libraryGames, ARENA_FALLBACK_GAME].find((g) => g.id === e.target.value);
                     if (found) setCreatePlatform(found.platform);
                   }}
                   className="w-full bg-[#111319] border border-[#494454]/40 rounded-lg p-2.5 text-white focus:outline-none focus:border-[#4cd7f6]"
                 >
-                  {FEATURED_GAMES.map((g) => (
+                  {libraryGames.map((g) => (
                     <option key={g.id} value={g.id}>
                       {g.title} ({g.platform})
                     </option>
                   ))}
+                  <option value={ARENA_FALLBACK_GAME.id}>
+                    {ARENA_FALLBACK_GAME.title} (Chơi thử 2P ngay không cần ROM)
+                  </option>
                 </select>
               </div>
 
               <div className="grid grid-cols-2 gap-3">
                 <div>
-                  <label className="text-[#cbc3d7] block mb-1">Platform</label>
+                  <label className="text-[#cbc3d7] block mb-1">Hệ Máy</label>
                   <input
                     type="text"
                     disabled
@@ -889,23 +1168,22 @@ export const NetPlayLobbyPage: React.FC<NetPlayLobbyPageProps> = ({
                   />
                 </div>
                 <div>
-                  <label className="text-[#cbc3d7] block mb-1">Rollback Buffer</label>
+                  <label className="text-[#cbc3d7] block mb-1">Tối Ưu Độ Trễ Mạng</label>
                   <select
                     value={createRollback}
                     onChange={(e) => setCreateRollback(Number(e.target.value))}
                     className="w-full bg-[#111319] border border-[#494454]/40 rounded-lg p-2 text-white"
                   >
-                    <option value={1}>1 Frame (Sub-16ms)</option>
-                    <option value={2}>2 Frames (Standard 33ms)</option>
-                    <option value={3}>3 Frames (Cross-country 50ms)</option>
-                    <option value={4}>4 Frames (High Ping 66ms)</option>
+                    <option value={1}>Ultra Low (0-1 Frame • P2P)</option>
+                    <option value={2}>Standard (2 Frames • Khuyên dùng)</option>
+                    <option value={3}>Cross-Region (3 Frames • Ổn định)</option>
                   </select>
                 </div>
               </div>
 
               <div>
-                <label className="text-[#cbc3d7] block mb-1">Room Visibility</label>
-                <div className="flex gap-4">
+                <label className="text-[#cbc3d7] block mb-1.5">Chế Độ Hiển Thị Phòng</label>
+                <div className="flex flex-col sm:flex-row gap-3">
                   <label className="flex items-center gap-2 cursor-pointer">
                     <input
                       type="radio"
@@ -914,7 +1192,7 @@ export const NetPlayLobbyPage: React.FC<NetPlayLobbyPageProps> = ({
                       onChange={() => setCreateIsPublic(true)}
                       className="accent-[#4cd7f6]"
                     />
-                    <span className="text-white">Public (Listed in Matchmaking Lobby)</span>
+                    <span className="text-white">Công khai (Hiện trong sảnh)</span>
                   </label>
                   <label className="flex items-center gap-2 cursor-pointer">
                     <input
@@ -924,7 +1202,7 @@ export const NetPlayLobbyPage: React.FC<NetPlayLobbyPageProps> = ({
                       onChange={() => setCreateIsPublic(false)}
                       className="accent-[#4cd7f6]"
                     />
-                    <span className="text-white">Private (Invite Link Only)</span>
+                    <span className="text-white">Riêng tư (Chỉ vào bằng Mã / Link)</span>
                   </label>
                 </div>
               </div>
@@ -933,132 +1211,69 @@ export const NetPlayLobbyPage: React.FC<NetPlayLobbyPageProps> = ({
             <div className="flex justify-end gap-3 pt-3 border-t border-[#494454]/20">
               <button
                 onClick={() => setShowCreateModal(false)}
-                className="px-4 py-2 rounded-lg bg-[#282a30] text-xs font-mono text-[#cbc3d7] hover:text-white"
+                className="px-4 py-2 rounded-lg bg-[#282a30] text-xs font-mono text-[#cbc3d7] hover:text-white cursor-pointer"
               >
-                Cancel
+                Hủy
               </button>
               <button
                 onClick={handleCreateRoom}
                 disabled={isSubmitting}
-                className="px-5 py-2 rounded-lg bg-[#4cd7f6] hover:bg-[#70e0f8] text-[#003641] font-mono font-bold text-xs shadow-lg shadow-[#4cd7f6]/20 transition-all flex items-center gap-1.5"
+                className="px-5 py-2 rounded-lg bg-[#4cd7f6] hover:bg-[#70e0f8] text-[#003641] font-mono font-bold text-xs shadow-lg shadow-[#4cd7f6]/20 transition-all cursor-pointer"
               >
-                <span className="material-symbols-outlined text-sm">wifi_tethering</span>
-                {isSubmitting ? 'Initializing...' : 'Launch Room'}
+                {isSubmitting ? 'Đang tạo phòng...' : 'Tạo Phòng Ngay'}
               </button>
             </div>
           </div>
         </div>
       )}
 
-      {/* Join Room by Code Modal */}
+      {/* Join By Code Modal */}
       {showJoinModal && (
         <div className="fixed inset-0 z-50 bg-black/80 backdrop-blur-sm flex items-center justify-center p-4">
           <div className="bg-[#1e1f26] border border-[#494454]/50 rounded-2xl max-w-md w-full p-6 space-y-4 shadow-2xl">
             <div className="flex items-center justify-between border-b border-[#494454]/20 pb-3">
               <h3 className="font-headline font-bold text-lg text-white flex items-center gap-2">
-                <span className="material-symbols-outlined text-[#4cd7f6]">login</span>
-                Join via Room Code
+                <span className="material-symbols-outlined text-emerald-400">login</span>
+                Tham Gia Phòng Bằng Mã
               </h3>
-              <button onClick={() => setShowJoinModal(false)} className="text-[#958ea0] hover:text-white">
+              <button onClick={() => setShowJoinModal(false)} className="text-[#958ea0] hover:text-white cursor-pointer">
                 <span className="material-symbols-outlined text-xl">close</span>
               </button>
             </div>
 
-            <p className="text-xs font-mono text-[#958ea0]">
-              Enter the 6 to 12-character alphanumeric room code (e.g. RV-7402-SNES) provided by the host.
-            </p>
-
-            <div>
+            <div className="space-y-3 font-mono text-xs">
+              <p className="text-[#cbc3d7]">
+                Nhập mã phòng đầy đủ (VD: <span className="text-[#4cd7f6]">RV-4821-SNES</span>) hoặc 4 chữ số cuối:
+              </p>
               <input
                 type="text"
                 value={joinCodeInput}
-                onChange={(e) => setJoinCodeInput(e.target.value.toUpperCase())}
-                placeholder="RV-7402-SNES"
-                className="w-full bg-[#111319] border border-[#494454]/40 rounded-lg p-3 text-sm font-mono text-center tracking-widest text-[#4cd7f6] font-bold uppercase focus:outline-none focus:border-[#4cd7f6]"
+                onChange={(e) => {
+                  setJoinCodeInput(e.target.value.toUpperCase());
+                  setJoinError(null);
+                }}
+                onKeyDown={(e) => e.key === 'Enter' && handleJoinByCode()}
+                placeholder="VD: RV-4821-SNES hoặc 4821"
+                className="w-full bg-[#111319] border border-[#494454]/60 rounded-lg px-4 py-3 text-base text-white tracking-widest text-center focus:outline-none focus:border-[#4cd7f6]"
+                autoFocus
               />
+              {joinError && <p className="text-rose-400 text-xs">{joinError}</p>}
             </div>
-
-            {joinError && (
-              <p className="text-xs font-mono text-red-400 bg-red-500/10 p-2 rounded border border-red-500/20">
-                {joinError}
-              </p>
-            )}
 
             <div className="flex justify-end gap-3 pt-2">
               <button
                 onClick={() => setShowJoinModal(false)}
-                className="px-4 py-2 rounded-lg bg-[#282a30] text-xs font-mono text-[#cbc3d7] hover:text-white"
+                className="px-4 py-2 rounded-lg bg-[#282a30] text-xs font-mono text-[#cbc3d7] hover:text-white cursor-pointer"
               >
-                Cancel
+                Hủy
               </button>
               <button
                 onClick={() => handleJoinByCode()}
                 disabled={isSubmitting || !joinCodeInput.trim()}
-                className="px-5 py-2 rounded-lg bg-[#4cd7f6] hover:bg-[#70e0f8] text-[#003641] font-mono font-bold text-xs shadow-md transition-all"
+                className="px-5 py-2 rounded-lg bg-[#4cd7f6] hover:bg-[#70e0f8] text-[#003641] font-mono font-bold text-xs shadow-md transition-all cursor-pointer"
               >
-                {isSubmitting ? 'Connecting...' : 'Connect to Chamber'}
+                {isSubmitting ? 'Đang kết nối...' : 'Vào Phòng'}
               </button>
-            </div>
-          </div>
-        </div>
-      )}
-
-      {/* Public Rooms Browser Modal */}
-      {showPublicRoomsModal && (
-        <div className="fixed inset-0 z-50 bg-black/80 backdrop-blur-sm flex items-center justify-center p-4">
-          <div className="bg-[#1e1f26] border border-[#494454]/50 rounded-2xl max-w-2xl w-full p-6 space-y-4 shadow-2xl">
-            <div className="flex items-center justify-between border-b border-[#494454]/20 pb-3">
-              <div>
-                <h3 className="font-headline font-bold text-lg text-white flex items-center gap-2">
-                  <span className="material-symbols-outlined text-[#4cd7f6]">explore</span>
-                  Active Public Matchmaking Rooms
-                </h3>
-                <p className="text-xs font-mono text-[#958ea0]">Live peer-to-peer NetPlay sessions in Firestore</p>
-              </div>
-              <button onClick={() => setShowPublicRoomsModal(false)} className="text-[#958ea0] hover:text-white">
-                <span className="material-symbols-outlined text-xl">close</span>
-              </button>
-            </div>
-
-            <div className="max-h-96 overflow-y-auto space-y-2">
-              {publicRooms.length > 0 ? (
-                publicRooms.map((pubRoom) => (
-                  <div
-                    key={pubRoom.id}
-                    className="p-3 bg-[#111319] hover:bg-[#161720] border border-[#494454]/30 hover:border-[#4cd7f6]/50 rounded-xl flex items-center justify-between transition-all"
-                  >
-                    <div>
-                      <div className="flex items-center gap-2">
-                        <span className="font-mono text-xs text-white font-bold">{pubRoom.code}</span>
-                        <span className="px-1.5 py-0.5 rounded bg-[#4cd7f6]/10 text-[#4cd7f6] font-mono text-[10px]">
-                          {pubRoom.platform}
-                        </span>
-                        <span className="text-xs font-mono text-emerald-400">
-                          {pubRoom.guestUid ? '2/2 Full (Spectate)' : '1/2 Open (Join Match)'}
-                        </span>
-                      </div>
-                      <p className="text-xs font-mono text-[#cbc3d7] mt-0.5">{pubRoom.gameTitle}</p>
-                      <p className="text-[10px] font-mono text-[#958ea0]">Host: {pubRoom.hostName} • {pubRoom.pingMs}ms ping</p>
-                    </div>
-
-                    <button
-                      onClick={() => {
-                        setShowPublicRoomsModal(false);
-                        handleJoinByCode(pubRoom.code);
-                      }}
-                      className="px-3.5 py-1.5 rounded-lg bg-[#4cd7f6] hover:bg-[#70e0f8] text-[#003641] font-mono font-bold text-xs transition-colors"
-                    >
-                      {pubRoom.guestUid ? 'Spectate' : 'Join Match'}
-                    </button>
-                  </div>
-                ))
-              ) : (
-                <div className="py-12 text-center text-[#958ea0] font-mono text-xs">
-                  <span className="material-symbols-outlined text-3xl text-[#494454] mb-2">meeting_room</span>
-                  <p>No other public rooms currently open.</p>
-                  <p className="text-[11px] text-[#494454] mt-1">Host a new room or share your room code with a friend!</p>
-                </div>
-              )}
             </div>
           </div>
         </div>
@@ -1071,15 +1286,28 @@ export const NetPlayLobbyPage: React.FC<NetPlayLobbyPageProps> = ({
             <div className="flex items-center justify-between border-b border-[#494454]/20 pb-3">
               <h3 className="font-headline font-bold text-lg text-white flex items-center gap-2">
                 <span className="material-symbols-outlined text-amber-400">swap_horiz</span>
-                Select Cartridge for Match
+                Chọn Băng Game Trong Thư Viện
               </h3>
-              <button onClick={() => setShowChangeCartridgeModal(false)} className="text-[#958ea0] hover:text-white">
+              <button
+                onClick={() => setShowChangeCartridgeModal(false)}
+                className="text-[#958ea0] hover:text-white cursor-pointer"
+              >
                 <span className="material-symbols-outlined text-xl">close</span>
               </button>
             </div>
 
+            <div className="flex justify-end">
+              <button
+                onClick={() => romUploadInputRef.current?.click()}
+                className="px-3 py-1.5 rounded-lg bg-[#4cd7f6]/15 hover:bg-[#4cd7f6]/25 border border-[#4cd7f6]/40 text-[#4cd7f6] font-mono text-xs font-bold flex items-center gap-1.5 cursor-pointer"
+              >
+                <span className="material-symbols-outlined text-sm">upload_file</span>
+                Tải Tệp ROM Mới Từ Máy
+              </button>
+            </div>
+
             <div className="max-h-96 overflow-y-auto space-y-2">
-              {FEATURED_GAMES.filter((g) => g.multiplayer?.supported).map((g) => (
+              {[...availableGames, ...(libraryGames.length > 0 ? [ARENA_FALLBACK_GAME] : [])].map((g) => (
                 <div
                   key={g.id}
                   onClick={() => handleSelectGameChange(g)}
@@ -1089,7 +1317,7 @@ export const NetPlayLobbyPage: React.FC<NetPlayLobbyPageProps> = ({
                     <img
                       src={g.artwork || g.boxArt}
                       alt={g.title}
-                      className="w-12 h-12 rounded-lg object-cover"
+                      className="w-12 h-12 rounded-lg object-contain bg-[#0c0e14] p-0.5"
                     />
                     <div>
                       <div className="flex items-center gap-2">
@@ -1098,10 +1326,9 @@ export const NetPlayLobbyPage: React.FC<NetPlayLobbyPageProps> = ({
                           {g.platform}
                         </span>
                       </div>
-                      <p className="text-[11px] font-mono text-[#958ea0] mt-0.5">{g.genre} • 2-Player</p>
+                      <p className="text-[11px] font-mono text-[#958ea0] mt-0.5">{g.genre}</p>
                     </div>
                   </div>
-
                   <span className="material-symbols-outlined text-sm text-[#4cd7f6]">arrow_forward</span>
                 </div>
               ))}

@@ -270,26 +270,26 @@ export const InputMappingPanel: React.FC<InputMappingPanelProps> = ({ onShowToas
           <label className="text-xs font-mono text-[#958ea0] block mb-1.5 uppercase tracking-wider">
             Chọn hệ máy cần cấu hình nút ảo
           </label>
-          <div className="inline-flex rounded-lg bg-[#111319] p-1 border border-[#494454]/30 gap-1">
-            {(['NES', 'SNES', 'GBA'] as TargetSystem[]).map((sys) => (
+          <div className="inline-flex rounded-lg bg-[#111319] p-1 border border-[#494454]/30 gap-1 flex-wrap">
+            {(['NES', 'SNES', 'GBA', 'GENESIS'] as TargetSystem[]).map((sys) => (
               <button
                 key={sys}
                 onClick={() => {
                   setSelectedSystem(sys);
                   setActiveListening(null);
                 }}
-                className={`px-4 py-1.5 rounded-md text-xs font-mono font-bold transition-all flex items-center gap-2 ${
+                className={`px-3 sm:px-4 py-1.5 rounded-md text-xs font-mono font-bold transition-all flex items-center gap-1.5 sm:gap-2 ${
                   selectedSystem === sys
                     ? 'bg-[#4cd7f6] text-[#003641] shadow-md shadow-[#4cd7f6]/20'
                     : 'text-[#cbc3d7] hover:text-white hover:bg-[#282a30]'
                 }`}
               >
                 <span className="material-symbols-outlined text-sm">
-                  {sys === 'GBA' ? 'videogame_asset' : sys === 'NES' ? 'hardware' : 'sports_esports'}
+                  {sys === 'GBA' ? 'videogame_asset' : sys === 'NES' ? 'hardware' : sys === 'GENESIS' ? 'album' : 'sports_esports'}
                 </span>
                 <span>{sys} Controller</span>
                 <span className="text-[10px] opacity-75 font-normal">
-                  ({sys === 'NES' ? '8 nút' : sys === 'GBA' ? '10 nút' : '12 nút'})
+                  ({sys === 'NES' ? '8 nút' : sys === 'GBA' ? '10 nút' : sys === 'GENESIS' ? '3+ nút' : '12 nút'})
                 </span>
               </button>
             ))}
@@ -798,6 +798,106 @@ export const InputMappingPanel: React.FC<InputMappingPanelProps> = ({ onShowToas
                 />
                 <text x="385" y="96" fill={livePressedButtons.a ? '#111319' : '#818cf8'} fontSize="10" fontWeight="bold" textAnchor="middle" fontFamily="Space Mono">
                   A
+                </text>
+              </svg>
+            )}
+
+            {/* Sega Genesis / Mega Drive Blueprint */}
+            {selectedSystem === 'GENESIS' && (
+              <svg viewBox="0 0 460 200" className="w-full h-auto max-w-[440px]">
+                {/* Sleek Ergonomic Genesis Controller Body */}
+                <path
+                  d="M 60 40 C 140 20, 320 20, 400 40 C 445 70, 445 150, 385 175 C 330 195, 290 155, 230 155 C 170 155, 130 195, 75 175 C 15 150, 15 70, 60 40 Z"
+                  fill="#181a22"
+                  stroke="#38bdf8"
+                  strokeWidth="2"
+                />
+                <path
+                  d="M 65 48 C 145 28, 315 28, 395 48 C 430 75, 430 145, 375 168 C 325 185, 285 148, 230 148 C 175 148, 135 185, 85 168 C 30 145, 30 75, 65 48 Z"
+                  fill="#232634"
+                />
+
+                {/* Brand Text */}
+                <text x="230" y="55" fill="#38bdf8" fontSize="11" fontWeight="bold" textAnchor="middle" fontFamily="Space Grotesk">
+                  SEGA MEGA DRIVE
+                </text>
+                <text x="230" y="66" fill="#958ea0" fontSize="7" textAnchor="middle" fontFamily="Space Mono">
+                  16-BIT CONTROL PAD
+                </text>
+
+                {/* D-Pad Disc on Left */}
+                <circle cx="115" cy="105" r="38" fill="#14161f" stroke="#494454" strokeWidth="2" />
+                <circle cx="115" cy="105" r="28" fill="#1e212d" />
+                {/* Up */}
+                <circle cx="115" cy="80" r="7" fill={livePressedButtons.up ? '#38bdf8' : '#2c3040'} className="cursor-pointer" onClick={() => handleStartRemap('up', 'keyboard')} />
+                {/* Down */}
+                <circle cx="115" cy="130" r="7" fill={livePressedButtons.down ? '#38bdf8' : '#2c3040'} className="cursor-pointer" onClick={() => handleStartRemap('down', 'keyboard')} />
+                {/* Left */}
+                <circle cx="90" cy="105" r="7" fill={livePressedButtons.left ? '#38bdf8' : '#2c3040'} className="cursor-pointer" onClick={() => handleStartRemap('left', 'keyboard')} />
+                {/* Right */}
+                <circle cx="140" cy="105" r="7" fill={livePressedButtons.right ? '#38bdf8' : '#2c3040'} className="cursor-pointer" onClick={() => handleStartRemap('right', 'keyboard')} />
+
+                {/* Start Button in Center */}
+                <rect
+                  x="215"
+                  y="88"
+                  width="30"
+                  height="12"
+                  rx="6"
+                  fill={livePressedButtons.start ? '#38bdf8' : '#14161f'}
+                  stroke="#d9383a"
+                  strokeWidth="1.5"
+                  className="cursor-pointer"
+                  onClick={() => handleStartRemap('start', 'keyboard')}
+                />
+                <text x="230" y="112" fill="#d9383a" fontSize="7" fontWeight="bold" textAnchor="middle" fontFamily="Space Mono">
+                  START
+                </text>
+
+                {/* 3 Action Buttons in Arc on Right: A, B, C */}
+                {/* Button A (Leftmost in arc) */}
+                <circle
+                  cx="315"
+                  cy="125"
+                  r="14"
+                  fill={livePressedButtons.b ? '#38bdf8' : '#14161f'}
+                  stroke="#38bdf8"
+                  strokeWidth="2"
+                  className="cursor-pointer"
+                  onClick={() => handleStartRemap('b', 'keyboard')}
+                />
+                <text x="315" y="129" fill={livePressedButtons.b ? '#111319' : '#38bdf8'} fontSize="11" fontWeight="bold" textAnchor="middle" fontFamily="Space Mono">
+                  A
+                </text>
+
+                {/* Button B (Middle in arc) */}
+                <circle
+                  cx="350"
+                  cy="105"
+                  r="14"
+                  fill={livePressedButtons.a ? '#38bdf8' : '#14161f'}
+                  stroke="#38bdf8"
+                  strokeWidth="2"
+                  className="cursor-pointer"
+                  onClick={() => handleStartRemap('a', 'keyboard')}
+                />
+                <text x="350" y="109" fill={livePressedButtons.a ? '#111319' : '#38bdf8'} fontSize="11" fontWeight="bold" textAnchor="middle" fontFamily="Space Mono">
+                  B
+                </text>
+
+                {/* Button C (Rightmost in arc) */}
+                <circle
+                  cx="385"
+                  cy="85"
+                  r="14"
+                  fill={livePressedButtons.y ? '#38bdf8' : '#14161f'}
+                  stroke="#38bdf8"
+                  strokeWidth="2"
+                  className="cursor-pointer"
+                  onClick={() => handleStartRemap('y', 'keyboard')}
+                />
+                <text x="385" y="89" fill={livePressedButtons.y ? '#111319' : '#38bdf8'} fontSize="11" fontWeight="bold" textAnchor="middle" fontFamily="Space Mono">
+                  C
                 </text>
               </svg>
             )}

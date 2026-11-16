@@ -180,37 +180,47 @@ export const ProfilePage: React.FC<ProfilePageProps> = ({ onBack, onPlayGame }) 
           <div className="grid grid-cols-1 lg:grid-cols-12 gap-6">
             <div className="lg:col-span-6 bg-[#1e1f26] border border-[#494454]/30 rounded-xl p-5 space-y-4">
               <h3 className="font-headline font-bold text-white text-sm">Cơ Cấu Nền Tảng Trong Thư Viện</h3>
-              <div className="space-y-3 font-mono text-xs">
-                <div>
-                  <div className="flex justify-between text-[#cbc3d7] mb-1">
-                    <span>Super Nintendo Entertainment System (SNES)</span>
-                    <span className="text-[#4cd7f6] font-bold">50%</span>
-                  </div>
-                  <div className="w-full bg-[#111319] h-2 rounded-full overflow-hidden">
-                    <div className="bg-[#4cd7f6] h-full" style={{ width: '50%' }}></div>
-                  </div>
-                </div>
+              {(() => {
+                const total = games.length;
+                const snesCount = games.filter((g) => g.platform === 'SNES').length;
+                const gbaCount = games.filter((g) => ['GBA', 'GB', 'GBC'].includes(g.platform)).length;
+                const nesCount = games.filter((g) => g.platform === 'NES').length;
+                const genesisCount = games.filter((g) => g.platform === 'GENESIS').length;
+                const pct = (n: number) => (total > 0 ? Math.round((n / total) * 100) : 0);
 
-                <div>
-                  <div className="flex justify-between text-[#cbc3d7] mb-1">
-                    <span>Game Boy Advance (GBA)</span>
-                    <span className="text-[#d0bcff] font-bold">33%</span>
-                  </div>
-                  <div className="w-full bg-[#111319] h-2 rounded-full overflow-hidden">
-                    <div className="bg-[#d0bcff] h-full" style={{ width: '33%' }}></div>
-                  </div>
-                </div>
+                if (total === 0) {
+                  return (
+                    <div className="p-6 rounded-xl bg-[#111319] border border-dashed border-[#494454]/40 text-center font-mono text-xs text-[#958ea0]">
+                      Chưa có tệp ROM nào trong thư viện. Hãy tải tệp ROM từ máy tính hoặc Google Drive để xem thống kê.
+                    </div>
+                  );
+                }
 
-                <div>
-                  <div className="flex justify-between text-[#cbc3d7] mb-1">
-                    <span>Nintendo Entertainment System (NES)</span>
-                    <span className="text-[#ffb3bc] font-bold">17%</span>
+                const bars = [
+                  { label: 'Super Nintendo (SNES)', count: snesCount, percent: pct(snesCount), color: '#4cd7f6' },
+                  { label: 'Game Boy / Advance (GBA/GBC)', count: gbaCount, percent: pct(gbaCount), color: '#d0bcff' },
+                  { label: 'Nintendo NES (FCEUmm)', count: nesCount, percent: pct(nesCount), color: '#ffb3bc' },
+                  { label: 'Sega Genesis / Mega Drive', count: genesisCount, percent: pct(genesisCount), color: '#34d399' },
+                ];
+
+                return (
+                  <div className="space-y-3 font-mono text-xs">
+                    {bars.map((b) => (
+                      <div key={b.label}>
+                        <div className="flex justify-between text-[#cbc3d7] mb-1">
+                          <span>{b.label}</span>
+                          <span className="font-bold" style={{ color: b.color }}>
+                            {b.count} ROM ({b.percent}%)
+                          </span>
+                        </div>
+                        <div className="w-full bg-[#111319] h-2 rounded-full overflow-hidden">
+                          <div className="h-full transition-all duration-300" style={{ width: `${b.percent}%`, backgroundColor: b.color }}></div>
+                        </div>
+                      </div>
+                    ))}
                   </div>
-                  <div className="w-full bg-[#111319] h-2 rounded-full overflow-hidden">
-                    <div className="bg-[#ffb3bc] h-full" style={{ width: '17%' }}></div>
-                  </div>
-                </div>
-              </div>
+                );
+              })()}
             </div>
 
             <div className="lg:col-span-6 bg-[#1e1f26] border border-[#494454]/30 rounded-xl p-5 space-y-4">

@@ -16,6 +16,14 @@ import { parseRom } from '../emulator/romParser';
 import { downloadDriveFile } from '../services/googleDriveService';
 import { inputConfigService, TargetSystem } from '../services/input/inputConfigService';
 import { libraryStore } from '../services/games/libraryStore';
+import { NetPlayRoom } from '../types';
+import { roomService } from '../services/multiplayer/roomService';
+import {
+  webrtcNetplay,
+  NetplayTelemetryStats,
+  encodeInputBitmask,
+  decodeInputBitmask,
+} from '../services/multiplayer/webrtcNetplay';
 
 const FALLBACK_GAME: Game = {
   id: 'custom-unloaded',
@@ -31,9 +39,17 @@ const FALLBACK_GAME: Game = {
   features: [],
 };
 
+export interface NetPlaySessionProps {
+  room: NetPlayRoom;
+  role: 'host' | 'guest' | 'spectator';
+  playerUid: string;
+  onLeaveMatch: () => void;
+}
+
 interface EmulatorPageProps {
   gameId: string;
   initialSlot?: number;
+  netplaySession?: NetPlaySessionProps | null;
   onExit: () => void;
   onOpenSettings: () => void;
 }
@@ -41,16 +57,49 @@ interface EmulatorPageProps {
 export const EmulatorPage: React.FC<EmulatorPageProps> = ({
   gameId,
   initialSlot = 1,
+  netplaySession = null,
   onExit,
   onOpenSettings
 }) => {
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
+  const remoteVideoRef = useRef<HTMLVideoElement | null>(null);
   const engineRef = useRef<RetroEmulatorEngine | null>(null);
   const nostalgistRef = useRef<Nostalgist | null>(null);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
+  const capturedAudioStreamRef = useRef<MediaStream | null>(null);
 
-  const [game, setGame] = useState<Game>(() => getGameById(gameId) || FEATURED_GAMES[0] || FALLBACK_GAME);
-  const [hasRom, setHasRom] = useState<boolean>(() => romStorage.hasRom(gameId));
+  const isNetplayHost = netplaySession?.role === 'host';
+  const isNetplayGuestOrSpec = Boolean(netplaySession && netplaySession.role !== 'host');
+
+  const [liveRoom, setLiveRoom] = useState<NetPlayRoom | null>(netplaySession?.room || null);
+  const [netplayStats, setNetplayStats] = useState<NetplayTelemetryStats>(() => webrtcNetplay.getStats());
+  const [hasRemoteVideo, setHasRemoteVideo] = useState<boolean>(false);
+  const [relayFrameUrl, setRelayFrameUrl] = useState<string | null>(null);
+  const [needsAudioUnlock, setNeedsAudioUnlock] = useState<boolean>(false);
+
+  const guestInputsRef = useRef<EmulatorInputState>({
+    up: false, down: false, left: false, right: false,
+    a: false, b: false, x: false, y: false, l: false, r: false, start: false, select: false,
+  });
+  const prevRemoteP2Ref = useRef<EmulatorInputState>({
+    up: false, down: false, left: false, right: false,
+    a: false, b: false, x: false, y: false, l: false, r: false, start: false, select: false,
+  });
+
+  const [game, setGame] = useState<Game>(() => {
+    const found = getGameById(gameId) || FEATURED_GAMES[0];
+    if (found) return found;
+    if (netplaySession?.room) {
+      return {
+        ...FALLBACK_GAME,
+        id: netplaySession.room.gameId,
+        title: netplaySession.room.gameTitle,
+        platform: netplaySession.room.platform,
+      };
+    }
+    return FALLBACK_GAME;
+  });
+  const [hasRom, setHasRom] = useState<boolean>(() => Boolean(romStorage.getRom(gameId)));
   const [isLoadingCore, setIsLoadingCore] = useState<boolean>(false);
   const [coreLoadingStatus, setCoreLoadingStatus] = useState<string>('');
   const [loadError, setLoadError] = useState<string | null>(null);
@@ -212,22 +261,52 @@ export const EmulatorPage: React.FC<EmulatorPageProps> = ({
     },
   };
 
+  const launchCanvasFallback = (gameOverride?: Game) => {
+    if (!canvasRef.current) return;
+    setLoadError(null);
+    setIsLoadingCore(false);
+    if (nostalgistRef.current) {
+      try { nostalgistRef.current.exit({ removeCanvas: false }); } catch {}
+      nostalgistRef.current = null;
+    }
+    const engine = new RetroEmulatorEngine();
+    engine.initialize(canvasRef.current);
+    engine.loadGame(gameOverride || game);
+    if (isNetplayHost) {
+      engine.setPlayer2Active(true);
+      const audioStream = engine.getAudioStream();
+      if (audioStream) capturedAudioStreamRef.current = audioStream;
+    }
+    engine.start();
+    engineRef.current = engine;
+    setHasRom(true);
+  };
+
   // Launch Nostalgist with a ROM
   const launchRealEmulator = async (romData: Uint8Array, filename: string, targetPlatform: string) => {
     setIsLoadingCore(true);
     setLoadError(null);
 
     const plat = (targetPlatform || 'NES').toUpperCase();
-    const coreDef = plat.includes('GBA') || plat.includes('ADVANCE')
+    const isGenesis = plat === 'GENESIS' || plat.includes('MEGA') || plat.includes('SEGA');
+    const isGbaOrGb = plat.includes('GBA') || plat.includes('ADVANCE') || plat === 'GB' || plat === 'GBC';
+    const isSnes = plat === 'SNES' || plat.includes('SUPER');
+
+    const coreDef = isGbaOrGb
       ? LOCAL_CORES.GBA
-      : plat === 'SNES' || plat.includes('SUPER')
+      : isSnes
       ? LOCAL_CORES.SNES
+      : isGenesis
+      ? { name: 'genesis_plus_gx', js: '', wasm: '' }
       : LOCAL_CORES.NES;
 
     let validFilename = filename || `game.${plat.toLowerCase()}`;
     if (!validFilename.includes('.')) {
       if (plat === 'NES') validFilename += '.nes';
-      else if (plat.includes('GBA')) validFilename += '.gba';
+      else if (plat === 'GB') validFilename += '.gb';
+      else if (plat === 'GBC') validFilename += '.gbc';
+      else if (isGbaOrGb) validFilename += '.gba';
+      else if (isGenesis) validFilename += '.md';
       else validFilename += '.sfc';
     }
 
@@ -252,18 +331,60 @@ export const EmulatorPage: React.FC<EmulatorPageProps> = ({
 
       setHasRom(true);
 
-      const launchPromise = Nostalgist.launch({
+      const existingSramBytes = saveManager.getSramBytes(game.id);
+      const sramBlob = existingSramBytes && existingSramBytes.byteLength > 0
+        ? new Blob([existingSramBytes as unknown as BlobPart])
+        : undefined;
+
+      // Install scoped WebAudio output tap when Host is in NetPlay so game sound streams over WebRTC
+      let restoreAudioTap: (() => void) | null = null;
+      if (isNetplayHost && typeof AudioNode !== 'undefined') {
+        try {
+          const origConnect = AudioNode.prototype.connect;
+          const tappedContexts = new WeakMap<BaseAudioContext, MediaStreamAudioDestinationNode>();
+          (AudioNode.prototype as any).connect = function (this: AudioNode, destination: any, ...rest: any[]) {
+            const result = origConnect.apply(this, [destination, ...rest] as any);
+            try {
+              if (
+                destination &&
+                typeof AudioDestinationNode !== 'undefined' &&
+                destination instanceof AudioDestinationNode &&
+                this.context instanceof AudioContext
+              ) {
+                let tapDest = tappedContexts.get(this.context);
+                if (!tapDest && typeof this.context.createMediaStreamDestination === 'function') {
+                  tapDest = this.context.createMediaStreamDestination();
+                  tappedContexts.set(this.context, tapDest);
+                  capturedAudioStreamRef.current = tapDest.stream;
+                }
+                if (tapDest) {
+                  (origConnect as any).call(this, tapDest);
+                }
+              }
+            } catch {}
+            return result;
+          };
+          restoreAudioTap = () => {
+            AudioNode.prototype.connect = origConnect;
+          };
+        } catch {}
+      }
+
+      const launchConfig: any = {
         element: canvas,
-        core: {
-          name: coreDef.name,
-          js: coreDef.js,
-          wasm: coreDef.wasm,
-        },
+        core: coreDef.js && coreDef.wasm
+          ? {
+              name: coreDef.name,
+              js: coreDef.js,
+              wasm: coreDef.wasm,
+            }
+          : (coreDef.name as any),
         rom: {
           fileName: validFilename,
           fileContent: romData,
         },
         retroarchConfig: {
+          input_max_users: 2,
           input_player1_analog_dpad_mode: 1,
           input_player1_up: 'up',
           input_player1_down: 'down',
@@ -277,17 +398,45 @@ export const EmulatorPage: React.FC<EmulatorPageProps> = ({
           input_player1_r: 'e',
           input_player1_start: 'enter',
           input_player1_select: 'rshift',
+          // Dedicated non-colliding Port 2 bindings for remote Challenger
+          input_player2_analog_dpad_mode: 1,
+          input_player2_up: 'i',
+          input_player2_down: 'k',
+          input_player2_left: 'j',
+          input_player2_right: 'l',
+          input_player2_a: 'u',
+          input_player2_b: 'o',
+          input_player2_x: 'n',
+          input_player2_y: 'm',
+          input_player2_l: 'y',
+          input_player2_r: 'p',
+          input_player2_start: 'h',
+          input_player2_select: 'b',
         },
-      });
+      };
+
+      if (sramBlob) {
+        launchConfig.sram = sramBlob;
+      }
+
+      const launchPromise = Nostalgist.launch(launchConfig);
 
       const timeoutPromise = new Promise<never>((_, reject) => {
         setTimeout(() => reject(new Error('Khởi động WebAssembly quá thời gian chờ (15s).')), 15000);
       });
 
-      const instance = await Promise.race([launchPromise, timeoutPromise]);
+      let instance: Nostalgist;
+      try {
+        instance = await Promise.race([launchPromise, timeoutPromise]);
+      } finally {
+        if (restoreAudioTap) {
+          // Restore AudioNode prototype shortly after core audio initialization settles
+          setTimeout(restoreAudioTap, 1200);
+        }
+      }
 
       // Patch Nostalgist emulator's internal fireKeyboardEvent to provide fully-formed mock events
-      // with preventDefault and valid scancodes, preventing memory access out of bounds in RetroArch WASM
+      // with preventDefault and valid scancodes for both Port 1 and Port 2
       try {
         const emulator = (instance as any).getEmulator?.();
         if (emulator && typeof emulator.fireKeyboardEvent === 'function') {
@@ -310,6 +459,19 @@ export const EmulatorPage: React.FC<EmulatorPageProps> = ({
                   KeyW: { key: 'w', keyCode: 87 },
                   Enter: { key: 'Enter', keyCode: 13 },
                   ShiftRight: { key: 'Shift', keyCode: 16 },
+                  // Port 2 Scancodes
+                  KeyI: { key: 'i', keyCode: 73 },
+                  KeyK: { key: 'k', keyCode: 75 },
+                  KeyJ: { key: 'j', keyCode: 74 },
+                  KeyL: { key: 'l', keyCode: 76 },
+                  KeyU: { key: 'u', keyCode: 85 },
+                  KeyO: { key: 'o', keyCode: 79 },
+                  KeyN: { key: 'n', keyCode: 78 },
+                  KeyM: { key: 'm', keyCode: 77 },
+                  KeyY: { key: 'y', keyCode: 89 },
+                  KeyP: { key: 'p', keyCode: 80 },
+                  KeyH: { key: 'h', keyCode: 72 },
+                  KeyB: { key: 'b', keyCode: 66 },
                 };
                 const mapped = codeMap[code] || { key: code, keyCode: 0 };
                 const mockEvent = {
@@ -351,27 +513,11 @@ export const EmulatorPage: React.FC<EmulatorPageProps> = ({
       setIsLoadingCore(false);
       showToast(`Đã nạp ROM: ${validFilename}`);
     } catch (err: any) {
-      console.error('Failed to launch Nostalgist:', err);
+      console.warn('Khởi chạy WebAssembly không hoàn tất, chuyển sang Canvas Retro Engine:', err);
       setIsLoadingCore(false);
-      setLoadError(err?.message || 'Không thể tải core giả lập. Vui lòng kiểm tra lại tệp ROM.');
+      launchCanvasFallback();
+      showToast('Đã chuyển sang Canvas Retro Engine để tiếp tục chơi mượt mà');
     }
-  };
-
-  const launchCanvasFallback = () => {
-    if (!canvasRef.current) return;
-    setLoadError(null);
-    setIsLoadingCore(false);
-    if (nostalgistRef.current) {
-      try { nostalgistRef.current.exit({ removeCanvas: false }); } catch {}
-      nostalgistRef.current = null;
-    }
-    const engine = new RetroEmulatorEngine();
-    engine.initialize(canvasRef.current);
-    engine.loadGame(game);
-    engine.start();
-    engineRef.current = engine;
-    setHasRom(true);
-    showToast("Đang chạy bằng Canvas Retro Engine dự phòng");
   };
 
   const handleDirectRomFile = async (file: File) => {
@@ -412,13 +558,33 @@ export const EmulatorPage: React.FC<EmulatorPageProps> = ({
     }
   }, []);
 
-  // Initialize and run emulator engine
+  // Initialize and run emulator engine (Host / Single Player only)
   useEffect(() => {
+    if (isNetplayGuestOrSpec) {
+      // Guest / Spectator receives live stream from Host; does not boot local ROM
+      setHasRom(true);
+      setIsLoadingCore(false);
+      return;
+    }
+
     let isCancelled = false;
-    const targetGame = getGameById(gameId) || FEATURED_GAMES[0] || FALLBACK_GAME;
+    const found = getGameById(gameId) || FEATURED_GAMES[0];
+    const targetGame = found || (netplaySession?.room
+      ? {
+          ...FALLBACK_GAME,
+          id: netplaySession.room.gameId,
+          title: netplaySession.room.gameTitle,
+          platform: netplaySession.room.platform,
+        }
+      : FALLBACK_GAME);
     setGame(targetGame);
 
     const initRom = async () => {
+      if (gameId === 'arena-coop') {
+        launchCanvasFallback(targetGame);
+        return;
+      }
+
       // 1. Check synchronous memory cache first
       let stored = romStorage.getRom(gameId);
       // 2. If not in memory (e.g. after page refresh), query IndexedDB
@@ -446,6 +612,9 @@ export const EmulatorPage: React.FC<EmulatorPageProps> = ({
           setIsLoadingCore(false);
           setLoadError(`Không thể tải tệp từ Google Drive: ${err?.message || 'Lỗi kết nối'}. Vui lòng thử nạp lại.`);
         }
+      } else if (isNetplayHost) {
+        // Host without local ROM immediately boots 2P Arena so friends can still play together
+        launchCanvasFallback(targetGame);
       } else {
         setHasRom(false);
       }
@@ -468,7 +637,170 @@ export const EmulatorPage: React.FC<EmulatorPageProps> = ({
         engineRef.current = null;
       }
     };
-  }, [gameId]);
+  }, [gameId, isNetplayGuestOrSpec, isNetplayHost]);
+
+  // Port 2 RetroArch keyboard mapping table
+  const PORT2_KEY_MAPPING: Record<keyof EmulatorInputState, string> = {
+    up: 'KeyI',
+    down: 'KeyK',
+    left: 'KeyJ',
+    right: 'KeyL',
+    a: 'KeyU',
+    b: 'KeyO',
+    x: 'KeyN',
+    y: 'KeyM',
+    l: 'KeyY',
+    r: 'KeyP',
+    start: 'KeyH',
+    select: 'KeyB',
+  };
+
+  // Real-Time NetPlay Synchronization Loop (WebRTC 60fps Video/Audio + Port 2 Inputs + Relay Fallback)
+  useEffect(() => {
+    if (!netplaySession) return;
+    const { room: initialRoom, role, playerUid } = netplaySession;
+
+    webrtcNetplay.startSession(initialRoom.id, playerUid, role);
+
+    const unsubStats = webrtcNetplay.subscribeStats((st) => {
+      setNetplayStats(st);
+    });
+
+    const unsubRoom = roomService.subscribeToRoom(initialRoom.id, (updated) => {
+      if (!updated) {
+        showToast('Phòng chơi NetPlay đã đóng.');
+        netplaySession.onLeaveMatch();
+        return;
+      }
+      setLiveRoom(updated);
+      if (updated.status !== 'playing' && updated.status !== 'closed' && role !== 'host') {
+        showToast('Chủ phòng đã kết thúc trận đấu và đưa phòng về sảnh chờ.');
+        netplaySession.onLeaveMatch();
+        return;
+      }
+      if (role === 'host') {
+        if (updated.guestUid) webrtcNetplay.connectToPeer(updated.guestUid, true);
+        for (const s of updated.spectators || []) {
+          webrtcNetplay.connectToPeer(s.id, true);
+        }
+      } else if (updated.hostUid) {
+        webrtcNetplay.connectToPeer(updated.hostUid, false);
+      }
+    });
+
+    let streamAttached = false;
+    let streamAttachTimer: ReturnType<typeof setInterval> | null = null;
+    let relayFrameTimer: ReturnType<typeof setInterval> | null = null;
+    let unsubRemoteInput: (() => void) | null = null;
+    let unsubRemoteStream: (() => void) | null = null;
+    let unsubRelayFrame: (() => void) | null = null;
+
+    if (role === 'host') {
+      if (initialRoom.guestUid) webrtcNetplay.connectToPeer(initialRoom.guestUid, true);
+
+      // Listen for Guest Port 2 bitmask inputs and inject into RetroArch / Arena Engine
+      unsubRemoteInput = webrtcNetplay.onRemoteInput((mask) => {
+        const nextState = decodeInputBitmask(mask);
+        const prevState = prevRemoteP2Ref.current;
+
+        const emu = nostalgistRef.current ? (nostalgistRef.current as any).getEmulator?.() : null;
+
+        for (const btn of Object.keys(nextState) as (keyof EmulatorInputState)[]) {
+          const pressed = nextState[btn];
+          if (prevState[btn] !== pressed) {
+            prevState[btn] = pressed;
+
+            if (engineRef.current) {
+              engineRef.current.setPlayer2Input(btn, pressed);
+            }
+            if (emu && typeof emu.fireKeyboardEvent === 'function') {
+              try {
+                emu.fireKeyboardEvent(pressed ? 'keydown' : 'keyup', PORT2_KEY_MAPPING[btn]);
+              } catch {}
+            }
+          }
+        }
+      });
+
+      // Attach Host 60fps canvas + WebAudio stream as soon as canvas starts rendering
+      const tryAttachStream = () => {
+        if (streamAttached || !canvasRef.current) return;
+        if (!nostalgistRef.current && !engineRef.current) return;
+        try {
+          const canvasStream = canvasRef.current.captureStream(60);
+          const combined = new MediaStream();
+          canvasStream.getVideoTracks().forEach((t) => combined.addTrack(t));
+
+          const audioStream = capturedAudioStreamRef.current || engineRef.current?.getAudioStream() || null;
+          if (audioStream) {
+            audioStream.getAudioTracks().forEach((t) => combined.addTrack(t));
+          }
+
+          webrtcNetplay.attachLocalStream(combined);
+          streamAttached = true;
+          if (streamAttachTimer) {
+            clearInterval(streamAttachTimer);
+            streamAttachTimer = null;
+          }
+        } catch (err) {
+          console.warn('Could not capture emulator stream:', err);
+        }
+      };
+
+      streamAttachTimer = setInterval(tryAttachStream, 400);
+      tryAttachStream();
+
+      // WebSocket Fallback frame relay ONLY when strict symmetric NAT prevents P2P WebRTC
+      relayFrameTimer = setInterval(() => {
+        if (!canvasRef.current) return;
+        if (!webrtcNetplay.isUsingRelayFallback()) return;
+        try {
+          const dataUrl = canvasRef.current.toDataURL('image/webp', 0.55);
+          roomService.sendRelayFrame(dataUrl, canvasRef.current.width, canvasRef.current.height);
+        } catch {}
+      }, 33);
+    } else {
+      // Guest / Spectator receives Host live video + audio MediaStream
+      const applyStream = (stream: MediaStream) => {
+        setHasRemoteVideo(true);
+        setRelayFrameUrl(null);
+        const videoEl = remoteVideoRef.current;
+        if (!videoEl) return;
+        if (videoEl.srcObject !== stream) {
+          videoEl.srcObject = stream;
+        }
+        videoEl.muted = isMuted;
+        videoEl.volume = Math.max(0, Math.min(1, volume / 100));
+        videoEl.play().catch(() => {
+          // Autoplay policy blocked unmuted playback -> retry muted and show 1-click unmute pill
+          videoEl.muted = true;
+          setNeedsAudioUnlock(true);
+          videoEl.play().catch(() => {});
+        });
+      };
+
+      unsubRemoteStream = webrtcNetplay.onRemoteStream(applyStream);
+      const existingStream = webrtcNetplay.getRemoteStream();
+      if (existingStream) {
+        applyStream(existingStream);
+      }
+
+      unsubRelayFrame = webrtcNetplay.onRelayFrame((frame) => {
+        setRelayFrameUrl(frame);
+      });
+    }
+
+    return () => {
+      unsubStats();
+      unsubRoom();
+      if (unsubRemoteInput) unsubRemoteInput();
+      if (unsubRemoteStream) unsubRemoteStream();
+      if (unsubRelayFrame) unsubRelayFrame();
+      if (streamAttachTimer) clearInterval(streamAttachTimer);
+      if (relayFrameTimer) clearInterval(relayFrameTimer);
+      webrtcNetplay.stopSession();
+    };
+  }, [netplaySession?.room.id, netplaySession?.role, netplaySession?.playerUid]);
 
   // RetroArch Emscripten and DOM synthetic key mapping table
   const RETRO_KEY_MAPPING: Record<
@@ -526,21 +858,32 @@ export const EmulatorPage: React.FC<EmulatorPageProps> = ({
     }
   };
 
-  // Unified Input Router: used strictly for On-Screen Virtual Controller & Gamepads
+  // Unified Input Router: routes local keyboard, physical gamepad, and touch VirtualGamepad
+  // In NetPlay Guest mode, encodes and sends bitmask over WebRTC DataChannel (Port 2) instead of local emulation
   const handleVirtualInput = useCallback((btn: keyof EmulatorInputState, pressed: boolean) => {
-    // 1. Update visual signals for HUD and test panel (bailout if unchanged to prevent re-render cascading)
     const sigKey = btn.toUpperCase();
     setActiveSignals((prev) => {
       if (prev[sigKey] === pressed) return prev;
       return { ...prev, [sigKey]: pressed };
     });
 
-    // 2. Route to Canvas Fallback Engine if active
+    if (isNetplayGuestOrSpec) {
+      if (netplaySession?.role === 'guest') {
+        if (guestInputsRef.current[btn] !== pressed) {
+          guestInputsRef.current[btn] = pressed;
+          const mask = encodeInputBitmask(guestInputsRef.current);
+          webrtcNetplay.sendInputBitmask(mask);
+        }
+      }
+      return;
+    }
+
+    // Host / Local Single Player: Route to Canvas Fallback Engine if active
     if (engineRef.current) {
       engineRef.current.setInput(btn, pressed);
     }
 
-    // 3. Route to Nostalgist WebAssembly Core (RetroArch) safely via official API (no DOM event dispatch)
+    // Route to Nostalgist WebAssembly Core (RetroArch Port 1)
     if (nostalgistRef.current) {
       const mapping = RETRO_KEY_MAPPING[btn];
       if (mapping) {
@@ -555,14 +898,15 @@ export const EmulatorPage: React.FC<EmulatorPageProps> = ({
         }
       }
     }
-  }, []);
+  }, [isNetplayGuestOrSpec, netplaySession?.role]);
 
   // Keyboard mapping listeners
   useEffect(() => {
     const getTargetSystem = (): TargetSystem => {
       const plat = (game?.platform || '').toUpperCase();
       if (plat === 'NES') return 'NES';
-      if (plat === 'GBA' || plat.includes('ADVANCE')) return 'GBA';
+      if (plat === 'GBA' || plat.includes('ADVANCE') || plat === 'GB' || plat === 'GBC') return 'GBA';
+      if (plat === 'GENESIS' || plat === 'MEGADRIVE' || plat === 'SEGA') return 'GENESIS';
       return 'SNES';
     };
 
@@ -616,7 +960,7 @@ export const EmulatorPage: React.FC<EmulatorPageProps> = ({
         return;
       }
 
-      // 4. Custom configured hotkeys
+      // 4. Custom configured hotkeys & gameplay buttons
       const sys = getTargetSystem();
       const customAction = inputConfigService.getVirtualButtonForKeyboard(e.code, sys);
       if (customAction) {
@@ -645,24 +989,23 @@ export const EmulatorPage: React.FC<EmulatorPageProps> = ({
           e.preventDefault();
           return;
         }
+
+        // Gameplay controller buttons (Custom mapped)
+        if (customAction in RETRO_KEY_MAPPING) {
+          e.preventDefault();
+          handleVirtualInput(customAction as keyof EmulatorInputState, true);
+          return;
+        }
       }
 
-      // 5. Prevent page scrolling for direction keys and Space
-      if (['ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight', 'Space'].includes(e.code)) {
-        e.preventDefault();
+      // 5. Fallback for standard retro keys if not overridden
+      const fallbackBtn = getButtonFromCode(e.code);
+      if (fallbackBtn && fallbackBtn in RETRO_KEY_MAPPING) {
+        if (['ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight', 'Space'].includes(e.code)) {
+          e.preventDefault();
+        }
+        handleVirtualInput(fallbackBtn, true);
       }
-
-      // 6. Update visual HUD signals
-      const btn = (customAction as keyof EmulatorInputState) || getButtonFromCode(e.code);
-      if (btn && btn in RETRO_KEY_MAPPING) {
-        setActiveSignals((prev) => ({ ...prev, [btn.toUpperCase()]: true }));
-      }
-
-      // 7. Route to Canvas Fallback Engine if active (Nostalgist not active)
-      if (engineRef.current && !nostalgistRef.current && btn) {
-        engineRef.current.setInput(btn, true);
-      }
-      // Note: If Nostalgist IS active, RetroArch natively receives physical keyboard events directly via Emscripten document listeners.
     };
 
     const handleKeyUp = (e: KeyboardEvent) => {
@@ -680,24 +1023,36 @@ export const EmulatorPage: React.FC<EmulatorPageProps> = ({
 
       const sys = getTargetSystem();
       const customAction = inputConfigService.getVirtualButtonForKeyboard(e.code, sys);
-      const btn = (customAction as keyof EmulatorInputState) || getButtonFromCode(e.code);
-      if (btn && btn in RETRO_KEY_MAPPING) {
-        setActiveSignals((prev) => ({ ...prev, [btn.toUpperCase()]: false }));
+      if (customAction && customAction in RETRO_KEY_MAPPING) {
+        e.preventDefault();
+        handleVirtualInput(customAction as keyof EmulatorInputState, false);
+        return;
       }
 
-      if (engineRef.current && !nostalgistRef.current && btn) {
-        engineRef.current.setInput(btn, false);
+      const fallbackBtn = getButtonFromCode(e.code);
+      if (fallbackBtn && fallbackBtn in RETRO_KEY_MAPPING) {
+        handleVirtualInput(fallbackBtn, false);
       }
+    };
+
+    // Auto-release all inputs when window loses focus (prevent sticky running)
+    const handleWindowBlur = () => {
+      const allBtns: (keyof EmulatorInputState)[] = [
+        'up', 'down', 'left', 'right', 'a', 'b', 'x', 'y', 'l', 'r', 'start', 'select'
+      ];
+      allBtns.forEach((btn) => handleVirtualInput(btn, false));
     };
 
     window.addEventListener('keydown', handleKeyDown);
     window.addEventListener('keyup', handleKeyUp);
+    window.addEventListener('blur', handleWindowBlur);
 
     return () => {
       window.removeEventListener('keydown', handleKeyDown);
       window.removeEventListener('keyup', handleKeyUp);
+      window.removeEventListener('blur', handleWindowBlur);
     };
-  }, [isPaused, currentSlot, fastForwardSpeed, visualSettings, game?.platform]);
+  }, [isPaused, currentSlot, fastForwardSpeed, visualSettings, game?.platform, handleVirtualInput]);
 
   // Gamepad Connection and Action Event Listeners
   useEffect(() => {
@@ -734,7 +1089,8 @@ export const EmulatorPage: React.FC<EmulatorPageProps> = ({
     let animId: number;
 
     const pollGamepad = () => {
-      if (!isPaused && (engineRef.current || nostalgistRef.current)) {
+      const canPoll = !isPaused && (isNetplayGuestOrSpec || engineRef.current || nostalgistRef.current);
+      if (canPoll) {
         const plat = (game?.platform || '').toUpperCase();
         const sys: TargetSystem = plat === 'NES' ? 'NES' : plat === 'GBA' || plat.includes('ADVANCE') ? 'GBA' : 'SNES';
 
@@ -864,6 +1220,63 @@ export const EmulatorPage: React.FC<EmulatorPageProps> = ({
     }
   };
 
+  const flushSram = useCallback(async (quiet = true) => {
+    if (!nostalgistRef.current) return;
+    try {
+      const sramBlob = await nostalgistRef.current.saveSRAM();
+      if (sramBlob && sramBlob.size > 0) {
+        const buffer = await sramBlob.arrayBuffer();
+        const bytes = new Uint8Array(buffer);
+        await saveManager.importSram(game.id, game.title, game.platform, bytes);
+        if (!quiet) {
+          gamepadService.vibrate(0.2, 0.4, 120);
+          showToast(`Đã lưu & đồng bộ bộ nhớ Pin SRAM (${(sramBlob.size / 1024).toFixed(1)} KB)`);
+        }
+      }
+    } catch {
+      if (!quiet) {
+        showToast('Trò chơi hiện tại không sử dụng bộ nhớ Pin SRAM');
+      }
+    }
+  }, [game.id, game.title, game.platform]);
+
+  const downloadSramFile = () => {
+    const bytes = saveManager.getSramBytes(game.id);
+    if (!bytes || bytes.length === 0) {
+      showToast('Chưa có dữ liệu SRAM để tải về');
+      return;
+    }
+    const blob = new Blob([bytes as unknown as BlobPart], { type: 'application/octet-stream' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `${game.title.replace(/\s+/g, '_')}.sav`;
+    a.click();
+    URL.revokeObjectURL(url);
+    showToast('Đã tải tệp .sav về máy tính');
+  };
+
+  // Auto-sync battery-backed SRAM periodically and on unload
+  useEffect(() => {
+    const sramInterval = setInterval(() => {
+      flushSram(true);
+    }, 25000);
+
+    const handleBeforeUnload = () => {
+      flushSram(true);
+    };
+
+    window.addEventListener('beforeunload', handleBeforeUnload);
+    window.addEventListener('pagehide', handleBeforeUnload);
+
+    return () => {
+      clearInterval(sramInterval);
+      window.removeEventListener('beforeunload', handleBeforeUnload);
+      window.removeEventListener('pagehide', handleBeforeUnload);
+      flushSram(true);
+    };
+  }, [flushSram]);
+
   const cycleSlot = () => {
     const nextSlot = currentSlot >= 5 ? 1 : currentSlot + 1;
     setCurrentSlot(nextSlot);
@@ -889,11 +1302,34 @@ export const EmulatorPage: React.FC<EmulatorPageProps> = ({
   };
 
   const triggerScreenshot = () => {
-    if (engineRef.current) {
-      const dataUrl = engineRef.current.captureScreenshot();
-      if (dataUrl) {
-        showToast("Screenshot captured to memory & gallery (1080p)");
+    try {
+      let dataUrl = '';
+      if (isNetplayGuestOrSpec && remoteVideoRef.current && remoteVideoRef.current.videoWidth > 0) {
+        const tempCanvas = document.createElement('canvas');
+        tempCanvas.width = remoteVideoRef.current.videoWidth;
+        tempCanvas.height = remoteVideoRef.current.videoHeight;
+        const ctx = tempCanvas.getContext('2d');
+        if (ctx) {
+          ctx.drawImage(remoteVideoRef.current, 0, 0);
+          dataUrl = tempCanvas.toDataURL('image/png');
+        }
+      } else if (canvasRef.current) {
+        dataUrl = canvasRef.current.toDataURL('image/png');
+      } else if (engineRef.current) {
+        dataUrl = engineRef.current.captureScreenshot();
       }
+
+      if (dataUrl) {
+        const a = document.createElement('a');
+        a.href = dataUrl;
+        a.download = `${game.title.replace(/\s+/g, '_')}_${Date.now()}.png`;
+        a.click();
+        showToast('Đã chụp & tải ảnh màn hình!');
+      } else {
+        showToast('Khung hình chưa sẵn sàng để chụp.');
+      }
+    } catch {
+      showToast('Không thể chụp ảnh màn hình từ lõi WebGL hiện tại.');
     }
   };
 
@@ -945,9 +1381,9 @@ export const EmulatorPage: React.FC<EmulatorPageProps> = ({
 
             {/* Navigation Back */}
             <button
-              onClick={onExit}
+              onClick={() => (netplaySession ? netplaySession.onLeaveMatch() : onExit())}
               className="flex items-center gap-1 text-[#cbc3d7] hover:text-[#4cd7f6] transition-colors font-mono text-xs group min-w-0"
-              title="Quay lại danh sách trò chơi"
+              title={netplaySession ? 'Quay về phòng NetPlay' : 'Quay lại danh sách trò chơi'}
             >
               <span className="material-symbols-outlined text-sm group-hover:-translate-x-0.5 transition-transform shrink-0">arrow_back</span>
               <span className="truncate max-w-[85px] xs:max-w-[130px] sm:max-w-xs">{game.title}</span>
@@ -957,8 +1393,33 @@ export const EmulatorPage: React.FC<EmulatorPageProps> = ({
             </button>
           </div>
 
-          {/* Center: Game Platform Info */}
+          {/* Center: NetPlay Telemetry or Gamepad Status */}
           <div className="hidden lg:flex items-center gap-2">
+            {netplaySession && (
+              <div className="flex items-center gap-2 px-3 py-1 rounded-lg bg-[#191b22] border border-[#4cd7f6]/40 text-xs font-mono">
+                <span className="w-2 h-2 rounded-full bg-emerald-400 animate-pulse"></span>
+                <span className="text-[#4cd7f6] font-bold">
+                  {netplaySession.role === 'host'
+                    ? 'PORT 1 (HOST)'
+                    : netplaySession.role === 'guest'
+                    ? 'PORT 2 (GUEST)'
+                    : 'SPECTATOR'}
+                </span>
+                <span className="text-[#494454]">|</span>
+                <span className="text-white">
+                  {netplayStats.rttMs > 0 ? `${netplayStats.rttMs}ms` : 'Connecting'}
+                </span>
+                <span className="text-[#958ea0] text-[10px]">
+                  ({netplayStats.transportMode === 'p2p-lan'
+                    ? 'LAN P2P'
+                    : netplayStats.transportMode === 'p2p-stun'
+                    ? 'STUN P2P'
+                    : netplayStats.transportMode === 'ws-relay'
+                    ? 'WS Relay'
+                    : 'ICE...'})
+                </span>
+              </div>
+            )}
             {connectedGamepad && (
               <div className="flex items-center gap-1.5 px-2.5 py-1 rounded bg-emerald-500/10 border border-emerald-500/30 text-xs font-mono text-emerald-400">
                 <span className="material-symbols-outlined text-xs">sports_esports</span>
@@ -1037,9 +1498,9 @@ export const EmulatorPage: React.FC<EmulatorPageProps> = ({
 
             {/* Power / Exit */}
             <button
-              onClick={onExit}
+              onClick={() => (netplaySession ? netplaySession.onLeaveMatch() : onExit())}
               className="p-1 sm:p-1.5 text-rose-400 hover:bg-rose-950/40 rounded-lg transition-colors"
-              title="Thoát trò chơi"
+              title={netplaySession ? 'Thoát trận NetPlay' : 'Thoát trò chơi'}
             >
               <span className="material-symbols-outlined text-base sm:text-lg">power_settings_new</span>
             </button>
@@ -1083,19 +1544,70 @@ export const EmulatorPage: React.FC<EmulatorPageProps> = ({
                   : `relative h-full max-h-full aspect-[4/3] max-w-full flex items-center justify-center group rounded-2xl overflow-hidden border-2 sm:border-4 border-[#242735] bg-black shadow-2xl ${curvatureClass} ${bloomClass}`
               }
             >
-            {/* Real Canvas Display */}
-            <canvas
-              ref={canvasRef}
-              width={256}
-              height={224}
-              tabIndex={0}
-              onClick={() => canvasRef.current?.focus()}
-              className={`w-full h-full object-contain outline-none ${visualSettings.filter === 'Pixelated' ? 'filter-pixelated' : '[image-rendering:pixelated]'}`}
-              style={colorTintStyle}
-            />
+            {/* Real Canvas Display (Host / Local) OR Remote WebRTC Video Stream (Guest / Spectator) */}
+            {isNetplayGuestOrSpec ? (
+              <div className="w-full h-full relative flex items-center justify-center bg-black">
+                {relayFrameUrl ? (
+                  <img
+                    src={relayFrameUrl}
+                    alt="NetPlay Stream"
+                    className={`w-full h-full object-contain ${visualSettings.filter === 'Pixelated' ? 'filter-pixelated' : '[image-rendering:pixelated]'}`}
+                    style={colorTintStyle}
+                  />
+                ) : (
+                  <video
+                    ref={remoteVideoRef}
+                    autoPlay
+                    playsInline
+                    className={`w-full h-full object-contain outline-none ${visualSettings.filter === 'Pixelated' ? 'filter-pixelated' : '[image-rendering:pixelated]'}`}
+                    style={colorTintStyle}
+                  />
+                )}
+
+                {!hasRemoteVideo && !relayFrameUrl && (
+                  <div className="absolute inset-0 bg-[#0c0e14]/90 flex flex-col items-center justify-center gap-3 z-20 p-6 text-center">
+                    <div className="w-12 h-12 rounded-full border-2 border-[#4cd7f6] border-t-transparent animate-spin"></div>
+                    <p className="text-sm font-mono text-[#4cd7f6] font-bold">
+                      Đang nhận luồng hình ảnh từ Host ({liveRoom?.hostName || 'Player 1'})...
+                    </p>
+                    <p className="text-xs font-mono text-[#958ea0] max-w-md">
+                      Trạng thái ICE: {netplayStats.iceConnectionState} • Kênh: {netplayStats.transportMode}
+                    </p>
+                  </div>
+                )}
+
+                {needsAudioUnlock && (
+                  <button
+                    onClick={() => {
+                      if (remoteVideoRef.current) {
+                        remoteVideoRef.current.muted = false;
+                        remoteVideoRef.current.volume = Math.max(0.1, volume / 100);
+                        remoteVideoRef.current.play().catch(() => {});
+                      }
+                      setIsMuted(false);
+                      setNeedsAudioUnlock(false);
+                    }}
+                    className="absolute bottom-4 right-4 z-30 px-3.5 py-2 rounded-lg bg-[#4cd7f6] text-[#003641] font-mono font-bold text-xs shadow-xl flex items-center gap-1.5 animate-bounce cursor-pointer"
+                  >
+                    <span className="material-symbols-outlined text-sm">volume_up</span>
+                    Bấm để bật âm thanh trận đấu
+                  </button>
+                )}
+              </div>
+            ) : (
+              <canvas
+                ref={canvasRef}
+                width={256}
+                height={224}
+                tabIndex={0}
+                onClick={() => canvasRef.current?.focus()}
+                className={`w-full h-full object-contain outline-none ${visualSettings.filter === 'Pixelated' ? 'filter-pixelated' : '[image-rendering:pixelated]'}`}
+                style={colorTintStyle}
+              />
+            )}
 
             {/* Standby screen when no ROM cartridge is loaded */}
-            {!hasRom && (
+            {!hasRom && !isNetplayGuestOrSpec && (
               <div className="absolute inset-0 bg-[#0c0e14] flex flex-col items-center justify-center p-6 text-center z-20">
                 <div className="w-16 h-16 rounded-2xl bg-[#4cd7f6]/10 border border-[#4cd7f6]/40 flex items-center justify-center mb-3 text-[#4cd7f6] shadow-lg shadow-[#4cd7f6]/10">
                   <span className="material-symbols-outlined text-3xl">sports_esports</span>
@@ -1122,7 +1634,7 @@ export const EmulatorPage: React.FC<EmulatorPageProps> = ({
                     <span>Chọn tệp ROM từ máy tính</span>
                   </button>
                   <button
-                    onClick={onExit}
+                    onClick={() => (netplaySession ? netplaySession.onLeaveMatch() : onExit())}
                     className="px-4 py-2.5 rounded-xl bg-[#1e1f26] hover:bg-[#282a30] text-[#cbc3d7] border border-[#494454]/40 text-xs transition-colors"
                   >
                     Quay lại
@@ -1178,7 +1690,7 @@ export const EmulatorPage: React.FC<EmulatorPageProps> = ({
                     <span>Thử lại WebAssembly</span>
                   </button>
                   <button
-                    onClick={launchCanvasFallback}
+                    onClick={() => launchCanvasFallback()}
                     className="px-4 py-2 rounded-lg bg-amber-500/20 border border-amber-500/40 text-amber-300 hover:bg-amber-500/30 font-bold text-xs flex items-center gap-1.5 transition-colors"
                   >
                     <span className="material-symbols-outlined text-sm">view_in_ar</span>
@@ -1373,6 +1885,7 @@ export const EmulatorPage: React.FC<EmulatorPageProps> = ({
                       const newMute = !isMuted;
                       setIsMuted(newMute);
                       if (engineRef.current) engineRef.current.setMute(newMute);
+                      if (remoteVideoRef.current) remoteVideoRef.current.muted = newMute;
                       showToast(newMute ? "Audio Muted" : "Audio Unmuted");
                     }}
                     className="text-[#cbc3d7] hover:text-white"
@@ -1393,6 +1906,10 @@ export const EmulatorPage: React.FC<EmulatorPageProps> = ({
                       if (engineRef.current) {
                         engineRef.current.setMute(false);
                         engineRef.current.setVolume(v / 100);
+                      }
+                      if (remoteVideoRef.current) {
+                        remoteVideoRef.current.muted = false;
+                        remoteVideoRef.current.volume = v / 100;
                       }
                     }}
                     className="w-14 h-1 accent-[#4cd7f6] cursor-pointer"
@@ -1664,6 +2181,43 @@ export const EmulatorPage: React.FC<EmulatorPageProps> = ({
                       <span className="material-symbols-outlined text-sm">history</span>
                       <span>Nạp (F4)</span>
                     </button>
+                  </div>
+
+                  {/* Battery-Backed SRAM Auto-Sync Section */}
+                  <div className="mt-3 pt-3 border-t border-[#494454]/30 space-y-2">
+                    <div className="flex items-center justify-between">
+                      <div className="flex items-center gap-1.5 text-xs font-bold text-amber-400">
+                        <span className="material-symbols-outlined text-sm">battery_charging_full</span>
+                        <span>Bộ nhớ Pin SRAM (In-Game Save)</span>
+                      </div>
+                      <span className="text-[10px] px-1.5 py-0.5 rounded bg-emerald-500/20 text-emerald-400 border border-emerald-500/30 font-mono">
+                        Auto-sync 25s
+                      </span>
+                    </div>
+
+                    <p className="text-[10px] text-[#958ea0]">
+                      Tự động ghi nhận tiến trình lưu trực tiếp qua menu của game (RPG, Pokemon, Zelda) vào chip nhớ SRAM ảo.
+                    </p>
+
+                    <div className="grid grid-cols-2 gap-2 pt-0.5">
+                      <button
+                        onClick={() => flushSram(false)}
+                        className="py-1.5 px-2.5 rounded-lg bg-[#ffb95f]/15 border border-[#ffb95f]/40 text-[#ffb95f] hover:bg-[#ffb95f]/25 font-bold text-xs flex items-center justify-center gap-1 active:scale-95 transition-all"
+                        title="Đồng bộ ngay dữ liệu SRAM hiện tại"
+                      >
+                        <span className="material-symbols-outlined text-xs">sync</span>
+                        <span>Đồng bộ SRAM</span>
+                      </button>
+
+                      <button
+                        onClick={downloadSramFile}
+                        className="py-1.5 px-2.5 rounded-lg bg-[#191b26] border border-[#494454]/40 text-[#cbc3d7] hover:text-white hover:border-[#4cd7f6] text-xs flex items-center justify-center gap-1 active:scale-95 transition-all"
+                        title="Tải tệp .sav để sao lưu hoặc dùng trên giả lập PC"
+                      >
+                        <span className="material-symbols-outlined text-xs">download</span>
+                        <span>Xuất file .sav</span>
+                      </button>
+                    </div>
                   </div>
                 </div>
               )}

@@ -153,8 +153,16 @@ class RomStorageService {
     }
   }
 
-  public hasRom(gameId: string): boolean {
-    return this.inMemoryRoms.has(gameId);
+  public getTotalBytes(): number {
+    let total = 0;
+    for (const item of this.inMemoryRoms.values()) {
+      total += item.size || item.data?.byteLength || 0;
+    }
+    return total;
+  }
+
+  public getStoredCount(): number {
+    return this.inMemoryRoms.size;
   }
 
   public clear(gameId?: string): void {

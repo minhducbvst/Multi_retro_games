@@ -15,7 +15,7 @@ export interface DriveItem {
   webViewLink?: string;
   isFolder: boolean;
   isRom: boolean;
-  romPlatform?: 'NES' | 'SNES' | 'GBA' | 'UNKNOWN';
+  romPlatform?: 'NES' | 'SNES' | 'GBA' | 'GENESIS' | 'UNKNOWN';
 }
 
 export interface DriveFolderBreadcrumb {
@@ -23,13 +23,14 @@ export interface DriveFolderBreadcrumb {
   name: string;
 }
 
-const ROM_EXTENSIONS = ['.nes', '.smc', '.sfc', '.gba', '.bin', '.zip', '.7z'];
+const ROM_EXTENSIONS = ['.nes', '.smc', '.sfc', '.gba', '.bin', '.zip', '.7z', '.md', '.gen'];
 
-export function detectPlatformFromFilename(filename: string): 'NES' | 'SNES' | 'GBA' | 'UNKNOWN' {
+export function detectPlatformFromFilename(filename: string): 'NES' | 'SNES' | 'GBA' | 'GENESIS' | 'UNKNOWN' {
   const lower = filename.toLowerCase();
   if (lower.endsWith('.nes')) return 'NES';
   if (lower.endsWith('.smc') || lower.endsWith('.sfc')) return 'SNES';
   if (lower.endsWith('.gba')) return 'GBA';
+  if (lower.endsWith('.md') || lower.endsWith('.gen')) return 'GENESIS';
   return 'UNKNOWN';
 }
 

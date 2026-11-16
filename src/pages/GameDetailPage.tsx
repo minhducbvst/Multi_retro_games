@@ -1,12 +1,14 @@
-import React, { useState } from 'react';
-import { Game } from '../types';
-import { getGameById, FEATURED_GAMES } from '../services/games/catalog';
+import React, { useState, useEffect } from 'react';
+import { Game, SaveMetadata } from '../types';
+import { getGameById } from '../services/games/catalog';
+import { useLibraryStore } from '../services/games/libraryStore';
+import { saveManager } from '../services/saves/saveManager';
 
 interface GameDetailPageProps {
   gameId: string;
   onBack: () => void;
   onPlayGame: (gameId: string, slot?: number) => void;
-  onOpenNetPlay: (roomId?: string) => void;
+  onOpenNetPlay: (gameId?: string) => void;
   isFavorited: boolean;
   onToggleFavorite: (gameId: string) => void;
 }
@@ -19,10 +21,19 @@ export const GameDetailPage: React.FC<GameDetailPageProps> = ({
   isFavorited,
   onToggleFavorite
 }) => {
-  const [activeTab, setActiveTab] = useState<'overview' | 'states' | 'controls' | 'manual' | 'speedruns'>('overview');
+  const libraryGames = useLibraryStore();
+  const [activeTab, setActiveTab] = useState<'overview' | 'states' | 'controls' | 'manual'>('overview');
   const [toastMessage, setToastMessage] = useState<string | null>(null);
+  const [realSaves, setRealSaves] = useState<SaveMetadata[]>([]);
 
-  const game = getGameById(gameId);
+  const game = libraryGames.find((g) => g.id === gameId) || getGameById(gameId);
+
+  useEffect(() => {
+    if (game?.id) {
+      const list = saveManager.getSavesForGame(game.id);
+      setRealSaves(list);
+    }
+  }, [game?.id]);
 
   const showToast = (msg: string) => {
     setToastMessage(msg);
@@ -73,7 +84,11 @@ export const GameDetailPage: React.FC<GameDetailPageProps> = ({
             <span className="material-symbols-outlined text-xs text-emerald-400">check_circle</span>
             MD5 Verified ROM
           </span>
-          <button className="px-2.5 py-1 text-xs font-mono rounded bg-[#282a30] text-[#e2e2eb] border border-[#494454]/30 hover:border-[#4cd7f6] transition-colors flex items-center gap-1.5">
+          <button
+            onClick={() => showToast(`Lõi mô phỏng tối ưu: ${game.recommendedCore || 'Cycle-Accurate Auto Core'}`)}
+            className="px-2.5 py-1 text-xs font-mono rounded bg-[#282a30] text-[#e2e2eb] border border-[#494454]/30 hover:border-[#4cd7f6] transition-colors flex items-center gap-1.5 cursor-pointer"
+            title="Kiểm tra lõi Core"
+          >
             <span className="material-symbols-outlined text-sm">settings</span>
             Core: {game.recommendedCore}
           </button>
@@ -191,33 +206,62 @@ export const GameDetailPage: React.FC<GameDetailPageProps> = ({
 
             {/* Multiplayer NetPlay Cluster */}
             <button
-              onClick={() => onOpenNetPlay('room-7402')}
-              className="flex items-center justify-between py-2 px-3 rounded-lg bg-[#191b22] border border-cyan-500/40 hover:border-cyan-400 text-white font-mono text-xs transition-all group"
+              onClick={() => onOpenNetPlay(game.id)}
+              className="flex items-center justify-between py-2 px-3 rounded-lg bg-[#191b22] border border-cyan-500/40 hover:border-cyan-400 text-white font-mono text-xs transition-all group cursor-pointer"
             >
               <div className="flex items-center gap-2">
                 <span className="material-symbols-outlined text-[#4cd7f6]">hub</span>
-                <span>Create Co-Op Room</span>
+                <span>Tạo Phòng Chơi Online</span>
               </div>
               <span className="px-1.5 py-0.5 rounded text-[10px] font-mono font-bold bg-cyan-950 text-[#4cd7f6] border border-cyan-500/40">
-                NetPlay Ready
+                WebRTC 2P
               </span>
             </button>
 
             {/* ROM Management Dropdown Strip */}
             <div className="flex items-center justify-between text-xs font-mono text-[#958ea0] px-1">
-              <button onClick={() => showToast(".SRM Battery Save Exported to Downloads (8KB)")} className="hover:text-[#4cd7f6] flex items-center gap-1 transition-colors">
+              <button
+                onClick={() => {
+                  if (saveManager.hasSram(game.id)) {
+                    saveManager.exportSram(game.id);
+                    showToast("Đã xuất file pin lưu SRAM (.sav) về máy!");
+                  } else {
+                    showToast("Chưa có pin lưu SRAM. Hãy chơi và lưu tiến trình trong game trước!");
+                  }
+                }}
+                className="hover:text-[#4cd7f6] flex items-center gap-1 transition-colors"
+                title="Tải về file SRAM Battery Save để dùng trên máy thật hoặc phần mềm khác"
+              >
                 <span className="material-symbols-outlined text-xs">download</span>
-                Export .SRM
+                Xuất file .SRM/.SAV
               </button>
               <span>•</span>
-              <button onClick={() => showToast("State Snapshot Captured (512 KB)")} className="hover:text-[#4cd7f6] flex items-center gap-1 transition-colors">
+              <button
+                onClick={() => {
+                  onPlayGame(game.id, 1);
+                  showToast("Khởi chạy trò chơi và mở Slot #1");
+                }}
+                className="hover:text-[#4cd7f6] flex items-center gap-1 transition-colors"
+                title="Khởi chạy trò chơi và quản lý Save State"
+              >
                 <span className="material-symbols-outlined text-xs">save_as</span>
-                Save State
+                Chơi &amp; Lưu State
               </button>
               <span>•</span>
-              <button onClick={() => showToast("Switched to Snes9x 2010 Cycle-Accurate Core")} className="hover:text-[#4cd7f6] flex items-center gap-1 transition-colors">
-                <span className="material-symbols-outlined text-xs">swap_horiz</span>
-                Cores
+              <button
+                onClick={() => {
+                  const plat = (game.platform || 'NES').toUpperCase();
+                  let coreName = 'FCEUmm (NES)';
+                  if (plat === 'SNES') coreName = 'Snes9x 2005 (Cycle-Accurate)';
+                  else if (plat.includes('GBA') || plat === 'GB' || plat === 'GBC') coreName = 'mGBA (Full Speed)';
+                  else if (plat === 'GENESIS') coreName = 'Genesis Plus GX';
+                  showToast(`Lõi Core: ${coreName} (Đã sẵn sàng)`);
+                }}
+                className="hover:text-[#4cd7f6] flex items-center gap-1 transition-colors"
+                title="Xem thông tin lõi mô phỏng"
+              >
+                <span className="material-symbols-outlined text-xs">memory</span>
+                Lõi Core
               </button>
             </div>
           </div>
@@ -250,7 +294,7 @@ export const GameDetailPage: React.FC<GameDetailPageProps> = ({
               }`}
             >
               <span className="material-symbols-outlined text-lg">history</span>
-              <span>Save States &amp; Cloud (3)</span>
+              <span>Save States &amp; Cloud ({realSaves.length})</span>
             </button>
             <button
               onClick={() => setActiveTab('controls')}
@@ -276,42 +320,39 @@ export const GameDetailPage: React.FC<GameDetailPageProps> = ({
             </button>
           </div>
 
-          {/* Tab 1: Overview & Story */}
+          {/* Tab 1: Overview & Cartridge Technical Specs */}
           {activeTab === 'overview' && (
             <div className="flex flex-col gap-4">
               {/* Narrative Synopsis Card */}
               <div className="p-6 rounded-xl bg-[#191b22] border border-[#494454]/30 flex flex-col gap-3 shadow-lg">
                 <div className="flex items-center justify-between">
                   <h3 className="text-lg text-[#d0bcff] font-bold flex items-center gap-2">
-                    <span className="material-symbols-outlined text-[#4cd7f6]">swords</span>
-                    The Golden Land Awaits
+                    <span className="material-symbols-outlined text-[#4cd7f6]">videogame_asset</span>
+                    {game.title}
                   </h3>
-                  <span className="text-xs font-mono text-[#958ea0] uppercase tracking-wider">Campaign Synopsis</span>
+                  <span className="text-xs font-mono text-[#958ea0] uppercase tracking-wider">Cartridge Info</span>
                 </div>
                 <p className="text-sm text-[#e2e2eb] leading-relaxed">
-                  Centuries before the awakening of the Hero of Time, the dark wizard Agahnim usurps the royal throne of Hyrule, breaking the seal cast by the Seven Wise Men. Telepathically guided by Princess Zelda during a thunderstorm, the young apprentice Link uncovers his ancestral destiny.
-                </p>
-                <p className="text-sm text-[#cbc3d7] leading-relaxed">
-                  By wielding the legendary Master Sword, traversing through mystical Magic Mirrors, and shifting freely between the idyllic Light World and the cursed Dark World, you must reclaim the three Pendants of Virtue and retrieve the Golden Power before Ganon claims total dominion.
+                  {game.description || `Tệp băng ROM hệ máy ${game.platform} chạy trực tiếp trên lõi WebAssembly 60 FPS không cần cài đặt. Hỗ trợ lưu trạng thái tức thì (Save State), tua ngược thời gian và chơi mạng 2 người qua Internet (WebRTC NetPlay).`}
                 </p>
 
                 {/* Key Highlights Micro-Chips */}
                 <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 pt-2">
                   <div className="bg-[#0c0e14] p-2.5 rounded border border-[#494454]/20">
-                    <div className="text-[11px] font-mono text-[#958ea0]">Dungeons</div>
-                    <div className="text-sm text-white font-bold">12 Total + Caves</div>
+                    <div className="text-[11px] font-mono text-[#958ea0]">Hệ máy</div>
+                    <div className="text-sm text-white font-bold">{game.platform}</div>
                   </div>
                   <div className="bg-[#0c0e14] p-2.5 rounded border border-[#494454]/20">
-                    <div className="text-[11px] font-mono text-[#958ea0]">Items &amp; Magic</div>
-                    <div className="text-sm text-white font-bold">24 Collectibles</div>
+                    <div className="text-[11px] font-mono text-[#958ea0]">Nguồn ROM</div>
+                    <div className="text-sm text-white font-bold">{game.source === 'drive' ? 'Google Drive' : 'Máy cục bộ'}</div>
                   </div>
                   <div className="bg-[#0c0e14] p-2.5 rounded border border-[#494454]/20">
-                    <div className="text-[11px] font-mono text-[#958ea0]">Heart Containers</div>
-                    <div className="text-sm text-white font-bold">20 Max Hearts</div>
+                    <div className="text-[11px] font-mono text-[#958ea0]">Pin lưu SRAM</div>
+                    <div className="text-sm text-white font-bold">{game.batterySave ? 'Có hỗ trợ' : 'Tùy ROM'}</div>
                   </div>
                   <div className="bg-[#0c0e14] p-2.5 rounded border border-[#494454]/20">
-                    <div className="text-[11px] font-mono text-[#958ea0]">Avg Completion</div>
-                    <div className="text-sm text-white font-bold">14 - 16 Hours</div>
+                    <div className="text-[11px] font-mono text-[#958ea0]">Chế độ mạng</div>
+                    <div className="text-sm text-[#4cd7f6] font-bold">2P Online P2P</div>
                   </div>
                 </div>
               </div>
@@ -320,88 +361,36 @@ export const GameDetailPage: React.FC<GameDetailPageProps> = ({
               <div className="p-6 rounded-xl bg-[#191b22] border border-[#494454]/30 flex flex-col gap-4 shadow-lg">
                 <h3 className="text-base text-white font-semibold flex items-center gap-2">
                   <span className="material-symbols-outlined text-[#4cd7f6] text-lg">terminal</span>
-                  Technical Emulation Specifications
+                  Thông Số Kỹ Thuật Giả Lập
                 </h3>
                 <div className="grid grid-cols-2 sm:grid-cols-4 gap-4 text-xs font-mono">
                   <div className="p-3 rounded-lg bg-[#0c0e14] border border-[#494454]/20">
-                    <span className="text-[#958ea0] block mb-1">Native Resolution</span>
-                    <span className="text-white font-bold text-sm">256 × 224 px</span>
-                    <span className="text-[10px] text-[#958ea0] block mt-0.5">Mode 7 Enabled</span>
+                    <span className="text-[#958ea0] block mb-1">Độ phân giải gốc</span>
+                    <span className="text-white font-bold text-sm">
+                      {game.nativeResolution || (game.platform === 'GBA' ? '240 × 160 px' : '256 × 224 px')}
+                    </span>
+                    <span className="text-[10px] text-[#958ea0] block mt-0.5">
+                      {game.aspectRatio || (game.platform === 'GBA' ? '3:2' : '4:3')} Native
+                    </span>
                   </div>
                   <div className="p-3 rounded-lg bg-[#0c0e14] border border-[#494454]/20">
-                    <span className="text-[#958ea0] block mb-1">Display Standard</span>
-                    <span className="text-white font-bold text-sm">4:3 NTSC (60.098Hz)</span>
-                    <span className="text-[10px] text-emerald-400 block mt-0.5">Zero Tear V-Sync</span>
+                    <span className="text-[#958ea0] block mb-1">Tần số quét</span>
+                    <span className="text-white font-bold text-sm">{game.framerate || 60.0} Hz</span>
+                    <span className="text-[10px] text-emerald-400 block mt-0.5">WebGL / CRT Ready</span>
                   </div>
                   <div className="p-3 rounded-lg bg-[#0c0e14] border border-[#494454]/20">
-                    <span className="text-[#958ea0] block mb-1">Cartridge ROM Size</span>
-                    <span className="text-white font-bold text-sm">1.0 MB (8 Megabits)</span>
-                    <span className="text-[10px] text-[#958ea0] block mt-0.5">SHA1: d6d0...c1a9</span>
+                    <span className="text-[#958ea0] block mb-1">Tệp ROM</span>
+                    <span className="text-white font-bold text-sm truncate block" title={game.romFilename || game.title}>
+                      {game.romFilename || 'Cartridge Dump'}
+                    </span>
+                    <span className="text-[10px] text-[#958ea0] block mt-0.5">
+                      {game.crc32 ? `CRC32: ${game.crc32}` : 'IndexedDB Cached'}
+                    </span>
                   </div>
                   <div className="p-3 rounded-lg bg-[#0c0e14] border border-[#494454]/20">
-                    <span className="text-[#958ea0] block mb-1">Save State System</span>
-                    <span className="text-white font-bold text-sm">8KB SRAM + 5 Slots</span>
-                    <span className="text-[10px] text-[#4cd7f6] block mt-0.5">Cloud Mirror Synced</span>
-                  </div>
-                </div>
-              </div>
-
-              {/* Direct Phosphor Feed Gallery */}
-              <div className="p-6 rounded-xl bg-[#191b22] border border-[#494454]/30 flex flex-col gap-4 shadow-lg">
-                <div className="flex items-center justify-between">
-                  <h3 className="text-base text-white font-semibold flex items-center gap-2">
-                    <span className="material-symbols-outlined text-[#4cd7f6] text-lg">photo_library</span>
-                    Phosphor Capture Gallery (Direct Feed)
-                  </h3>
-                  <span className="text-xs font-mono text-[#958ea0]">Click to zoom 4:3 CRT</span>
-                </div>
-                <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
-                  <div className="group relative aspect-[4/3] rounded-lg overflow-hidden border border-[#494454]/40 bg-black cursor-pointer hover:border-[#4cd7f6] transition-all">
-                    <img
-                      alt="Hyrule Castle Rain"
-                      className="w-full h-full object-cover group-hover:scale-105 transition-transform"
-                      src="https://lh3.googleusercontent.com/aida-public/AB6AXuDHQzUCnum_fUzgFP5dIY9JuYRJasCjLkO9mN6-pQfE1woEV6v8q2YKxqQ0ZhbVBZ3vcDhRqP-VUVZ4KsI8GC53y-Z4yjYETlaoj907SiTQq9geIfAoaAuBoZd9TH0qp-tVbuUIb5c4KqIk6mk8cev3WwOVg7n4MKVqKj4rCt97NkeP-xNxWMdq9ejfsjfgNdjfN1O1F3LhtoXIAxiCgpscRPqeMHNTVoM5T0g9kPu45LMBL07gK30eLA"
-                    />
-                    <div className="absolute inset-0 scanlines-overlay opacity-30"></div>
-                    <div className="absolute bottom-1 left-1 px-1.5 py-0.5 rounded bg-black/70 text-[10px] font-mono text-white">
-                      Hyrule Castle Rain
-                    </div>
-                  </div>
-
-                  <div className="group relative aspect-[4/3] rounded-lg overflow-hidden border border-[#494454]/40 bg-black cursor-pointer hover:border-[#4cd7f6] transition-all">
-                    <img
-                      alt="Lost Woods Sanctuary"
-                      className="w-full h-full object-cover group-hover:scale-105 transition-transform"
-                      src="https://lh3.googleusercontent.com/aida-public/AB6AXuDvvFi0MqraGDizApVbSMpUAxRRCzLFII_Bh7aZ-exNkOiD05pf0IM5OM-HBkZA9rHCUkbksST2YbWiYZSTbB4k4aqViWkBHb9IxI751UjsBi_tVEKsevAYxoh4dBb_UsART1R1rCfPOkVRTRVpG77CtfkEJCuJJ3XkOVw6ZnDASHPPh_s8k4up0YkBC1P4LAaZ_Z8VcGX5KFqNJpQNENWJasd4XVjekdUMS6g3fzmB4Uyu9ZY3GUvd7Q"
-                    />
-                    <div className="absolute inset-0 scanlines-overlay opacity-30"></div>
-                    <div className="absolute bottom-1 left-1 px-1.5 py-0.5 rounded bg-black/70 text-[10px] font-mono text-white">
-                      Lost Woods Sanctuary
-                    </div>
-                  </div>
-
-                  <div className="group relative aspect-[4/3] rounded-lg overflow-hidden border border-[#494454]/40 bg-black cursor-pointer hover:border-[#4cd7f6] transition-all">
-                    <img
-                      alt="Dark World Pyramid"
-                      className="w-full h-full object-cover group-hover:scale-105 transition-transform"
-                      src="https://lh3.googleusercontent.com/aida-public/AB6AXuB3qa7ZcOe4b3q7JXFcuIUn9pbiu-Z_nyNoPKAEB9zlYKUNJlfix_xsXv8sord3CP1KcXmagcEcZrQ0O-Whx3LfWTUH6IYrFxTa20v7TcJUzQCDppVOP4Q8YEaveSvHpyQZY5Q956d6QihD1IEGdmB76M24M-owfPGpcTfObLRMxwyGbLSDdbBXJ-2-PYSwk3f1t_XHDeJJAYLsW7xnWaN4DY3jmgxResE69vBQy2m6Wq56Agfdh4HmEw"
-                    />
-                    <div className="absolute inset-0 scanlines-overlay opacity-30"></div>
-                    <div className="absolute bottom-1 left-1 px-1.5 py-0.5 rounded bg-black/70 text-[10px] font-mono text-white">
-                      Dark World Pyramid
-                    </div>
-                  </div>
-
-                  <div className="group relative aspect-[4/3] rounded-lg overflow-hidden border border-[#494454]/40 bg-black cursor-pointer hover:border-[#4cd7f6] transition-all">
-                    <img
-                      alt="Eastern Palace Boss"
-                      className="w-full h-full object-cover group-hover:scale-105 transition-transform"
-                      src="https://lh3.googleusercontent.com/aida-public/AB6AXuCBD-9DDN4YXFHn_ZC_LWteVITIyKZpnKvs_PNBoyaOU6v9IO4OKXm1siEmcWf3H_Xu1a28HLsJhVHrvJGYdEPi7WcUSYvWDcjBh3a0Qo36hkgAN459lb3SqJ7pTxgCN4uJNWYcC60r5sOyDD5L5_T6UjoqfSXjrnRTryRF2SCarhoYjRQwQNfQ1GWMmsokctxlwnUa8GR2YmSqpuv6rj6jLy4OcKPS1fZJJd5Z9Wq0i4syc_TAn6csEQ"
-                    />
-                    <div className="absolute inset-0 scanlines-overlay opacity-30"></div>
-                    <div className="absolute bottom-1 left-1 px-1.5 py-0.5 rounded bg-black/70 text-[10px] font-mono text-white">
-                      Eastern Palace Boss
-                    </div>
+                    <span className="text-[#958ea0] block mb-1">Save State</span>
+                    <span className="text-white font-bold text-sm">{realSaves.length} Slot đã lưu</span>
+                    <span className="text-[10px] text-[#4cd7f6] block mt-0.5">SRAM + 3 Quick Slots</span>
                   </div>
                 </div>
               </div>
@@ -410,59 +399,133 @@ export const GameDetailPage: React.FC<GameDetailPageProps> = ({
 
           {activeTab === 'states' && (
             <div className="p-6 rounded-xl bg-[#191b22] border border-[#494454]/30 space-y-4">
-              <h3 className="text-base text-white font-bold font-mono">Cloud Mirrors &amp; Battery Slots</h3>
-              <div className="space-y-3">
-                <div className="p-3 rounded-lg bg-[#0c0e14] border border-[#494454]/40 flex items-center justify-between">
-                  <div>
-                    <span className="font-bold text-white text-sm">Slot 1: Sanctuary Crypt</span>
-                    <p className="text-xs text-[#958ea0] font-mono">512 KB • MD5: a7f893b1 • Synced 15m ago</p>
-                  </div>
-                  <button onClick={() => onPlayGame(game.id, 1)} className="px-3 py-1 rounded bg-[#a078ff] text-[#340080] font-bold text-xs">
-                    Load Slot 1
-                  </button>
+              <div className="flex items-center justify-between">
+                <div>
+                  <h3 className="text-base text-white font-bold font-mono">Bản Lưu Đám Mây &amp; Điểm Lưu Trạng Thái</h3>
+                  <p className="text-xs text-[#958ea0] font-mono mt-0.5">Dữ liệu được lưu trong IndexedDB cục bộ và đồng bộ tự động</p>
                 </div>
-                <div className="p-3 rounded-lg bg-[#0c0e14] border border-[#494454]/40 flex items-center justify-between">
-                  <div>
-                    <span className="font-bold text-white text-sm">Slot 2: Dungeon 2 Boss</span>
-                    <p className="text-xs text-[#958ea0] font-mono">1024 KB • State Revision #4 • Synced yesterday</p>
-                  </div>
-                  <button onClick={() => onPlayGame(game.id, 2)} className="px-3 py-1 rounded bg-[#282a30] text-[#e2e2eb] font-bold text-xs hover:border-[#4cd7f6]">
-                    Load Slot 2
+                {saveManager.hasSram(game.id) && (
+                  <button
+                    onClick={() => {
+                      saveManager.exportSram(game.id);
+                      showToast("Đã xuất file pin lưu SRAM (.sav)!");
+                    }}
+                    className="px-2.5 py-1 rounded bg-[#03b5d3]/20 border border-[#4cd7f6]/40 text-[#4cd7f6] font-mono text-xs flex items-center gap-1 hover:bg-[#03b5d3]/30 transition-colors"
+                  >
+                    <span className="material-symbols-outlined text-xs">download</span>
+                    Xuất file .sav
                   </button>
-                </div>
-                <div className="p-3 rounded-lg bg-[#0c0e14] border border-[#494454]/40 flex items-center justify-between">
-                  <div>
-                    <span className="font-bold text-white text-sm">Slot 3: Overworld Patrol</span>
-                    <p className="text-xs text-[#958ea0] font-mono">512 KB • Created 25m ago during session pause</p>
-                  </div>
-                  <button onClick={() => onPlayGame(game.id, 3)} className="px-3 py-1 rounded bg-[#282a30] text-[#e2e2eb] font-bold text-xs hover:border-[#4cd7f6]">
-                    Load Slot 3
-                  </button>
-                </div>
+                )}
               </div>
+
+              {realSaves.length > 0 ? (
+                <div className="space-y-3">
+                  {realSaves.map((s) => (
+                    <div key={s.id} className="p-3 rounded-lg bg-[#0c0e14] border border-[#494454]/40 flex items-center justify-between gap-4">
+                      <div>
+                        <div className="flex items-center gap-2">
+                          <span className="font-bold text-white text-sm">Slot #{s.slot}: {s.gameTitle}</span>
+                          <span className="px-1.5 py-0.5 rounded text-[10px] font-mono bg-cyan-950 text-[#4cd7f6] border border-cyan-500/30">
+                            {Math.round(s.sizeBytes / 1024)} KB
+                          </span>
+                        </div>
+                        <p className="text-xs text-[#958ea0] font-mono mt-0.5">
+                          Thời gian: {s.timestamp ? new Date(s.timestamp).toLocaleString() : (s.updatedAt || 'Vừa xong')} • Mã: {s.checksum?.slice(0, 8) || 'verified'}
+                        </p>
+                      </div>
+                      <div className="flex items-center gap-2">
+                        <button
+                          onClick={() => {
+                            saveManager.exportSave(s);
+                            showToast(`Đã xuất file save slot #${s.slot}`);
+                          }}
+                          className="p-1.5 rounded bg-[#20222f] hover:bg-[#282a3c] text-[#cbc3d7] hover:text-[#4cd7f6] transition-colors"
+                          title="Tải về tệp save state"
+                        >
+                          <span className="material-symbols-outlined text-sm">download</span>
+                        </button>
+                        <button
+                          onClick={() => onPlayGame(game.id, s.slot)}
+                          className="px-3 py-1 rounded bg-[#a078ff] hover:bg-[#b08eff] text-[#340080] font-bold text-xs transition-colors flex items-center gap-1"
+                        >
+                          <span className="material-symbols-outlined text-xs">play_arrow</span>
+                          Nạp Slot #{s.slot}
+                        </button>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              ) : (
+                <div className="p-8 rounded-xl bg-[#0c0e14]/60 border border-dashed border-[#494454]/40 text-center space-y-3">
+                  <span className="material-symbols-outlined text-3xl text-[#958ea0]">save</span>
+                  <p className="text-xs text-[#cbc3d7] font-mono">
+                    Chưa có bản lưu trạng thái (Save State) nào cho tựa game này trong bộ nhớ.
+                  </p>
+                  <p className="text-[11px] text-[#958ea0]">
+                    Khi chơi trong trình giả lập, bạn có thể lưu tức thì vào bất kỳ lúc nào bằng phím F1 hoặc nút Lưu nhanh trên tay cầm ảo.
+                  </p>
+                  <button
+                    onClick={() => onPlayGame(game.id)}
+                    className="px-4 py-2 rounded-lg bg-[#4cd7f6] hover:bg-[#70e0f8] text-[#003641] font-bold font-mono text-xs inline-flex items-center gap-1.5 transition-all shadow-md active:scale-95"
+                  >
+                    <span className="material-symbols-outlined text-sm">sports_esports</span>
+                    Khởi động trò chơi ngay
+                  </button>
+                </div>
+              )}
             </div>
           )}
 
           {activeTab === 'controls' && (
             <div className="p-6 rounded-xl bg-[#191b22] border border-[#494454]/30 space-y-4">
-              <h3 className="text-base text-white font-bold font-mono">Controller Profile: SNES Standard</h3>
-              <p className="text-xs text-[#958ea0]">Compatible with Xbox, DualSense, 8BitDo, and keyboard bindings.</p>
+              <h3 className="text-base text-white font-bold font-mono">
+                Sơ đồ điều khiển: {game.platform || 'Chuẩn'}
+              </h3>
+              <p className="text-xs text-[#958ea0]">Tương thích tự động với Bàn phím, Tay cầm USB/Bluetooth (Xbox, DualSense, 8BitDo) và Tay cầm ảo màn hình cảm ứng.</p>
               <div className="bg-[#0c0e14] rounded-lg p-3 border border-[#494454]/20 flex flex-col gap-2 font-mono text-xs">
                 <div className="flex justify-between py-1 border-b border-[#494454]/20">
-                  <span className="text-[#958ea0]">D-Pad Movement</span>
-                  <span className="text-white font-bold">Arrow Keys / Analog Stick</span>
+                  <span className="text-[#958ea0]">Di chuyển / D-Pad</span>
+                  <span className="text-white font-bold">Phím mũi tên / Cần Analog / D-Pad 8 hướng</span>
                 </div>
-                <div className="flex justify-between py-1 border-b border-[#494454]/20">
-                  <span className="text-[#958ea0]">Attack / Sword</span>
-                  <span className="text-white font-bold">Z / Button B</span>
-                </div>
-                <div className="flex justify-between py-1 border-b border-[#494454]/20">
-                  <span className="text-[#958ea0]">Action / Dash</span>
-                  <span className="text-white font-bold">X / Button A</span>
-                </div>
-                <div className="flex justify-between py-1 border-b border-[#494454]/20">
-                  <span className="text-[#958ea0]">Item Use</span>
-                  <span className="text-white font-bold">S / Button Y</span>
+                {(game.platform === 'NES' || game.platform === 'GBA' || game.platform === 'SNES') && (
+                  <>
+                    <div className="flex justify-between py-1 border-b border-[#494454]/20">
+                      <span className="text-[#958ea0]">Nút A (Xác nhận / Nhảy)</span>
+                      <span className="text-white font-bold">X / Nút A trên tay cầm</span>
+                    </div>
+                    <div className="flex justify-between py-1 border-b border-[#494454]/20">
+                      <span className="text-[#958ea0]">Nút B (Tấn công / Chạy)</span>
+                      <span className="text-white font-bold">Z / Nút B trên tay cầm</span>
+                    </div>
+                  </>
+                )}
+                {game.platform === 'SNES' && (
+                  <>
+                    <div className="flex justify-between py-1 border-b border-[#494454]/20">
+                      <span className="text-[#958ea0]">Nút X / Y (Phụ / Lướt)</span>
+                      <span className="text-white font-bold">S, A / Nút X, Y trên tay cầm</span>
+                    </div>
+                    <div className="flex justify-between py-1 border-b border-[#494454]/20">
+                      <span className="text-[#958ea0]">Nút vai L / R</span>
+                      <span className="text-white font-bold">Q, W / Bumper L, R</span>
+                    </div>
+                  </>
+                )}
+                {game.platform === 'GBA' && (
+                  <div className="flex justify-between py-1 border-b border-[#494454]/20">
+                    <span className="text-[#958ea0]">Nút vai L / R Bumpers</span>
+                    <span className="text-white font-bold">Q, E / Bumper L, R</span>
+                  </div>
+                )}
+                {game.platform === 'GENESIS' && (
+                  <div className="flex justify-between py-1 border-b border-[#494454]/20">
+                    <span className="text-[#958ea0]">Nút A / B / C (Sega 3-Arc)</span>
+                    <span className="text-white font-bold">Z, X, C / Nút A, B, X trên tay cầm</span>
+                  </div>
+                )}
+                <div className="flex justify-between py-1">
+                  <span className="text-[#958ea0]">Start / Select</span>
+                  <span className="text-white font-bold">Enter / Shift phải</span>
                 </div>
               </div>
             </div>
@@ -470,58 +533,73 @@ export const GameDetailPage: React.FC<GameDetailPageProps> = ({
 
           {activeTab === 'manual' && (
             <div className="p-6 rounded-xl bg-[#191b22] border border-[#494454]/30 space-y-3 font-mono text-xs text-[#cbc3d7]">
-              <h3 className="text-base text-white font-bold font-sans">Official Instruction Booklet Excerpt</h3>
-              <p>Long ago, in the beautiful kingdom of Hyrule surrounded by mountains and forests, legends told of an omnipotent and omniscient Golden Power that resided in a hidden land...</p>
-              <p>Use the Magic Mirror to return to the Light World from anywhere in the Dark World. Remember to save your game frequently at Sanctuary or in dungeon vestibules.</p>
+              <h3 className="text-base text-white font-bold font-sans">Hướng Dẫn Nhanh &amp; Chế Độ Chơi Mạng</h3>
+              <p>• Lưu trạng thái nhanh: Nhấn phím <strong className="text-white">F2</strong> để lưu Slot hiện tại, <strong className="text-white">F4</strong> để nạp lại tức thì.</p>
+              <p>• Tua ngược thời gian: Nhấn <strong className="text-white">Backspace</strong> hoặc nút -10s để quay lại khoảnh khắc trước đó.</p>
+              <p>• Chơi cùng bạn bè qua Internet: Nhấn <strong className="text-cyan-300">Tạo Phòng Chơi Online</strong> ở phía trên, gửi mã phòng hoặc đường dẫn mời cho bạn bè. Bạn bè không cần tải trước tệp ROM vẫn có thể vào điều khiển Port 2 trực tiếp!</p>
             </div>
           )}
         </div>
 
-        {/* Right Column: Active Save, Hardware, Sessions & Recommendations (4 Cols) */}
+        {/* Right Column: Active Save, Hardware & Library Recommendations (4 Cols) */}
         <div className="lg:col-span-4 flex flex-col gap-4">
           {/* Active Save State Snapshot */}
           <div className="p-5 rounded-xl bg-[#191b22] border border-[#494454]/40 shadow-lg flex flex-col gap-3">
             <div className="flex items-center justify-between">
               <span className="text-xs font-mono text-[#4cd7f6] font-bold flex items-center gap-1.5">
                 <span className="material-symbols-outlined text-sm">save</span>
-                ACTIVE SAVE STATE (SLOT 1)
+                BẢN LƯU TRẠNG THÁI (SLOT 1)
               </span>
               <span className="px-2 py-0.5 rounded-full text-[10px] font-mono bg-emerald-950 text-emerald-400 border border-emerald-500/40 flex items-center gap-1">
                 <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse"></span>
-                Cloud Synced
+                {realSaves.length > 0 ? `${realSaves.length} Slots` : 'Sẵn sàng'}
               </span>
             </div>
 
-            <div className="relative aspect-video rounded-lg overflow-hidden border border-[#494454]/50 group bg-[#0c0e14]">
+            <div className="relative aspect-video rounded-lg overflow-hidden border border-[#494454]/50 group bg-[#0c0e14] flex items-center justify-center">
               <img
-                alt="Save State Thumbnail"
-                className="w-full h-full object-cover"
-                src="https://lh3.googleusercontent.com/aida-public/AB6AXuCNPzVFiIt_8Zg5lXST7I4SWrMSBjSyDG-prJtsU3dsEHASHpRjBttPzAoZj4Wj23DT2CqTsqhWzRLyL1tXGcLG5mWWYsHY5TXci5JyOr0T66lBlp3y_QqxBrgu1fmiEfDrlzVXcuHAHLRopKNP9hC8yZ0RoQTlAbNBMU-YeZlmTU1N9BDOJElvqZhivfQ1IS8UbrTWdlp4AHojCqbPFhOE3yuwj1BU4ZmQCPQfze5vI9w55HH_aw3f8A"
+                alt={game.title}
+                className="w-full h-full object-contain p-3 opacity-85"
+                src={game.boxArt}
               />
-              <div className="absolute inset-0 bg-gradient-to-t from-black/90 via-black/20 to-transparent"></div>
+              <div className="absolute inset-0 bg-gradient-to-t from-black/90 via-black/25 to-transparent"></div>
               <div className="absolute bottom-2 left-2 right-2 flex items-end justify-between">
                 <div>
-                  <div className="text-xs text-white font-bold">Sanctuary Crypt Entrance</div>
-                  <div className="text-[11px] font-mono text-[#958ea0]">3 Pendants • 14 Hearts • Level 3 Sword</div>
+                  <div className="text-xs text-white font-bold truncate max-w-[200px]">
+                    {realSaves[0] ? `Slot #${realSaves[0].slot}: ${realSaves[0].gameTitle}` : 'Chưa có dữ liệu Save State'}
+                  </div>
+                  <div className="text-[11px] font-mono text-[#958ea0]">
+                    {realSaves[0]
+                      ? `${Math.round(realSaves[0].sizeBytes / 1024)} KB • ${realSaves[0].checksum?.slice(0, 8) || 'verified'}`
+                      : 'Nhấn F2 trong lúc chơi để tạo điểm lưu'}
+                  </div>
                 </div>
-                <div className="text-[10px] font-mono text-[#ffb95f]">15m ago</div>
+                {realSaves[0]?.timestamp && (
+                  <div className="text-[10px] font-mono text-[#ffb95f]">
+                    {new Date(realSaves[0].timestamp).toLocaleDateString()}
+                  </div>
+                )}
               </div>
             </div>
 
             <div className="grid grid-cols-2 gap-2 mt-1">
               <button
                 onClick={() => onPlayGame(game.id, 1)}
-                className="py-2 px-3 rounded bg-[#4cd7f6]/15 hover:bg-[#4cd7f6]/25 border border-[#4cd7f6]/50 text-[#4cd7f6] font-mono text-xs flex items-center justify-center gap-1.5 transition-colors font-bold"
+                className="py-2 px-3 rounded bg-[#4cd7f6]/15 hover:bg-[#4cd7f6]/25 border border-[#4cd7f6]/50 text-[#4cd7f6] font-mono text-xs flex items-center justify-center gap-1.5 transition-colors font-bold cursor-pointer"
               >
                 <span className="material-symbols-outlined text-base">upload_file</span>
-                Load Slot 1
+                Nạp Slot 1
               </button>
               <button
-                onClick={() => showToast("Save Slot 1 Overwritten with Current State")}
-                className="py-2 px-3 rounded bg-[#282a30] hover:bg-[#33343b] border border-[#494454]/40 text-[#e2e2eb] font-mono text-xs flex items-center justify-center gap-1.5 transition-colors"
+                onClick={() => {
+                  onPlayGame(game.id, 0);
+                  showToast('Khởi chạy mới từ đầu băng ROM');
+                }}
+                className="py-2 px-3 rounded bg-[#282a30] hover:bg-[#33343b] border border-[#494454]/40 text-[#e2e2eb] font-mono text-xs flex items-center justify-center gap-1.5 transition-colors cursor-pointer"
+                title="Khởi chạy lại từ màn hình bắt đầu"
               >
-                <span className="material-symbols-outlined text-base">save</span>
-                Overwrite
+                <span className="material-symbols-outlined text-base">restart_alt</span>
+                Khởi Động Mới
               </button>
             </div>
           </div>
@@ -529,80 +607,51 @@ export const GameDetailPage: React.FC<GameDetailPageProps> = ({
           {/* Controller Mapping Setup */}
           <div className="p-5 rounded-xl bg-[#191b22] border border-[#494454]/40 shadow-lg flex flex-col gap-3">
             <div className="flex items-center justify-between">
-              <span className="text-xs font-mono text-white font-bold flex items-center gap-1.5">
+              <span className="text-xs font-mono text-white font-bold flex items-center gap-1.5 uppercase">
                 <span className="material-symbols-outlined text-sm text-[#4cd7f6]">sports_esports</span>
-                SNES CONTROLLER MAPPING
+                {game.platform || 'CHUẨN'} SƠ ĐỒ ĐIỀU KHIỂN
               </span>
-              <button onClick={() => showToast("Navigating to Remapper in Settings...")} className="text-[11px] font-mono text-[#4cd7f6] hover:underline">
-                Remap Keys
+              <button onClick={() => setActiveTab('controls')} className="text-[11px] font-mono text-[#4cd7f6] hover:underline cursor-pointer">
+                Xem chi tiết
               </button>
             </div>
 
             <div className="bg-[#0c0e14] rounded-lg p-3 border border-[#494454]/20 flex flex-col gap-2 font-mono text-xs">
               <div className="flex items-center justify-between pb-1.5 border-b border-[#494454]/20">
-                <span className="text-[#958ea0]">D-Pad / Left Stick</span>
-                <span className="text-white font-bold">Move Link (8-Way)</span>
+                <span className="text-[#958ea0]">D-Pad / Analog</span>
+                <span className="text-white font-bold">Mũi tên / W-A-S-D</span>
               </div>
               <div className="flex items-center justify-between pb-1.5 border-b border-[#494454]/20">
-                <span className="text-[#958ea0]">Button A (Xbox B)</span>
-                <span className="text-white font-bold">Action / Lift / Speak</span>
+                <span className="text-[#958ea0]">Nút A / B</span>
+                <span className="text-white font-bold">Phím X / Z</span>
               </div>
               <div className="flex items-center justify-between pb-1.5 border-b border-[#494454]/20">
-                <span className="text-[#958ea0]">Button B (Xbox A)</span>
-                <span className="text-white font-bold">Attack / Spin Slash</span>
+                <span className="text-[#958ea0]">Nút X / Y</span>
+                <span className="text-white font-bold">Phím S / A</span>
               </div>
               <div className="flex items-center justify-between pb-1.5 border-b border-[#494454]/20">
-                <span className="text-[#958ea0]">Button Y (Xbox X)</span>
-                <span className="text-white font-bold">Dash (Pegasus Boots)</span>
+                <span className="text-[#958ea0]">Bumpers L / R</span>
+                <span className="text-white font-bold">Phím Q / E</span>
               </div>
               <div className="flex items-center justify-between">
-                <span className="text-[#958ea0]">Bumpers L / R</span>
-                <span className="text-white font-bold">Quick Cycle Inventory</span>
+                <span className="text-[#958ea0]">Start / Select</span>
+                <span className="text-white font-bold">Enter / Shift phải</span>
               </div>
             </div>
           </div>
 
-          {/* Recent Sessions & Playtime Stats */}
-          <div className="p-5 rounded-xl bg-[#191b22] border border-[#494454]/40 shadow-lg flex flex-col gap-3">
-            <span className="text-xs font-mono text-white font-bold flex items-center gap-1.5">
-              <span className="material-symbols-outlined text-sm text-[#4cd7f6]">query_stats</span>
-              SESSION METRICS &amp; SPEEDRUN
-            </span>
-            <div className="grid grid-cols-3 gap-2 text-center">
-              <div className="p-2 rounded bg-[#0c0e14] border border-[#494454]/20">
-                <div className="text-[10px] font-mono text-[#958ea0]">Total Play</div>
-                <div className="text-sm text-white font-bold">18h 42m</div>
-              </div>
-              <div className="p-2 rounded bg-[#0c0e14] border border-[#494454]/20">
-                <div className="text-[10px] font-mono text-[#958ea0]">Last Session</div>
-                <div className="text-sm text-white font-bold">Today 14:20</div>
-              </div>
-              <div className="p-2 rounded bg-[#0c0e14] border border-[#494454]/20">
-                <div className="text-[10px] font-mono text-[#4cd7f6]">Best Any%</div>
-                <div className="text-sm text-[#4cd7f6] font-bold">1h 45m</div>
-              </div>
-            </div>
-            <div className="p-2.5 rounded bg-[#33343b]/40 border border-[#494454]/30 flex items-center justify-between text-xs font-mono">
-              <div className="flex items-center gap-2">
-                <span className="material-symbols-outlined text-[#ffb95f] text-base">leaderboard</span>
-                <span className="text-white">Global Rank #842</span>
-              </div>
-              <span className="text-[#958ea0]">Top 12% in Hyrule</span>
-            </div>
-          </div>
-
-          {/* Recommended Classics */}
+          {/* Library Quick Switch */}
           <div className="p-5 rounded-xl bg-[#191b22] border border-[#494454]/40 shadow-lg flex flex-col gap-3">
             <div className="flex items-center justify-between">
               <span className="text-xs font-mono text-white font-bold flex items-center gap-1.5">
                 <span className="material-symbols-outlined text-sm text-[#4cd7f6]">auto_awesome</span>
-                RECOMMENDED CLASSICS
+                TRÒ CHƠI KHÁC TRONG THƯ VIỆN
               </span>
-              <span className="text-[11px] font-mono text-[#958ea0]">Cross-Platform</span>
+              <span className="text-[11px] font-mono text-[#958ea0]">{libraryGames.length} ROM</span>
             </div>
 
             <div className="flex flex-col gap-2.5">
-              {FEATURED_GAMES.filter((g) => g.id !== game.id).slice(0, 3).map((rec) => (
+              {libraryGames.filter((g) => g.id !== game.id).slice(0, 3).map((rec) => (
                 <div
                   key={rec.id}
                   onClick={() => onPlayGame(rec.id)}
@@ -617,12 +666,18 @@ export const GameDetailPage: React.FC<GameDetailPageProps> = ({
                       <div className="text-[10px] font-mono text-[#958ea0]">{rec.platform} • {rec.developer}</div>
                     </div>
                   </div>
-                  <button className="px-2 py-1 rounded text-[11px] font-mono bg-[#282a30] text-[#4cd7f6] hover:bg-[#4cd7f6] hover:text-[#001f26] transition-colors">
+                  <button
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      onPlayGame(rec.id);
+                    }}
+                    className="px-2 py-1 rounded text-[11px] font-mono bg-[#282a30] text-[#4cd7f6] hover:bg-[#4cd7f6] hover:text-[#001f26] transition-colors cursor-pointer"
+                  >
                     Chơi
                   </button>
                 </div>
               ))}
-              {FEATURED_GAMES.filter((g) => g.id !== game.id).length === 0 && (
+              {libraryGames.filter((g) => g.id !== game.id).length === 0 && (
                 <p className="text-[11px] font-mono text-[#958ea0] py-2">Chưa có trò chơi nào khác trong thư viện.</p>
               )}
             </div>

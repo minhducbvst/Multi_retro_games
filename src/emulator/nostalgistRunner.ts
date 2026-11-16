@@ -22,9 +22,9 @@ export async function launchRetroEmulator(
   let core = 'fceumm'; // NES default
   if (upperPlat === 'SNES' || upperPlat.includes('SUPER')) {
     core = 'snes9x';
-  } else if (upperPlat === 'GBA' || upperPlat.includes('ADVANCE')) {
+  } else if (upperPlat === 'GBA' || upperPlat.includes('ADVANCE') || upperPlat === 'GB' || upperPlat === 'GBC') {
     core = 'mgba';
-  } else if (upperPlat === 'GENESIS' || upperPlat === 'MEGADRIVE') {
+  } else if (upperPlat === 'GENESIS' || upperPlat === 'MEGADRIVE' || upperPlat === 'MD') {
     core = 'genesis_plus_gx';
   }
 

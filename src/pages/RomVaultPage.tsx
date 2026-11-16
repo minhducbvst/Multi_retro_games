@@ -27,6 +27,10 @@ export const RomVaultPage: React.FC<RomVaultPageProps> = ({
   // Source mode: 'local' (direct from machine) or 'drive' (Google Drive folder)
   const [sourceMode, setSourceMode] = useState<'local' | 'drive'>(initialSourceMode);
 
+  React.useEffect(() => {
+    setSourceMode(initialSourceMode);
+  }, [initialSourceMode]);
+
   const [dragActive, setDragActive] = useState<boolean>(false);
   const [analyzedRom, setAnalyzedRom] = useState<{ info: RomHeaderInfo; bytes: Uint8Array } | null>(null);
   const [detectedFolderRoms, setDetectedFolderRoms] = useState<LoadedCartridgeItem[]>([]);
@@ -68,7 +72,7 @@ export const RomVaultPage: React.FC<RomVaultPageProps> = ({
 
     for (const file of fileArray) {
       const ext = file.name.slice(file.name.lastIndexOf('.')).toLowerCase();
-      if (['.nes', '.smc', '.sfc', '.gba', '.bin', '.zip'].includes(ext)) {
+      if (['.nes', '.smc', '.sfc', '.gba', '.bin', '.zip', '.md'].includes(ext)) {
         try {
           const buffer = await file.arrayBuffer();
           const bytes = new Uint8Array(buffer);
@@ -290,7 +294,7 @@ export const RomVaultPage: React.FC<RomVaultPageProps> = ({
                 <input
                   ref={fileInputRef}
                   type="file"
-                  accept=".nes,.smc,.sfc,.gba,.bin,.zip"
+                  accept=".nes,.smc,.sfc,.gba,.bin,.zip,.md"
                   className="hidden"
                   onChange={(e) => {
                     if (e.target.files && e.target.files[0]) {
@@ -320,10 +324,10 @@ export const RomVaultPage: React.FC<RomVaultPageProps> = ({
                 </div>
 
                 <h3 className="font-headline font-bold text-white text-base">
-                  Drop Cartridge ROMs or Folders Here
+                  Kéo thả tệp ROM Cartridge vào đây
                 </h3>
                 <p className="text-xs font-mono text-[#958ea0] mt-1 max-w-sm">
-                  Drag and drop individual ROM files or a directory from your computer
+                  Hỗ trợ kéo thả các tệp ROM hoặc toàn bộ thư mục từ máy tính của bạn
                 </p>
 
                 <div className="flex flex-wrap items-center justify-center gap-2 mt-4">
@@ -335,6 +339,9 @@ export const RomVaultPage: React.FC<RomVaultPageProps> = ({
                   </span>
                   <span className="px-2 py-0.5 bg-[#111319] text-[#d0bcff] rounded text-[11px] font-mono border border-[#494454]/30">
                     .GBA (Game Boy Advance)
+                  </span>
+                  <span className="px-2 py-0.5 bg-[#111319] text-[#34d399] rounded text-[11px] font-mono border border-emerald-500/40 font-bold">
+                    .MD / .BIN (Sega Genesis)
                   </span>
                 </div>
 
