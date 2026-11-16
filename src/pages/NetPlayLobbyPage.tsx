@@ -510,19 +510,21 @@ export const NetPlayLobbyPage: React.FC<NetPlayLobbyPageProps> = ({
           <div className="flex items-center gap-1.5 px-2.5 py-1 rounded bg-[#111319] border border-[#494454]/30 text-[11px]">
             <span
               className={`w-2 h-2 rounded-full ${
-                serverStatus === 'connected'
+                serverStatus === 'connected' || serverStatus === 'cloud-p2p'
                   ? 'bg-emerald-400 animate-pulse'
                   : serverStatus === 'reconnecting'
                   ? 'bg-amber-400 animate-pulse'
-                  : 'bg-rose-400'
+                  : 'bg-sky-400 animate-pulse'
               }`}
             ></span>
             <span className="text-[#cbc3d7]">
               {serverStatus === 'connected'
-                ? `Server Online (${serverRttMs}ms)`
+                ? `WS Server Online (${serverRttMs}ms)`
+                : serverStatus === 'cloud-p2p'
+                ? 'Cloud P2P Signaling Ready'
                 : serverStatus === 'reconnecting'
                 ? 'Đang kết nối lại...'
-                : 'Đang kết nối...'}
+                : 'Đang dò kênh kết nối...'}
             </span>
           </div>
 
@@ -621,6 +623,22 @@ export const NetPlayLobbyPage: React.FC<NetPlayLobbyPageProps> = ({
                 )}
               </div>
             </div>
+            {serverStatus === 'cloud-p2p' && !currentUser && (
+              <div className="mt-4 pt-3 border-t border-[#494454]/20 flex flex-wrap items-center justify-between gap-3 text-xs font-mono">
+                <div className="flex items-center gap-2 text-amber-300">
+                  <span className="material-symbols-outlined text-sm">cloud_done</span>
+                  <span>
+                    Đang chạy ở chế độ WebRTC Cloud P2P (Static CDN): Hãy <strong>Đăng nhập Google</strong> để tạo hoặc tham gia phòng chơi trực tuyến từ mọi nơi.
+                  </span>
+                </div>
+                <button
+                  onClick={() => loginWithGoogle().catch(() => {})}
+                  className="px-3 py-1 rounded-lg bg-amber-400/15 hover:bg-amber-400/25 border border-amber-400/40 text-amber-200 font-bold cursor-pointer"
+                >
+                  Đăng nhập ngay
+                </button>
+              </div>
+            )}
           </div>
 
           {/* Public Rooms Section */}

@@ -1,6 +1,6 @@
 import { SaveMetadata, SaveConflict, Platform } from '../../types';
-import { db, auth, handleFirestoreError, OperationType } from '../firebase';
-import { collection, doc, setDoc, getDocs, deleteDoc } from 'firebase/firestore';
+import { db, auth, handleFirestoreError, OperationType, isFirestoreReachable } from '../firebase';
+import { doc, setDoc, deleteDoc } from 'firebase/firestore';
 
 const DB_NAME = 'retroverse_saves_db';
 const STORE_NAME = 'saves_store';
@@ -106,17 +106,21 @@ export class SaveManager {
       console.warn("IndexedDB write fallback", e);
     }
 
-    // Sync to Firestore if authenticated
-    if (auth.currentUser) {
+    // Sync to Firestore if authenticated and database is reachable
+    if (auth.currentUser && isFirestoreReachable()) {
+      const path = `users/${auth.currentUser.uid}/saves/${save.id}`;
       try {
-        const path = `users/${auth.currentUser.uid}/saves/${save.id}`;
         await setDoc(doc(db, 'users', auth.currentUser.uid, 'saves', save.id), {
           ...save,
           ownerUid: auth.currentUser.uid,
           updatedAt: new Date().toISOString()
         });
-      } catch (err) {
-        handleFirestoreError(err, OperationType.WRITE, `users/${auth.currentUser.uid}/saves/${save.id}`);
+      } catch (err: any) {
+        if (err?.code === 'permission-denied') {
+          handleFirestoreError(err, OperationType.WRITE, path);
+        } else {
+          console.warn('Firestore save sync skipped (offline):', err?.message || err);
+        }
       }
     }
   }
@@ -131,12 +135,16 @@ export class SaveManager {
       // Ignore
     }
 
-    if (auth.currentUser) {
+    if (auth.currentUser && isFirestoreReachable()) {
+      const path = `users/${auth.currentUser.uid}/saves/${id}`;
       try {
-        const path = `users/${auth.currentUser.uid}/saves/${id}`;
         await deleteDoc(doc(db, 'users', auth.currentUser.uid, 'saves', id));
-      } catch (err) {
-        handleFirestoreError(err, OperationType.DELETE, `users/${auth.currentUser.uid}/saves/${id}`);
+      } catch (err: any) {
+        if (err?.code === 'permission-denied') {
+          handleFirestoreError(err, OperationType.DELETE, path);
+        } else {
+          console.warn('Firestore save delete skipped (offline):', err?.message || err);
+        }
       }
     }
   }

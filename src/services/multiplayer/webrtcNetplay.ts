@@ -381,11 +381,17 @@ export class WebRTCNetplayManager {
       fallbackTimer: null,
     };
 
-    // 7-second ICE timeout -> seamless WebSocket relay fallback for strict symmetric NATs
+    // 7-second ICE timeout -> seamless WebSocket relay fallback for strict symmetric NATs when WS backend is available
     link.fallbackTimer = setTimeout(() => {
       if (pc.iceConnectionState !== 'connected' && pc.iceConnectionState !== 'completed') {
-        this.wsFallbackActive = true;
-        this.updateStats({ transportMode: 'ws-relay' });
+        if (roomService.getTransportMode() === 'ws') {
+          this.wsFallbackActive = true;
+          this.updateStats({ transportMode: 'ws-relay' });
+        } else if (this.role === 'host') {
+          try {
+            pc.restartIce();
+          } catch {}
+        }
       }
     }, 7000);
 
@@ -449,10 +455,11 @@ export class WebRTCNetplayManager {
         this.wsFallbackActive = false;
         this.collectStats();
       } else if (iceState === 'failed' || iceState === 'disconnected') {
-        this.wsFallbackActive = true;
+        const hasWs = roomService.getTransportMode() === 'ws';
+        this.wsFallbackActive = hasWs;
         this.updateStats({
           iceConnectionState: iceState,
-          transportMode: 'ws-relay',
+          transportMode: hasWs ? 'ws-relay' : 'idle',
         });
         if (this.role === 'host' && iceState === 'failed') {
           try {

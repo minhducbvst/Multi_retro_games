@@ -1,4 +1,18 @@
-import { auth } from '../firebase';
+import { auth, db, handleFirestoreError, OperationType, isFirestoreReachable } from '../firebase';
+import {
+  collection,
+  doc,
+  setDoc,
+  getDoc,
+  getDocs,
+  updateDoc,
+  deleteDoc,
+  query,
+  where,
+  orderBy,
+  onSnapshot,
+  Unsubscribe,
+} from 'firebase/firestore';
 import { NetPlayRoom, ChatMessage, SignalingMessage, Platform } from '../../types';
 
 export interface CreateRoomInput {
@@ -17,7 +31,14 @@ export interface PlayerProfile {
   photoURL?: string;
 }
 
-export type ServerConnectionStatus = 'connecting' | 'connected' | 'reconnecting' | 'disconnected';
+export type ServerConnectionStatus =
+  | 'connecting'
+  | 'connected'
+  | 'cloud-p2p'
+  | 'reconnecting'
+  | 'disconnected';
+
+export type TransportMode = 'probing' | 'ws' | 'cloud-p2p';
 
 const TAB_UID_KEY = 'retroverse_tab_player_uid';
 const NICKNAME_KEY = 'retroverse_player_nickname';
@@ -44,8 +65,6 @@ export function getOrCreatePlayerProfile(): PlayerProfile {
   }
 
   if (user) {
-    // Include tab suffix if another tab isn't using the same identity, or use uid directly
-    // Using user.uid keeps Google Identity consistent across machines!
     return {
       uid: user.uid,
       displayName: user.displayName || storedNick || 'RetroPlayer',
@@ -80,7 +99,11 @@ interface PendingRequest {
 
 export class RoomService {
   private ws: WebSocket | null = null;
-  private status: ServerConnectionStatus = 'disconnected';
+  private status: ServerConnectionStatus = 'connecting';
+  private transport: TransportMode = 'probing';
+  private probePromise: Promise<TransportMode> | null = null;
+  private resolvedWsUrl: string | null = null;
+
   private reconnectAttempts = 0;
   private reconnectTimer: ReturnType<typeof setTimeout> | null = null;
   private pingTimer: ReturnType<typeof setInterval> | null = null;
@@ -88,9 +111,17 @@ export class RoomService {
 
   private activeRoom: NetPlayRoom | null = null;
   private activeRoomId: string | null = null;
+  private prevRoomStatus: string | null = null;
   private messages: ChatMessage[] = [];
   private publicRooms: NetPlayRoom[] = [];
   private lobbySubscribed = false;
+
+  // Firestore listeners (used when static CDN hosting lacks Node /ws/netplay)
+  private cloudPublicUnsub: Unsubscribe | null = null;
+  private cloudRoomUnsubs = new Map<string, Unsubscribe>();
+  private cloudMsgUnsubs = new Map<string, Unsubscribe>();
+  private cloudSigUnsubs = new Map<string, Unsubscribe>();
+  private seenSignalIds = new Set<string>();
 
   private pendingRequests = new Map<string, PendingRequest>();
 
@@ -103,12 +134,119 @@ export class RoomService {
   private relayInputListeners = new Set<(mask: number, senderUid: string) => void>();
   private relayFrameListeners = new Set<(frameDataUrl: string) => void>();
 
-  private getWsUrl(): string {
+  private getDefaultWsUrl(): string {
     const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
     return `${protocol}//${window.location.host}/ws/netplay`;
   }
 
+  public getTransportMode(): TransportMode {
+    return this.transport;
+  }
+
+  /**
+   * Probes whether the current origin (or VITE_NETPLAY_WS_URL) exposes a real Node WebSocket backend.
+   * On static CDNs like Vercel, /api/netplay/health returns text/html (index.html), so we cleanly
+   * avoid opening a failing WebSocket and switch immediately to Cloud Firestore P2P signaling.
+   */
+  private async detectTransport(): Promise<TransportMode> {
+    if (this.transport !== 'probing') {
+      return this.transport;
+    }
+    if (this.probePromise) {
+      return this.probePromise;
+    }
+
+    this.probePromise = (async () => {
+      const configuredWsUrl = (import.meta as any).env?.VITE_NETPLAY_WS_URL?.trim();
+      if (configuredWsUrl) {
+        this.resolvedWsUrl = configuredWsUrl;
+        this.transport = 'ws';
+        return 'ws';
+      }
+
+      if (typeof window === 'undefined') {
+        this.transport = 'cloud-p2p';
+        return 'cloud-p2p';
+      }
+
+      try {
+        const controller = new AbortController();
+        const timeout = setTimeout(() => controller.abort(), 2500);
+        const res = await fetch('/api/netplay/health', {
+          method: 'GET',
+          cache: 'no-store',
+          signal: controller.signal,
+        });
+        clearTimeout(timeout);
+
+        const contentType = res.headers.get('content-type') || '';
+        if (res.ok && contentType.includes('application/json')) {
+          const data = await res.json().catch(() => null);
+          if (data && data.status === 'ok') {
+            this.resolvedWsUrl = this.getDefaultWsUrl();
+            this.transport = 'ws';
+            return 'ws';
+          }
+        }
+      } catch {
+        // Static CDN or offline -> switch gracefully to Cloud P2P signaling
+      }
+
+      this.transport = 'cloud-p2p';
+      this.updateStatus('cloud-p2p');
+      this.activateCloudSubscriptions();
+      return 'cloud-p2p';
+    })();
+
+    return this.probePromise;
+  }
+
+  private activateCloudSubscriptions(): void {
+    if ((this.lobbySubscribed || this.publicRoomsListeners.size > 0) && !this.cloudPublicUnsub) {
+      this.startCloudPublicRoomsListener();
+    }
+    for (const roomId of this.roomListeners.keys()) {
+      if (!this.cloudRoomUnsubs.has(roomId)) {
+        this.startCloudRoomListener(roomId);
+      }
+    }
+    for (const roomId of this.messageListeners.keys()) {
+      if (!this.cloudMsgUnsubs.has(roomId)) {
+        this.startCloudMessagesListener(roomId);
+      }
+    }
+    for (const roomId of this.signalListeners.keys()) {
+      if (!this.cloudSigUnsubs.has(roomId)) {
+        this.startCloudSignalsListener(roomId);
+      }
+    }
+  }
+
   public ensureConnected(): void {
+    if (this.transport === 'cloud-p2p') {
+      if (this.status !== 'cloud-p2p') {
+        this.updateStatus('cloud-p2p');
+      }
+      return;
+    }
+
+    if (this.transport === 'probing') {
+      this.updateStatus('connecting');
+      this.detectTransport().then((mode) => {
+        if (mode === 'ws') {
+          this.openWebSocket();
+        }
+      });
+      return;
+    }
+
+    this.openWebSocket();
+  }
+
+  private openWebSocket(): void {
+    if (!this.resolvedWsUrl) {
+      this.resolvedWsUrl = this.getDefaultWsUrl();
+    }
     if (this.ws && (this.ws.readyState === WebSocket.OPEN || this.ws.readyState === WebSocket.CONNECTING)) {
       return;
     }
@@ -116,7 +254,7 @@ export class RoomService {
     this.updateStatus(this.reconnectAttempts > 0 ? 'reconnecting' : 'connecting');
 
     try {
-      const ws = new WebSocket(this.getWsUrl());
+      const ws = new WebSocket(this.resolvedWsUrl);
       this.ws = ws;
 
       ws.onopen = () => {
@@ -128,7 +266,6 @@ export class RoomService {
           this.sendRaw({ type: 'lobby:subscribe' });
         }
 
-        // Auto-rejoin active room after brief network blip
         if (this.activeRoomId) {
           const profile = getOrCreatePlayerProfile();
           this.sendRaw({
@@ -148,7 +285,6 @@ export class RoomService {
             lastRttMs: this.lastServerRttMs,
           });
         }, 2500);
-        // Immediate ping
         this.sendRaw({ type: 'ping', clientTime: performance.now() });
       };
 
@@ -168,12 +304,19 @@ export class RoomService {
           clearInterval(this.pingTimer);
           this.pingTimer = null;
         }
+        if (this.reconnectAttempts >= 3 && isFirestoreReachable()) {
+          // Graceful fallback to Cloud P2P if custom WS server becomes unreachable
+          this.transport = 'cloud-p2p';
+          this.updateStatus('cloud-p2p');
+          this.activateCloudSubscriptions();
+          return;
+        }
         this.updateStatus('reconnecting');
         this.scheduleReconnect();
       };
 
       ws.onerror = () => {
-        // onclose will handle reconnect
+        // onclose handles backoff / fallback
       };
     } catch {
       this.scheduleReconnect();
@@ -181,16 +324,17 @@ export class RoomService {
   }
 
   private scheduleReconnect(): void {
-    if (this.reconnectTimer) return;
-    const delay = Math.min(5000, 400 * Math.pow(1.6, this.reconnectAttempts));
+    if (this.reconnectTimer || this.transport !== 'ws') return;
+    const delay = Math.min(5000, 500 * Math.pow(1.6, this.reconnectAttempts));
     this.reconnectAttempts++;
     this.reconnectTimer = setTimeout(() => {
       this.reconnectTimer = null;
-      this.ensureConnected();
+      this.openWebSocket();
     }, delay);
   }
 
   public sendHello(): void {
+    if (this.transport !== 'ws') return;
     const profile = getOrCreatePlayerProfile();
     this.sendRaw({
       type: 'hello',
@@ -200,7 +344,7 @@ export class RoomService {
   }
 
   private sendRaw(payload: Record<string, unknown>): boolean {
-    if (this.ws && this.ws.readyState === WebSocket.OPEN) {
+    if (this.transport === 'ws' && this.ws && this.ws.readyState === WebSocket.OPEN) {
       try {
         this.ws.send(JSON.stringify(payload));
         return true;
@@ -219,6 +363,10 @@ export class RoomService {
     return new Promise((resolve, reject) => {
       const start = Date.now();
       const check = () => {
+        if (this.transport === 'cloud-p2p') {
+          resolve();
+          return;
+        }
         if (this.ws && this.ws.readyState === WebSocket.OPEN) {
           resolve();
         } else if (Date.now() - start > timeoutMs) {
@@ -233,6 +381,9 @@ export class RoomService {
 
   private async request<T>(payload: Record<string, unknown>): Promise<T> {
     await this.waitForSocketOpen();
+    if (this.transport !== 'ws') {
+      throw new Error('Không dùng request WebSocket ở chế độ Cloud P2P.');
+    }
     const requestId = `req-${Date.now()}-${Math.random().toString(36).substring(2, 6)}`;
     return new Promise<T>((resolve, reject) => {
       const timer = setTimeout(() => {
@@ -270,6 +421,7 @@ export class RoomService {
       const msgs = Array.isArray(msg.messages) ? (msg.messages as ChatMessage[]) : [];
       this.activeRoom = room;
       this.activeRoomId = room.id;
+      this.prevRoomStatus = room.status;
       this.messages = msgs;
 
       if (msg.requestId && this.pendingRequests.has(msg.requestId)) {
@@ -298,6 +450,7 @@ export class RoomService {
       const room = msg.room as NetPlayRoom;
       if (this.activeRoomId === room.id) {
         this.activeRoom = room;
+        this.prevRoomStatus = room.status;
       }
       this.notifyRoomListeners(room.id, room);
       return;
@@ -306,6 +459,7 @@ export class RoomService {
     if (type === 'room:launched') {
       const room = msg.room as NetPlayRoom;
       this.activeRoom = room;
+      this.prevRoomStatus = room.status;
       this.notifyRoomListeners(room.id, room);
       this.launchListeners.forEach((cb) => cb(room));
       return;
@@ -316,6 +470,7 @@ export class RoomService {
       if (this.activeRoomId === closedId) {
         this.activeRoom = null;
         this.activeRoomId = null;
+        this.prevRoomStatus = null;
         this.messages = [];
       }
       this.notifyRoomListeners(closedId, null);
@@ -398,80 +553,391 @@ export class RoomService {
     return () => this.statusListeners.delete(cb);
   }
 
-  // 1. Create a new multiplayer room
+  // ==================== PUBLIC API (DUAL-MODE WS + CLOUD FIRESTORE P2P) ====================
+
   public async createRoom(input: CreateRoomInput): Promise<NetPlayRoom> {
+    const mode = await this.detectTransport();
     const profile = getOrCreatePlayerProfile();
-    const room = await this.request<NetPlayRoom>({
-      type: 'room:create',
-      hostUid: profile.uid,
-      hostName: input.hostName || profile.displayName,
-      hostAvatar: profile.photoURL,
+
+    if (mode === 'ws') {
+      return this.request<NetPlayRoom>({
+        type: 'room:create',
+        hostUid: profile.uid,
+        hostName: input.hostName || profile.displayName,
+        hostAvatar: profile.photoURL,
+        gameId: input.gameId,
+        gameTitle: input.gameTitle,
+        platform: input.platform,
+        isPublic: input.isPublic !== undefined ? input.isPublic : true,
+        rollbackFrames: input.rollbackFrames || 1,
+        inputDelayTarget: input.inputDelayTarget || '0-1 Frame (Sub-16ms)',
+      });
+    }
+
+    // Cloud Firestore P2P mode (Vercel / Static CDN)
+    if (!auth.currentUser) {
+      throw new Error('Vui lòng bấm "Đăng nhập Google" ở thanh trên cùng để tạo phòng chơi Online qua Cloud P2P.');
+    }
+
+    const roomId = `room-${Date.now()}-${Math.random().toString(36).substring(2, 6)}`;
+    const code = generateRoomCode(input.platform);
+    const now = new Date().toISOString();
+    const newRoom: NetPlayRoom = {
+      id: roomId,
+      code,
+      hostUid: auth.currentUser.uid,
+      hostName: input.hostName || auth.currentUser.displayName || profile.displayName,
+      hostAvatar: auth.currentUser.photoURL || undefined,
+      guestUid: null,
+      guestName: null,
+      guestAvatar: null,
       gameId: input.gameId,
       gameTitle: input.gameTitle,
       platform: input.platform,
+      status: 'waiting',
       isPublic: input.isPublic !== undefined ? input.isPublic : true,
+      hostReady: false,
+      guestReady: false,
+      pingMs: 0,
+      hostPingMs: 0,
+      spectators: [],
       rollbackFrames: input.rollbackFrames || 1,
       inputDelayTarget: input.inputDelayTarget || '0-1 Frame (Sub-16ms)',
-    });
-    return room;
+      pauseAuthority: `Host Only (${input.hostName || profile.displayName})`,
+      createdAt: now,
+      updatedAt: now,
+    };
+
+    try {
+      await setDoc(doc(db, 'rooms', roomId), newRoom);
+      this.activeRoom = newRoom;
+      this.activeRoomId = roomId;
+      this.prevRoomStatus = 'waiting';
+      this.messages = [];
+      return newRoom;
+    } catch (err) {
+      handleFirestoreError(err, OperationType.CREATE, `rooms/${roomId}`);
+      throw err;
+    }
   }
 
-  // 2. Join room by Room Code (e.g. "RV-7402-SNES" or "7402")
   public async joinRoomByCode(code: string, player?: PlayerProfile): Promise<NetPlayRoom> {
+    const mode = await this.detectTransport();
     const profile = player || getOrCreatePlayerProfile();
-    return this.request<NetPlayRoom>({
-      type: 'room:join',
-      codeOrId: code.trim(),
-      uid: profile.uid,
-      displayName: profile.displayName,
-      photoURL: profile.photoURL,
-    });
+
+    if (mode === 'ws') {
+      return this.request<NetPlayRoom>({
+        type: 'room:join',
+        codeOrId: code.trim(),
+        uid: profile.uid,
+        displayName: profile.displayName,
+        photoURL: profile.photoURL,
+      });
+    }
+
+    // Cloud Firestore P2P mode
+    if (!auth.currentUser) {
+      throw new Error('Vui lòng bấm "Đăng nhập Google" ở thanh trên cùng để vào phòng chơi Online qua Cloud P2P.');
+    }
+
+    const clean = code.trim();
+    const upper = clean.toUpperCase();
+    let targetId = clean;
+    let roomData: NetPlayRoom | null = null;
+
+    try {
+      const directSnap = await getDoc(doc(db, 'rooms', clean));
+      if (directSnap.exists()) {
+        targetId = directSnap.id;
+        roomData = directSnap.data() as NetPlayRoom;
+      } else {
+        const q = query(collection(db, 'rooms'), where('code', '==', upper));
+        const qSnap = await getDocs(q);
+        if (!qSnap.empty) {
+          targetId = qSnap.docs[0].id;
+          roomData = qSnap.docs[0].data() as NetPlayRoom;
+        }
+      }
+
+      if (!roomData || roomData.status === 'closed') {
+        throw new Error(`Không tìm thấy phòng có mã "${code}" hoặc phòng đã đóng.`);
+      }
+
+      const uid = auth.currentUser.uid;
+      const displayName = auth.currentUser.displayName || profile.displayName;
+      const photoURL = auth.currentUser.photoURL || null;
+
+      if (roomData.hostUid === uid) {
+        this.activeRoom = roomData;
+        this.activeRoomId = targetId;
+        this.prevRoomStatus = roomData.status;
+        return roomData;
+      }
+
+      if (!roomData.guestUid || roomData.guestUid === uid) {
+        const updatedFields = {
+          guestUid: uid,
+          guestName: displayName,
+          guestAvatar: photoURL,
+          guestReady: false,
+          updatedAt: new Date().toISOString(),
+        };
+        await updateDoc(doc(db, 'rooms', targetId), updatedFields);
+        roomData = { ...roomData, ...updatedFields };
+      }
+
+      this.activeRoom = roomData;
+      this.activeRoomId = targetId;
+      this.prevRoomStatus = roomData.status;
+      return roomData;
+    } catch (err: any) {
+      if (err?.message?.includes('Không tìm thấy phòng')) throw err;
+      handleFirestoreError(err, OperationType.GET, `rooms/${targetId}`);
+      throw err;
+    }
   }
 
-  // 3. Join room by Room ID
   public async joinRoomById(roomId: string, player?: PlayerProfile): Promise<NetPlayRoom> {
     return this.joinRoomByCode(roomId, player);
   }
 
-  // 4. Toggle Player Ready State
-  public async toggleReady(_roomId: string, _isHost: boolean, nextReadyState: boolean): Promise<void> {
-    await this.waitForSocketOpen();
-    this.sendRaw({ type: 'room:ready', ready: nextReadyState });
-  }
+  public async toggleReady(roomId: string, isHost: boolean, nextReadyState: boolean): Promise<void> {
+    if (this.transport === 'ws') {
+      await this.waitForSocketOpen();
+      this.sendRaw({ type: 'room:ready', ready: nextReadyState });
+      return;
+    }
 
-  // 5. Update game cartridge selected in lobby
-  public async updateRoomGame(_roomId: string, gameId: string, gameTitle: string, platform: Platform): Promise<void> {
-    await this.waitForSocketOpen();
-    this.sendRaw({
-      type: 'room:change_game',
-      gameId,
-      gameTitle,
-      platform,
-    });
-  }
-
-  // 5b. Launch match for all players in room
-  public async launchMatch(): Promise<void> {
-    await this.waitForSocketOpen();
-    this.sendRaw({ type: 'room:launch' });
-  }
-
-  public async stopMatch(): Promise<void> {
-    await this.waitForSocketOpen();
-    this.sendRaw({ type: 'room:stop_match' });
-  }
-
-  // 6. Leave or close room
-  public async leaveRoom(_roomId?: string, _playerUid?: string): Promise<void> {
-    this.activeRoom = null;
-    this.activeRoomId = null;
-    this.messages = [];
-    if (this.ws && this.ws.readyState === WebSocket.OPEN) {
-      this.sendRaw({ type: 'room:leave' });
+    const roomRef = doc(db, 'rooms', roomId);
+    try {
+      const snap = await getDoc(roomRef);
+      if (!snap.exists()) return;
+      const cur = snap.data() as NetPlayRoom;
+      const hostReady = isHost ? nextReadyState : cur.hostReady;
+      const guestReady = !isHost ? nextReadyState : cur.guestReady;
+      const status = cur.status === 'playing' ? 'playing' : hostReady && guestReady ? 'ready' : 'waiting';
+      await updateDoc(roomRef, {
+        [isHost ? 'hostReady' : 'guestReady']: nextReadyState,
+        status,
+        updatedAt: new Date().toISOString(),
+      });
+    } catch (err) {
+      handleFirestoreError(err, OperationType.UPDATE, `rooms/${roomId}`);
     }
   }
 
-  // 7. Subscribe to real-time updates for a single room
+  public async updateRoomGame(roomId: string, gameId: string, gameTitle: string, platform: Platform): Promise<void> {
+    if (this.transport === 'ws') {
+      await this.waitForSocketOpen();
+      this.sendRaw({ type: 'room:change_game', gameId, gameTitle, platform });
+      return;
+    }
+
+    try {
+      await updateDoc(doc(db, 'rooms', roomId), {
+        gameId,
+        gameTitle,
+        platform,
+        hostReady: true,
+        guestReady: false,
+        status: 'waiting',
+        updatedAt: new Date().toISOString(),
+      });
+    } catch (err) {
+      handleFirestoreError(err, OperationType.UPDATE, `rooms/${roomId}`);
+    }
+  }
+
+  public async launchMatch(): Promise<void> {
+    if (this.transport === 'ws') {
+      await this.waitForSocketOpen();
+      this.sendRaw({ type: 'room:launch' });
+      return;
+    }
+
+    if (!this.activeRoomId) return;
+    try {
+      await updateDoc(doc(db, 'rooms', this.activeRoomId), {
+        status: 'playing',
+        updatedAt: new Date().toISOString(),
+      });
+    } catch (err) {
+      handleFirestoreError(err, OperationType.UPDATE, `rooms/${this.activeRoomId}`);
+    }
+  }
+
+  public async stopMatch(): Promise<void> {
+    if (this.transport === 'ws') {
+      await this.waitForSocketOpen();
+      this.sendRaw({ type: 'room:stop_match' });
+      return;
+    }
+
+    if (!this.activeRoomId) return;
+    try {
+      const snap = await getDoc(doc(db, 'rooms', this.activeRoomId));
+      if (!snap.exists()) return;
+      const cur = snap.data() as NetPlayRoom;
+      await updateDoc(doc(db, 'rooms', this.activeRoomId), {
+        status: cur.hostReady && cur.guestReady ? 'ready' : 'waiting',
+        updatedAt: new Date().toISOString(),
+      });
+    } catch (err) {
+      handleFirestoreError(err, OperationType.UPDATE, `rooms/${this.activeRoomId}`);
+    }
+  }
+
+  public async leaveRoom(roomId?: string, playerUid?: string): Promise<void> {
+    const targetId = roomId || this.activeRoomId;
+    const targetUid = playerUid || auth.currentUser?.uid;
+    this.activeRoom = null;
+    this.activeRoomId = null;
+    this.prevRoomStatus = null;
+    this.messages = [];
+
+    if (this.transport === 'ws') {
+      if (this.ws && this.ws.readyState === WebSocket.OPEN) {
+        this.sendRaw({ type: 'room:leave' });
+      }
+      return;
+    }
+
+    if (!targetId || !auth.currentUser) return;
+    const roomRef = doc(db, 'rooms', targetId);
+    try {
+      const snap = await getDoc(roomRef);
+      if (!snap.exists()) return;
+      const cur = snap.data() as NetPlayRoom;
+      if (cur.hostUid === targetUid || cur.hostUid === auth.currentUser.uid) {
+        await deleteDoc(roomRef);
+      } else if (cur.guestUid === targetUid || cur.guestUid === auth.currentUser.uid) {
+        await updateDoc(roomRef, {
+          guestUid: null,
+          guestName: null,
+          guestAvatar: null,
+          guestReady: false,
+          status: 'waiting',
+          updatedAt: new Date().toISOString(),
+        });
+      }
+    } catch {
+      // Best-effort cleanup
+    }
+  }
+
+  // ==================== CLOUD FIRESTORE LISTENERS ====================
+
+  private startCloudRoomListener(roomId: string): void {
+    if (this.cloudRoomUnsubs.has(roomId) || !isFirestoreReachable()) return;
+    const unsub = onSnapshot(
+      doc(db, 'rooms', roomId),
+      (snap) => {
+        if (!snap.exists()) {
+          this.notifyRoomListeners(roomId, null);
+          return;
+        }
+        const room = snap.data() as NetPlayRoom;
+        if (room.status === 'closed') {
+          this.notifyRoomListeners(roomId, null);
+          return;
+        }
+        const wasPlaying = this.prevRoomStatus === 'playing';
+        if (this.activeRoomId === roomId) {
+          this.activeRoom = room;
+          this.prevRoomStatus = room.status;
+        }
+        this.notifyRoomListeners(roomId, room);
+
+        if (room.status === 'playing' && !wasPlaying) {
+          this.launchListeners.forEach((cb) => cb(room));
+        }
+      },
+      (err) => {
+        if ((err as any)?.code === 'permission-denied') {
+          handleFirestoreError(err, OperationType.GET, `rooms/${roomId}`);
+        }
+      }
+    );
+    this.cloudRoomUnsubs.set(roomId, unsub);
+  }
+
+  private startCloudPublicRoomsListener(): void {
+    if (this.cloudPublicUnsub || !isFirestoreReachable()) return;
+    const q = query(collection(db, 'rooms'), where('isPublic', '==', true));
+    this.cloudPublicUnsub = onSnapshot(
+      q,
+      (snap) => {
+        const list: NetPlayRoom[] = [];
+        const cutoffMs = Date.now() - 6 * 60 * 60 * 1000;
+        snap.forEach((d) => {
+          const r = d.data() as NetPlayRoom;
+          const updatedAtMs = r.updatedAt ? new Date(r.updatedAt).getTime() : Date.now();
+          if (r.status !== 'closed' && updatedAtMs > cutoffMs) {
+            list.push(r);
+          }
+        });
+        list.sort((a, b) => new Date(b.updatedAt || 0).getTime() - new Date(a.updatedAt || 0).getTime());
+        this.publicRooms = list;
+        this.publicRoomsListeners.forEach((cb) => cb(list));
+      },
+      (err) => {
+        if ((err as any)?.code === 'permission-denied') {
+          handleFirestoreError(err, OperationType.LIST, 'rooms');
+        }
+      }
+    );
+  }
+
+  private startCloudMessagesListener(roomId: string): void {
+    if (this.cloudMsgUnsubs.has(roomId) || !isFirestoreReachable()) return;
+    const q = query(collection(db, 'rooms', roomId, 'messages'), orderBy('timestamp', 'asc'));
+    const unsub = onSnapshot(
+      q,
+      (snap) => {
+        const msgs: ChatMessage[] = [];
+        snap.forEach((d) => msgs.push(d.data() as ChatMessage));
+        if (this.activeRoomId === roomId) {
+          this.messages = msgs;
+        }
+        this.notifyMessageListeners(roomId, msgs);
+      },
+      (err) => {
+        if ((err as any)?.code === 'permission-denied') {
+          handleFirestoreError(err, OperationType.LIST, `rooms/${roomId}/messages`);
+        }
+      }
+    );
+    this.cloudMsgUnsubs.set(roomId, unsub);
+  }
+
+  private startCloudSignalsListener(roomId: string): void {
+    if (this.cloudSigUnsubs.has(roomId) || !isFirestoreReachable()) return;
+    const q = query(collection(db, 'rooms', roomId, 'signals'), orderBy('createdAt', 'asc'));
+    const unsub = onSnapshot(
+      q,
+      (snap) => {
+        snap.docChanges().forEach((change) => {
+          if (change.type !== 'added') return;
+          const sig = change.doc.data() as SignalingMessage;
+          if (!sig || this.seenSignalIds.has(sig.id)) return;
+          this.seenSignalIds.add(sig.id);
+          const listeners = this.signalListeners.get(roomId);
+          if (listeners) {
+            listeners.forEach((cb) => cb(sig));
+          }
+        });
+      },
+      (err) => {
+        if ((err as any)?.code === 'permission-denied') {
+          handleFirestoreError(err, OperationType.LIST, `rooms/${roomId}/signals`);
+        }
+      }
+    );
+    this.cloudSigUnsubs.set(roomId, unsub);
+  }
+
+  // ==================== SUBSCRIPTIONS ====================
+
   public subscribeToRoom(
     roomId: string,
     onUpdate: (room: NetPlayRoom | null) => void,
@@ -485,12 +951,21 @@ export class RoomService {
     if (this.activeRoom && this.activeRoom.id === roomId) {
       onUpdate(this.activeRoom);
     }
+    if (this.transport === 'cloud-p2p') {
+      this.startCloudRoomListener(roomId);
+    }
+
     return () => {
-      this.roomListeners.get(roomId)?.delete(onUpdate);
+      const set = this.roomListeners.get(roomId);
+      set?.delete(onUpdate);
+      if (set && set.size === 0) {
+        this.roomListeners.delete(roomId);
+        this.cloudRoomUnsubs.get(roomId)?.();
+        this.cloudRoomUnsubs.delete(roomId);
+      }
     };
   }
 
-  // 8. Subscribe to public rooms lobby
   public subscribeToPublicRooms(
     onUpdate: (rooms: NetPlayRoom[]) => void,
     _onError?: (err: unknown) => void
@@ -499,28 +974,55 @@ export class RoomService {
     this.lobbySubscribed = true;
     this.publicRoomsListeners.add(onUpdate);
     onUpdate(this.publicRooms);
-    this.sendRaw({ type: 'lobby:subscribe' });
+
+    if (this.transport === 'ws') {
+      this.sendRaw({ type: 'lobby:subscribe' });
+    } else if (this.transport === 'cloud-p2p') {
+      this.startCloudPublicRoomsListener();
+    }
 
     return () => {
       this.publicRoomsListeners.delete(onUpdate);
       if (this.publicRoomsListeners.size === 0) {
         this.lobbySubscribed = false;
         this.sendRaw({ type: 'lobby:unsubscribe' });
+        if (this.cloudPublicUnsub) {
+          this.cloudPublicUnsub();
+          this.cloudPublicUnsub = null;
+        }
       }
     };
   }
 
-  // 9. Send in-room chat message
-  public async sendChatMessage(_roomId: string, text: string, sender?: PlayerProfile): Promise<void> {
-    await this.waitForSocketOpen();
-    this.sendRaw({
-      type: 'room:chat',
-      text,
-      senderAvatar: sender?.photoURL,
-    });
+  public async sendChatMessage(roomId: string, text: string, sender?: PlayerProfile): Promise<void> {
+    if (this.transport === 'ws') {
+      await this.waitForSocketOpen();
+      this.sendRaw({
+        type: 'room:chat',
+        text,
+        senderAvatar: sender?.photoURL,
+      });
+      return;
+    }
+
+    if (!auth.currentUser) return;
+    const msgId = `msg-${Date.now()}-${Math.random().toString(36).substring(2, 6)}`;
+    const msg: ChatMessage = {
+      id: msgId,
+      roomId,
+      senderUid: auth.currentUser.uid,
+      senderName: auth.currentUser.displayName || sender?.displayName || 'Player',
+      senderAvatar: auth.currentUser.photoURL || undefined,
+      text: text.trim().slice(0, 500),
+      timestamp: new Date().toISOString(),
+    };
+    try {
+      await setDoc(doc(db, 'rooms', roomId, 'messages', msgId), msg);
+    } catch (err) {
+      handleFirestoreError(err, OperationType.CREATE, `rooms/${roomId}/messages/${msgId}`);
+    }
   }
 
-  // 10. Subscribe to chat messages stream
   public subscribeToMessages(
     roomId: string,
     onUpdate: (messages: ChatMessage[]) => void,
@@ -534,23 +1036,51 @@ export class RoomService {
     if (this.activeRoomId === roomId) {
       onUpdate(this.messages);
     }
+    if (this.transport === 'cloud-p2p') {
+      this.startCloudMessagesListener(roomId);
+    }
+
     return () => {
-      this.messageListeners.get(roomId)?.delete(onUpdate);
+      const set = this.messageListeners.get(roomId);
+      set?.delete(onUpdate);
+      if (set && set.size === 0) {
+        this.messageListeners.delete(roomId);
+        this.cloudMsgUnsubs.get(roomId)?.();
+        this.cloudMsgUnsubs.delete(roomId);
+      }
     };
   }
 
-  // 11. Send WebRTC Signaling
-  public async sendSignal(_roomId: string, signal: Omit<SignalingMessage, 'id' | 'createdAt'>): Promise<void> {
-    await this.waitForSocketOpen();
-    this.sendRaw({
-      type: 'room:signal',
+  public async sendSignal(roomId: string, signal: Omit<SignalingMessage, 'id' | 'createdAt'>): Promise<void> {
+    if (this.transport === 'ws') {
+      await this.waitForSocketOpen();
+      this.sendRaw({
+        type: 'room:signal',
+        targetUid: signal.targetUid,
+        signalType: signal.type,
+        payload: signal.payload,
+      });
+      return;
+    }
+
+    if (!auth.currentUser) return;
+    const sigId = `sig-${Date.now()}-${Math.random().toString(36).substring(2, 6)}`;
+    const docData: SignalingMessage = {
+      id: sigId,
+      roomId,
+      senderUid: auth.currentUser.uid,
       targetUid: signal.targetUid,
-      signalType: signal.type,
-      payload: signal.payload,
-    });
+      type: signal.type,
+      payload: signal.payload.slice(0, 50000),
+      createdAt: new Date().toISOString(),
+    };
+    try {
+      await setDoc(doc(db, 'rooms', roomId, 'signals', sigId), docData);
+    } catch (err) {
+      handleFirestoreError(err, OperationType.CREATE, `rooms/${roomId}/signals/${sigId}`);
+    }
   }
 
-  // 12. Subscribe to WebRTC Signaling
   public subscribeToSignals(
     roomId: string,
     userUid: string,
@@ -566,8 +1096,18 @@ export class RoomService {
       }
     };
     this.signalListeners.get(roomId)!.add(handler);
+    if (this.transport === 'cloud-p2p') {
+      this.startCloudSignalsListener(roomId);
+    }
+
     return () => {
-      this.signalListeners.get(roomId)?.delete(handler);
+      const set = this.signalListeners.get(roomId);
+      set?.delete(handler);
+      if (set && set.size === 0) {
+        this.signalListeners.delete(roomId);
+        this.cloudSigUnsubs.get(roomId)?.();
+        this.cloudSigUnsubs.delete(roomId);
+      }
     };
   }
 
@@ -577,7 +1117,15 @@ export class RoomService {
   }
 
   public reportPing(pingMs: number): void {
-    this.sendRaw({ type: 'room:ping_report', pingMs });
+    if (this.transport === 'ws') {
+      this.sendRaw({ type: 'room:ping_report', pingMs });
+    } else if (this.activeRoomId && auth.currentUser && this.activeRoom) {
+      const field =
+        this.activeRoom.hostUid === auth.currentUser.uid
+          ? { hostPingMs: Math.round(pingMs) }
+          : { guestPingMs: Math.round(pingMs), pingMs: Math.round(pingMs) };
+      updateDoc(doc(db, 'rooms', this.activeRoomId), field).catch(() => {});
+    }
   }
 
   public sendRelayInput(mask: number, seq: number): void {

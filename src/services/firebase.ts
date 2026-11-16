@@ -62,13 +62,31 @@ export function handleFirestoreError(error: unknown, operationType: OperationTyp
   throw new Error(JSON.stringify(errInfo));
 }
 
+let firestoreReachable = true;
+
+export const isFirestoreReachable = (): boolean => firestoreReachable;
+
 // Connection test on boot as required by skill
 export async function testConnection() {
   try {
     await getDocFromServer(doc(db, 'test', 'connection'));
-  } catch (error) {
-    if (error instanceof Error && error.message.includes('the client is offline')) {
-      console.warn("Firestore client is offline or network restricted.");
+    firestoreReachable = true;
+  } catch (error: any) {
+    const code = error?.code || '';
+    const msg = error instanceof Error ? error.message : String(error);
+    if (code === 'permission-denied') {
+      // Security rules answered from server -> database is provisioned and online
+      firestoreReachable = true;
+      return;
+    }
+    if (code === 'not-found' || msg.includes('Database') || msg.includes('not found')) {
+      firestoreReachable = false;
+      console.warn('Firestore database not provisioned; using local IndexedDB storage.');
+      return;
+    }
+    if (msg.includes('the client is offline') || code === 'unavailable') {
+      firestoreReachable = false;
+      console.warn('Firestore client is offline or network restricted.');
     }
   }
 }
