@@ -11,8 +11,12 @@ service cloud.firestore {
       return request.auth != null;
     }
 
+    function isVerifiedUser() {
+      return isSignedIn() && request.auth.token.email_verified == true;
+    }
+
     function isOwner(userId) {
-      return isSignedIn() && request.auth.uid == userId;
+      return isVerifiedUser() && request.auth.uid == userId;
     }
 
     function isValidId(id) {
@@ -25,6 +29,22 @@ service cloud.firestore {
 
     function existing() {
       return resource.data;
+    }
+
+    function isValidRoom(data) {
+      return data.id is string && data.id.size() > 0 && data.id.size() <= 128
+        && data.code is string && data.code.size() > 0 && data.code.size() <= 50
+        && data.hostUid is string && data.hostUid.size() > 0 && data.hostUid.size() <= 128
+        && data.hostName is string && data.hostName.size() > 0 && data.hostName.size() <= 100
+        && (data.guestUid == null || (data.guestUid is string && data.guestUid.size() > 0 && data.guestUid.size() <= 128))
+        && (data.guestName == null || (data.guestName is string && data.guestName.size() <= 100))
+        && data.gameId is string && data.gameId.size() > 0 && data.gameId.size() <= 128
+        && data.gameTitle is string && data.gameTitle.size() > 0 && data.gameTitle.size() <= 150
+        && data.platform is string && data.platform.size() > 0 && data.platform.size() <= 50
+        && data.status in ['waiting', 'ready', 'playing', 'closed']
+        && data.isPublic is bool
+        && data.hostReady is bool
+        && data.guestReady is bool;
     }
 
     // User Profile
@@ -50,35 +70,98 @@ service cloud.firestore {
     }
 
     // Multiplayer NetPlay Rooms
+    // Host requires verified Google Sign-In; Guests joining via invite link do not require login
+    // and are strictly prevented from changing hostUid or game selection.
     match /rooms/{roomId} {
       allow get: if true;
       allow list: if resource.data.isPublic == true || (isSignedIn() && (resource.data.hostUid == request.auth.uid || resource.data.guestUid == request.auth.uid));
-      allow create: if isSignedIn()
+
+      allow create: if isVerifiedUser()
         && isValidId(roomId)
+        && isValidRoom(incoming())
         && incoming().hostUid == request.auth.uid
-        && incoming().status in ['waiting', 'ready', 'playing', 'closed'];
-      allow update: if isSignedIn()
-        && (
-          existing().hostUid == request.auth.uid ||
-          existing().guestUid == request.auth.uid ||
-          (existing().guestUid == null && incoming().guestUid == request.auth.uid) ||
-          incoming().guestUid == null
-        );
-      allow delete: if isSignedIn() && existing().hostUid == request.auth.uid;
+        && incoming().guestUid == null
+        && incoming().status in ['waiting', 'ready', 'playing'];
+
+      allow update: if isValidId(roomId) && isValidRoom(incoming()) && (
+        // Tier 1: Verified Host actions
+        (
+          isVerifiedUser()
+          && existing().hostUid == request.auth.uid
+          && incoming().hostUid == existing().hostUid
+          && incoming().createdAt == existing().createdAt
+          && incoming().diff(existing()).affectedKeys().hasOnly([
+            'hostReady', 'status', 'gameId', 'gameTitle', 'platform',
+            'hostPingMs', 'pingMs', 'guestUid', 'guestName', 'guestAvatar', 'guestReady', 'updatedAt'
+          ])
+        )
+        ||
+        // Tier 2: Invited Guest joining vacant Port 2 (cannot alter game or host)
+        (
+          existing().status != 'closed'
+          && existing().guestUid == null
+          && incoming().guestUid is string
+          && incoming().guestUid != existing().hostUid
+          && incoming().hostUid == existing().hostUid
+          && incoming().gameId == existing().gameId
+          && incoming().gameTitle == existing().gameTitle
+          && incoming().platform == existing().platform
+          && incoming().isPublic == existing().isPublic
+          && incoming().createdAt == existing().createdAt
+          && incoming().diff(existing()).affectedKeys().hasOnly([
+            'guestUid', 'guestName', 'guestAvatar', 'guestReady', 'status', 'updatedAt'
+          ])
+        )
+        ||
+        // Tier 3: Active Guest state updates (ready, ping, leave Port 2 — cannot alter game or host)
+        (
+          existing().status != 'closed'
+          && existing().guestUid is string
+          && incoming().hostUid == existing().hostUid
+          && incoming().gameId == existing().gameId
+          && incoming().gameTitle == existing().gameTitle
+          && incoming().platform == existing().platform
+          && incoming().isPublic == existing().isPublic
+          && incoming().createdAt == existing().createdAt
+          && (incoming().guestUid == existing().guestUid || incoming().guestUid == null)
+          && incoming().diff(existing()).affectedKeys().hasOnly([
+            'guestReady', 'status', 'guestPingMs', 'pingMs', 'guestUid', 'guestName', 'guestAvatar', 'updatedAt'
+          ])
+        )
+      );
+
+      allow delete: if isVerifiedUser() && existing().hostUid == request.auth.uid;
 
       match /messages/{messageId} {
         allow read: if true;
-        allow create: if isSignedIn()
-          && incoming().senderUid == request.auth.uid
-          && incoming().text is string && incoming().text.size() <= 500;
+        allow create: if isValidId(messageId)
+          && exists(/databases/$(database)/documents/rooms/$(roomId))
+          && incoming().roomId == roomId
+          && incoming().senderUid is string && incoming().senderUid.size() > 0 && incoming().senderUid.size() <= 128
+          && incoming().senderName is string && incoming().senderName.size() <= 100
+          && incoming().text is string && incoming().text.size() > 0 && incoming().text.size() <= 500
+          && (
+            (incoming().senderUid == get(/databases/$(database)/documents/rooms/$(roomId)).data.hostUid && isVerifiedUser() && request.auth.uid == incoming().senderUid)
+            ||
+            (get(/databases/$(database)/documents/rooms/$(roomId)).data.guestUid is string && incoming().senderUid == get(/databases/$(database)/documents/rooms/$(roomId)).data.guestUid)
+          );
         allow update, delete: if false;
       }
 
       match /signals/{signalId} {
         allow read: if true;
-        allow create: if isSignedIn()
-          && incoming().senderUid == request.auth.uid
-          && incoming().payload is string && incoming().payload.size() <= 50000;
+        allow create: if isValidId(signalId)
+          && exists(/databases/$(database)/documents/rooms/$(roomId))
+          && incoming().roomId == roomId
+          && incoming().senderUid is string && incoming().senderUid.size() > 0 && incoming().senderUid.size() <= 128
+          && incoming().targetUid is string && incoming().targetUid.size() > 0 && incoming().targetUid.size() <= 128
+          && incoming().type in ['offer', 'answer', 'candidate']
+          && incoming().payload is string && incoming().payload.size() > 0 && incoming().payload.size() <= 50000
+          && (
+            (incoming().senderUid == get(/databases/$(database)/documents/rooms/$(roomId)).data.hostUid && isVerifiedUser() && request.auth.uid == incoming().senderUid)
+            ||
+            (get(/databases/$(database)/documents/rooms/$(roomId)).data.guestUid is string && incoming().senderUid == get(/databases/$(database)/documents/rooms/$(roomId)).data.guestUid)
+          );
         allow update, delete: if false;
       }
     }

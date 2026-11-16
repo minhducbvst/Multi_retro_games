@@ -49,6 +49,8 @@ export default function App() {
   const [netplayRoomId, setNetplayRoomId] = useState<string | undefined>(undefined);
   const [preselectedNetplayGameId, setPreselectedNetplayGameId] = useState<string | undefined>(undefined);
   const [netplaySession, setNetplaySession] = useState<ActiveNetplayLaunch | null>(null);
+  const [lockedGuestSession, setLockedGuestSession] = useState<ActiveNetplayLaunch | null>(null);
+  const [showGuestStandbyCard, setShowGuestStandbyCard] = useState<boolean>(false);
 
   // User State (Clean production: starts empty, populates on user actions)
   const [favorites, setFavorites] = useState<string[]>(() => {
@@ -74,9 +76,10 @@ export default function App() {
     romStorage.init();
   }, []);
 
-  // Global ⌘K / Ctrl+K keyboard shortcut listener for Search
+  // Global ⌘K / Ctrl+K keyboard shortcut listener for Search (disabled in locked Guest invite mode)
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
+      if (lockedGuestSession) return;
       if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 'k') {
         e.preventDefault();
         setSearchModalOpen((prev) => !prev);
@@ -84,7 +87,7 @@ export default function App() {
     };
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
-  }, []);
+  }, [lockedGuestSession]);
 
   const handleToggleFavorite = (gameId: string) => {
     setFavorites((prev) => {
@@ -157,6 +160,11 @@ export default function App() {
   };
 
   const handleNavigate = (tab: string, param?: string) => {
+    // Locked Guest invited via link cannot browse Library or select another game
+    if (lockedGuestSession) {
+      return;
+    }
+
     if (tab === 'game-detail' && param) {
       setSelectedGameId(param);
       setActiveView('game-detail');
@@ -187,6 +195,13 @@ export default function App() {
   };
 
   const handleLeaveNetplayMatch = () => {
+    if (lockedGuestSession) {
+      setNetplaySession(null);
+      setShowGuestStandbyCard(true);
+      setActiveView('main');
+      return;
+    }
+
     if (!netplaySession) {
       setActiveView(selectedGameId ? 'game-detail' : 'main');
       return;
@@ -209,15 +224,21 @@ export default function App() {
         onNavigate={handleNavigate}
         searchQuery={searchQuery}
         onSearchChange={(q) => {
+          if (lockedGuestSession) return;
           setSearchQuery(q);
           setSearchModalOpen(true);
         }}
+        guestLockedRoom={
+          lockedGuestSession
+            ? { code: lockedGuestSession.room.code, gameTitle: lockedGuestSession.room.gameTitle }
+            : null
+        }
       />
 
       {/* 2. Main Body Grid */}
       <div className="flex-1 flex overflow-hidden">
-        {/* Side Navigation Rail (Hidden when actively in Emulator page to give full screen focus) */}
-        {activeView !== 'emulator' && (
+        {/* Side Navigation Rail (Hidden in Emulator & Locked Guest Invite Mode) */}
+        {activeView !== 'emulator' && !lockedGuestSession && (
           <aside className="hidden lg:block w-64 xl:w-72 border-r border-[#494454]/20 bg-[#16171e]/70 shrink-0 overflow-y-auto">
             <SideNavBar
               currentTab={activeView === 'netplay' ? 'rooms' : currentTab}
@@ -293,9 +314,18 @@ export default function App() {
                 setNetplaySession(launch);
                 setSelectedGameId(launch.room.gameId);
                 setNetplayRoomId(launch.room.id);
+                if (launch.lockToRoom && launch.role !== 'host') {
+                  setLockedGuestSession(launch);
+                  setShowGuestStandbyCard(false);
+                }
                 setActiveView('emulator');
               }}
               onLeaveRoom={() => {
+                if (lockedGuestSession) {
+                  setShowGuestStandbyCard(true);
+                  setActiveView('main');
+                  return;
+                }
                 setNetplayRoomId(undefined);
                 setInitialRoomCode(undefined);
                 setPreselectedNetplayGameId(undefined);
@@ -306,8 +336,41 @@ export default function App() {
             />
           )}
 
-          {/* View 4: Main Tabs (Dashboard, Settings, Saves, Vault, Profile, Changelog) */}
-          {activeView === 'main' && (
+          {/* View 4: Locked Guest Invite Standby Screen (Never allows picking other games) */}
+          {activeView === 'main' && lockedGuestSession && showGuestStandbyCard && (
+            <div className="min-h-[65vh] flex items-center justify-center p-4">
+              <div className="max-w-md w-full bg-[#191b22] border border-[#4cd7f6]/40 rounded-2xl p-7 text-center space-y-5 shadow-2xl">
+                <div className="w-16 h-16 mx-auto rounded-2xl bg-[#4cd7f6]/10 border border-[#4cd7f6]/30 flex items-center justify-center text-[#4cd7f6]">
+                  <span className="material-symbols-outlined text-3xl">sports_esports</span>
+                </div>
+                <div className="space-y-1.5">
+                  <span className="px-2.5 py-0.5 rounded-full bg-[#a078ff]/20 border border-[#a078ff]/40 text-[#d0bcff] font-mono text-[10px] font-bold">
+                    PHÒNG MỜI #{lockedGuestSession.room.code}
+                  </span>
+                  <h2 className="font-headline font-bold text-xl text-white pt-1">
+                    {lockedGuestSession.room.gameTitle}
+                  </h2>
+                  <p className="text-xs font-mono text-[#958ea0] leading-relaxed">
+                    Bạn đang tham gia bằng link mời ở chế độ Port 2. Trò chơi được cố định theo Chủ phòng ({lockedGuestSession.room.hostName}) và không thể đổi sang game khác.
+                  </p>
+                </div>
+                <button
+                  onClick={() => {
+                    setNetplaySession(lockedGuestSession);
+                    setShowGuestStandbyCard(false);
+                    setActiveView('emulator');
+                  }}
+                  className="w-full py-3 px-5 rounded-xl bg-[#4cd7f6] hover:bg-[#70e0f8] text-[#003641] font-mono font-bold text-xs shadow-lg shadow-[#4cd7f6]/20 flex items-center justify-center gap-2 cursor-pointer"
+                >
+                  <span className="material-symbols-outlined text-base">play_arrow</span>
+                  Quay Lại Màn Hình Chơi
+                </button>
+              </div>
+            </div>
+          )}
+
+          {/* View 4B: Main Tabs (Blocked when in Locked Guest Invite Mode) */}
+          {activeView === 'main' && !lockedGuestSession && (
             <>
               {(currentTab === 'browse' || currentTab === 'library' || currentTab === 'favorites' || currentTab === 'recent') && (
                 <DashboardPage

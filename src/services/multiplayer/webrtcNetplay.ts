@@ -99,6 +99,7 @@ interface PeerLink {
   controlChannel: RTCDataChannel;
   makingOffer: boolean;
   ignoreOffer: boolean;
+  needsRenegotiate: boolean;
   pendingCandidates: RTCIceCandidateInit[];
   lastBytesRecv: number;
   lastBytesSent: number;
@@ -259,7 +260,11 @@ export class WebRTCNetplayManager {
           offerToReceiveAudio: this.role !== 'host',
           offerToReceiveVideo: this.role !== 'host',
         });
-        if (link.pc.signalingState !== 'stable') return;
+        if (link.pc.signalingState !== 'stable') {
+          link.needsRenegotiate = true;
+          return;
+        }
+        link.needsRenegotiate = false;
         const tunedOffer: RTCSessionDescriptionInit = {
           type: offer.type,
           sdp: offer.sdp ? optimizeSdpForLowLatency(offer.sdp) : offer.sdp,
@@ -308,7 +313,11 @@ export class WebRTCNetplayManager {
     for (const [peerUid, link] of this.peers.entries()) {
       this.syncTracksOnPeer(link);
       if (this.role === 'host') {
-        await this.connectToPeer(peerUid, true);
+        if (link.pc.signalingState !== 'stable') {
+          link.needsRenegotiate = true;
+        } else {
+          await this.connectToPeer(peerUid, true);
+        }
       }
     }
   }
@@ -374,6 +383,7 @@ export class WebRTCNetplayManager {
       controlChannel,
       makingOffer: false,
       ignoreOffer: false,
+      needsRenegotiate: false,
       pendingCandidates: [],
       lastBytesRecv: 0,
       lastBytesSent: 0,
@@ -547,6 +557,9 @@ export class WebRTCNetplayManager {
             type: 'answer',
             payload: JSON.stringify(pc.localDescription),
           });
+        } else if (desc.type === 'answer' && link.needsRenegotiate && this.role === 'host') {
+          link.needsRenegotiate = false;
+          this.connectToPeer(sig.senderUid, true);
         }
       } else if (sig.type === 'candidate') {
         const cand = JSON.parse(sig.payload) as RTCIceCandidateInit;

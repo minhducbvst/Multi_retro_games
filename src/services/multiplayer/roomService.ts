@@ -556,15 +556,20 @@ export class RoomService {
   // ==================== PUBLIC API (DUAL-MODE WS + CLOUD FIRESTORE P2P) ====================
 
   public async createRoom(input: CreateRoomInput): Promise<NetPlayRoom> {
+    await auth.authStateReady();
+    if (!auth.currentUser || auth.currentUser.isAnonymous) {
+      throw new Error('Máy tạo phòng (Host) cần bấm "Đăng nhập Google" để tạo phòng chơi.');
+    }
+
     const mode = await this.detectTransport();
     const profile = getOrCreatePlayerProfile();
 
     if (mode === 'ws') {
       return this.request<NetPlayRoom>({
         type: 'room:create',
-        hostUid: profile.uid,
-        hostName: input.hostName || profile.displayName,
-        hostAvatar: profile.photoURL,
+        hostUid: auth.currentUser.uid,
+        hostName: input.hostName || auth.currentUser.displayName || profile.displayName,
+        hostAvatar: auth.currentUser.photoURL || profile.photoURL,
         gameId: input.gameId,
         gameTitle: input.gameTitle,
         platform: input.platform,
@@ -575,35 +580,32 @@ export class RoomService {
     }
 
     // Cloud Firestore P2P mode (Vercel / Static CDN)
-    if (!auth.currentUser) {
-      throw new Error('Vui lòng bấm "Đăng nhập Google" ở thanh trên cùng để tạo phòng chơi Online qua Cloud P2P.');
-    }
-
-    const roomId = `room-${Date.now()}-${Math.random().toString(36).substring(2, 6)}`;
     const code = generateRoomCode(input.platform);
+    const roomId = code; // Using room code as doc ID enables direct `get` for both public & private invites without login
     const now = new Date().toISOString();
+    const hostDisplayName = (input.hostName || auth.currentUser.displayName || profile.displayName).slice(0, 100);
     const newRoom: NetPlayRoom = {
       id: roomId,
       code,
       hostUid: auth.currentUser.uid,
-      hostName: input.hostName || auth.currentUser.displayName || profile.displayName,
+      hostName: hostDisplayName,
       hostAvatar: auth.currentUser.photoURL || undefined,
       guestUid: null,
       guestName: null,
       guestAvatar: null,
       gameId: input.gameId,
-      gameTitle: input.gameTitle,
+      gameTitle: input.gameTitle.slice(0, 150),
       platform: input.platform,
       status: 'waiting',
       isPublic: input.isPublic !== undefined ? input.isPublic : true,
-      hostReady: false,
+      hostReady: true,
       guestReady: false,
       pingMs: 0,
       hostPingMs: 0,
       spectators: [],
       rollbackFrames: input.rollbackFrames || 1,
       inputDelayTarget: input.inputDelayTarget || '0-1 Frame (Sub-16ms)',
-      pauseAuthority: `Host Only (${input.hostName || profile.displayName})`,
+      pauseAuthority: `Host Only (${hostDisplayName})`,
       createdAt: now,
       updatedAt: now,
     };
@@ -622,6 +624,7 @@ export class RoomService {
   }
 
   public async joinRoomByCode(code: string, player?: PlayerProfile): Promise<NetPlayRoom> {
+    await auth.authStateReady();
     const mode = await this.detectTransport();
     const profile = player || getOrCreatePlayerProfile();
 
@@ -635,27 +638,35 @@ export class RoomService {
       });
     }
 
-    // Cloud Firestore P2P mode
-    if (!auth.currentUser) {
-      throw new Error('Vui lòng bấm "Đăng nhập Google" ở thanh trên cùng để vào phòng chơi Online qua Cloud P2P.');
-    }
-
+    // Cloud Firestore P2P mode: Guests can join via invite link WITHOUT Google Sign-In
     const clean = code.trim();
     const upper = clean.toUpperCase();
-    let targetId = clean;
+    let targetId = upper;
     let roomData: NetPlayRoom | null = null;
 
     try {
-      const directSnap = await getDoc(doc(db, 'rooms', clean));
-      if (directSnap.exists()) {
-        targetId = directSnap.id;
-        roomData = directSnap.data() as NetPlayRoom;
-      } else {
-        const q = query(collection(db, 'rooms'), where('code', '==', upper));
-        const qSnap = await getDocs(q);
-        if (!qSnap.empty) {
-          targetId = qSnap.docs[0].id;
-          roomData = qSnap.docs[0].data() as NetPlayRoom;
+      const upperSnap = await getDoc(doc(db, 'rooms', upper));
+      if (upperSnap.exists()) {
+        targetId = upperSnap.id;
+        roomData = upperSnap.data() as NetPlayRoom;
+      } else if (clean !== upper) {
+        const cleanSnap = await getDoc(doc(db, 'rooms', clean));
+        if (cleanSnap.exists()) {
+          targetId = cleanSnap.id;
+          roomData = cleanSnap.data() as NetPlayRoom;
+        }
+      }
+
+      if (!roomData) {
+        try {
+          const q = query(collection(db, 'rooms'), where('code', '==', upper));
+          const qSnap = await getDocs(q);
+          if (!qSnap.empty) {
+            targetId = qSnap.docs[0].id;
+            roomData = qSnap.docs[0].data() as NetPlayRoom;
+          }
+        } catch {
+          // Query on private legacy rooms fails safely
         }
       }
 
@@ -663,9 +674,9 @@ export class RoomService {
         throw new Error(`Không tìm thấy phòng có mã "${code}" hoặc phòng đã đóng.`);
       }
 
-      const uid = auth.currentUser.uid;
-      const displayName = auth.currentUser.displayName || profile.displayName;
-      const photoURL = auth.currentUser.photoURL || null;
+      const uid = auth.currentUser?.uid || profile.uid;
+      const displayName = (auth.currentUser?.displayName || profile.displayName || 'Khách Port 2').slice(0, 100);
+      const photoURL = auth.currentUser?.photoURL || null;
 
       if (roomData.hostUid === uid) {
         this.activeRoom = roomData;
@@ -675,11 +686,18 @@ export class RoomService {
       }
 
       if (!roomData.guestUid || roomData.guestUid === uid) {
-        const updatedFields = {
+        const nextStatus: NetPlayRoom['status'] =
+          roomData.status === 'playing'
+            ? 'playing'
+            : roomData.hostReady
+            ? 'ready'
+            : 'waiting';
+        const updatedFields: Partial<NetPlayRoom> = {
           guestUid: uid,
           guestName: displayName,
           guestAvatar: photoURL,
-          guestReady: false,
+          guestReady: true,
+          status: nextStatus,
           updatedAt: new Date().toISOString(),
         };
         await updateDoc(doc(db, 'rooms', targetId), updatedFields);
@@ -789,7 +807,7 @@ export class RoomService {
 
   public async leaveRoom(roomId?: string, playerUid?: string): Promise<void> {
     const targetId = roomId || this.activeRoomId;
-    const targetUid = playerUid || auth.currentUser?.uid;
+    const targetUid = playerUid || auth.currentUser?.uid || getOrCreatePlayerProfile().uid;
     this.activeRoom = null;
     this.activeRoomId = null;
     this.prevRoomStatus = null;
@@ -802,21 +820,21 @@ export class RoomService {
       return;
     }
 
-    if (!targetId || !auth.currentUser) return;
+    if (!targetId) return;
     const roomRef = doc(db, 'rooms', targetId);
     try {
       const snap = await getDoc(roomRef);
       if (!snap.exists()) return;
       const cur = snap.data() as NetPlayRoom;
-      if (cur.hostUid === targetUid || cur.hostUid === auth.currentUser.uid) {
+      if (auth.currentUser && cur.hostUid === auth.currentUser.uid) {
         await deleteDoc(roomRef);
-      } else if (cur.guestUid === targetUid || cur.guestUid === auth.currentUser.uid) {
+      } else if (cur.guestUid === targetUid) {
         await updateDoc(roomRef, {
           guestUid: null,
           guestName: null,
           guestAvatar: null,
           guestReady: false,
-          status: 'waiting',
+          status: cur.status === 'ready' ? 'waiting' : cur.status,
           updatedAt: new Date().toISOString(),
         });
       }
@@ -1005,14 +1023,16 @@ export class RoomService {
       return;
     }
 
-    if (!auth.currentUser) return;
+    const profile = sender || getOrCreatePlayerProfile();
+    const senderUid = auth.currentUser?.uid || profile.uid;
+    const senderName = (auth.currentUser?.displayName || profile.displayName || 'Player').slice(0, 100);
     const msgId = `msg-${Date.now()}-${Math.random().toString(36).substring(2, 6)}`;
     const msg: ChatMessage = {
       id: msgId,
       roomId,
-      senderUid: auth.currentUser.uid,
-      senderName: auth.currentUser.displayName || sender?.displayName || 'Player',
-      senderAvatar: auth.currentUser.photoURL || undefined,
+      senderUid,
+      senderName,
+      ...(auth.currentUser?.photoURL ? { senderAvatar: auth.currentUser.photoURL } : {}),
       text: text.trim().slice(0, 500),
       timestamp: new Date().toISOString(),
     };
@@ -1063,12 +1083,12 @@ export class RoomService {
       return;
     }
 
-    if (!auth.currentUser) return;
+    const senderUid = signal.senderUid || auth.currentUser?.uid || getOrCreatePlayerProfile().uid;
     const sigId = `sig-${Date.now()}-${Math.random().toString(36).substring(2, 6)}`;
     const docData: SignalingMessage = {
       id: sigId,
       roomId,
-      senderUid: auth.currentUser.uid,
+      senderUid,
       targetUid: signal.targetUid,
       type: signal.type,
       payload: signal.payload.slice(0, 50000),
@@ -1119,12 +1139,17 @@ export class RoomService {
   public reportPing(pingMs: number): void {
     if (this.transport === 'ws') {
       this.sendRaw({ type: 'room:ping_report', pingMs });
-    } else if (this.activeRoomId && auth.currentUser && this.activeRoom) {
+    } else if (this.activeRoomId && this.activeRoom) {
+      const uid = auth.currentUser?.uid || getOrCreatePlayerProfile().uid;
       const field =
-        this.activeRoom.hostUid === auth.currentUser.uid
-          ? { hostPingMs: Math.round(pingMs) }
-          : { guestPingMs: Math.round(pingMs), pingMs: Math.round(pingMs) };
-      updateDoc(doc(db, 'rooms', this.activeRoomId), field).catch(() => {});
+        this.activeRoom.hostUid === uid
+          ? { hostPingMs: Math.round(pingMs), updatedAt: new Date().toISOString() }
+          : this.activeRoom.guestUid === uid
+          ? { guestPingMs: Math.round(pingMs), pingMs: Math.round(pingMs), updatedAt: new Date().toISOString() }
+          : null;
+      if (field) {
+        updateDoc(doc(db, 'rooms', this.activeRoomId), field).catch(() => {});
+      }
     }
   }
 

@@ -673,11 +673,17 @@ export const EmulatorPage: React.FC<EmulatorPageProps> = ({
         return;
       }
       setLiveRoom(updated);
-      if (updated.status !== 'playing' && updated.status !== 'closed' && role !== 'host') {
-        showToast('Chủ phòng đã kết thúc trận đấu và đưa phòng về sảnh chờ.');
-        netplaySession.onLeaveMatch();
-        return;
-      }
+      setGame((prev) =>
+        prev.id === updated.gameId && prev.title === updated.gameTitle && prev.platform === updated.platform
+          ? prev
+          : {
+              ...prev,
+              id: updated.gameId,
+              title: updated.gameTitle,
+              platform: updated.platform,
+            }
+      );
+
       if (role === 'host') {
         if (updated.guestUid) webrtcNetplay.connectToPeer(updated.guestUid, true);
         for (const s of updated.spectators || []) {
@@ -925,24 +931,24 @@ export const EmulatorPage: React.FC<EmulatorPageProps> = ({
         return;
       }
 
-      // 3. Global hotkeys
-      if (e.code === 'Space' && (e.target === document.body || e.target === canvasRef.current)) {
+      // 3. Global hotkeys (Host/Single-player only for Pause/Save/Load/Rewind/FastForward)
+      if (!isNetplayGuestOrSpec && e.code === 'Space' && (e.target === document.body || e.target === canvasRef.current)) {
         e.preventDefault();
         togglePlayPause();
         return;
-      } else if (e.code === 'F2') {
+      } else if (!isNetplayGuestOrSpec && e.code === 'F2') {
         e.preventDefault();
         triggerQuickSave();
         return;
-      } else if (e.code === 'F4') {
+      } else if (!isNetplayGuestOrSpec && e.code === 'F4') {
         e.preventDefault();
         triggerQuickLoad();
         return;
-      } else if (e.code === 'Backspace' && (e.target === document.body || e.target === canvasRef.current)) {
+      } else if (!isNetplayGuestOrSpec && e.code === 'Backspace' && (e.target === document.body || e.target === canvasRef.current)) {
         e.preventDefault();
         triggerRewind();
         return;
-      } else if (e.code === 'Tab') {
+      } else if (!isNetplayGuestOrSpec && e.code === 'Tab') {
         e.preventDefault();
         cycleFastForward();
         return;
@@ -964,27 +970,27 @@ export const EmulatorPage: React.FC<EmulatorPageProps> = ({
       const sys = getTargetSystem();
       const customAction = inputConfigService.getVirtualButtonForKeyboard(e.code, sys);
       if (customAction) {
-        if (customAction === 'quickSave') {
+        if (!isNetplayGuestOrSpec && customAction === 'quickSave') {
           triggerQuickSave();
           e.preventDefault();
           return;
         }
-        if (customAction === 'quickLoad') {
+        if (!isNetplayGuestOrSpec && customAction === 'quickLoad') {
           triggerQuickLoad();
           e.preventDefault();
           return;
         }
-        if (customAction === 'rewind') {
+        if (!isNetplayGuestOrSpec && customAction === 'rewind') {
           triggerRewind();
           e.preventDefault();
           return;
         }
-        if (customAction === 'fastForward') {
+        if (!isNetplayGuestOrSpec && customAction === 'fastForward') {
           cycleFastForward();
           e.preventDefault();
           return;
         }
-        if (customAction === 'pause') {
+        if (!isNetplayGuestOrSpec && customAction === 'pause') {
           togglePlayPause();
           e.preventDefault();
           return;
@@ -1478,14 +1484,16 @@ export const EmulatorPage: React.FC<EmulatorPageProps> = ({
               <span className="hidden md:inline">{visualSettings.filter}</span>
             </button>
 
-            {/* Settings */}
-            <button
-              onClick={onOpenSettings}
-              className="p-1 sm:p-1.5 text-[#cbc3d7] hover:text-white hover:bg-[#282a30] rounded-lg transition-colors"
-              title="Cài đặt & Phím bấm"
-            >
-              <span className="material-symbols-outlined text-base sm:text-lg">tune</span>
-            </button>
+            {/* Settings (Hidden for Guest so Guest stays locked to the room) */}
+            {!isNetplayGuestOrSpec && (
+              <button
+                onClick={onOpenSettings}
+                className="p-1 sm:p-1.5 text-[#cbc3d7] hover:text-white hover:bg-[#282a30] rounded-lg transition-colors"
+                title="Cài đặt & Phím bấm"
+              >
+                <span className="material-symbols-outlined text-base sm:text-lg">tune</span>
+              </button>
+            )}
 
             {/* Fullscreen */}
             <button
@@ -1564,13 +1572,18 @@ export const EmulatorPage: React.FC<EmulatorPageProps> = ({
                   />
                 )}
 
-                {!hasRemoteVideo && !relayFrameUrl && (
-                  <div className="absolute inset-0 bg-[#0c0e14]/90 flex flex-col items-center justify-center gap-3 z-20 p-6 text-center">
+                {((liveRoom && liveRoom.status !== 'playing') || (!hasRemoteVideo && !relayFrameUrl)) && (
+                  <div className="absolute inset-0 bg-[#0c0e14]/92 flex flex-col items-center justify-center gap-3 z-20 p-6 text-center">
                     <div className="w-12 h-12 rounded-full border-2 border-[#4cd7f6] border-t-transparent animate-spin"></div>
                     <p className="text-sm font-mono text-[#4cd7f6] font-bold">
-                      Đang nhận luồng hình ảnh từ Host ({liveRoom?.hostName || 'Player 1'})...
+                      {liveRoom && liveRoom.status !== 'playing'
+                        ? `Đã vào Port 2 Phòng #${liveRoom.code} — Chờ Host (${liveRoom.hostName}) bắt đầu trận đấu...`
+                        : `Đang nhận luồng hình ảnh từ Host (${liveRoom?.hostName || 'Player 1'})...`}
                     </p>
-                    <p className="text-xs font-mono text-[#958ea0] max-w-md">
+                    <p className="text-xs font-mono text-[#cbc3d7]">
+                      Trò chơi cố định: <span className="text-white font-bold">{game.title}</span> ({game.platform})
+                    </p>
+                    <p className="text-[11px] font-mono text-[#958ea0] max-w-md">
                       Trạng thái ICE: {netplayStats.iceConnectionState} • Kênh: {netplayStats.transportMode}
                     </p>
                   </div>
@@ -1781,80 +1794,91 @@ export const EmulatorPage: React.FC<EmulatorPageProps> = ({
             <div className="w-full max-w-[920px] mt-2.5 px-3 py-2 rounded-xl bg-[#191b22]/90 backdrop-blur-xl border border-[#494454]/30 shadow-2xl flex flex-wrap items-center justify-between gap-2 z-20">
               {/* Left Sub-Cluster */}
               <div className="flex items-center gap-1.5">
-                <button
-                  onClick={togglePlayPause}
-                  className="h-8 w-8 rounded-lg bg-[#a078ff]/30 border border-[#a078ff]/50 text-[#d0bcff] hover:bg-[#a078ff] hover:text-[#340080] flex items-center justify-center active:scale-95 transition-all glow-violet"
-                  title="Pause / Resume (Space)"
-                >
-                  <span className="material-symbols-outlined text-base fill-icon">
-                    {isPaused ? 'play_arrow' : 'pause'}
-                  </span>
-                </button>
+                {!isNetplayGuestOrSpec ? (
+                  <>
+                    <button
+                      onClick={togglePlayPause}
+                      className="h-8 w-8 rounded-lg bg-[#a078ff]/30 border border-[#a078ff]/50 text-[#d0bcff] hover:bg-[#a078ff] hover:text-[#340080] flex items-center justify-center active:scale-95 transition-all glow-violet"
+                      title="Pause / Resume (Space)"
+                    >
+                      <span className="material-symbols-outlined text-base fill-icon">
+                        {isPaused ? 'play_arrow' : 'pause'}
+                      </span>
+                    </button>
 
-                <button
-                  onClick={() => triggerRewind(10)}
-                  className="h-8 px-2.5 rounded-lg bg-[#1e1f26] border border-[#494454]/30 text-[#cbc3d7] hover:text-[#4cd7f6] hover:border-[#4cd7f6] flex items-center gap-1 active:scale-95 transition-all font-mono text-xs"
-                  title="Rewind 10s (Backspace)"
-                >
-                  <span className="material-symbols-outlined text-sm">replay_10</span>
-                  <span className="hidden sm:inline">-10s</span>
-                </button>
+                    <button
+                      onClick={() => triggerRewind(10)}
+                      className="h-8 px-2.5 rounded-lg bg-[#1e1f26] border border-[#494454]/30 text-[#cbc3d7] hover:text-[#4cd7f6] hover:border-[#4cd7f6] flex items-center gap-1 active:scale-95 transition-all font-mono text-xs"
+                      title="Rewind 10s (Backspace)"
+                    >
+                      <span className="material-symbols-outlined text-sm">replay_10</span>
+                      <span className="hidden sm:inline">-10s</span>
+                    </button>
 
-                <button
-                  onClick={cycleFastForward}
-                  className={`h-8 px-2.5 rounded-lg border font-mono text-xs flex items-center gap-1 active:scale-95 transition-all ${
-                    fastForwardSpeed > 1
-                      ? 'bg-[#03b5d3]/20 border-[#4cd7f6] text-[#4cd7f6] glow-cyan'
-                      : 'bg-[#1e1f26] border-[#494454]/30 text-[#cbc3d7]'
-                  }`}
-                  title="Fast Forward (Tab)"
-                >
-                  <span className="material-symbols-outlined text-sm">fast_forward</span>
-                  <span>{fastForwardSpeed}x</span>
-                </button>
+                    <button
+                      onClick={cycleFastForward}
+                      className={`h-8 px-2.5 rounded-lg border font-mono text-xs flex items-center gap-1 active:scale-95 transition-all ${
+                        fastForwardSpeed > 1
+                          ? 'bg-[#03b5d3]/20 border-[#4cd7f6] text-[#4cd7f6] glow-cyan'
+                          : 'bg-[#1e1f26] border-[#494454]/30 text-[#cbc3d7]'
+                      }`}
+                      title="Fast Forward (Tab)"
+                    >
+                      <span className="material-symbols-outlined text-sm">fast_forward</span>
+                      <span>{fastForwardSpeed}x</span>
+                    </button>
 
-                <div className="h-4 w-px bg-[#494454]/30 mx-1"></div>
+                    <div className="h-4 w-px bg-[#494454]/30 mx-1"></div>
 
-                <button
-                  onClick={triggerQuickSave}
-                  className="h-8 px-2.5 rounded-lg bg-[#1e1f26] border border-[#494454]/30 text-[#e2e2eb] hover:border-emerald-500 hover:text-emerald-400 flex items-center gap-1 active:scale-95 transition-all font-mono text-xs"
-                  title="Quick Save (F2)"
-                >
-                  <span className="material-symbols-outlined text-sm text-emerald-400">save</span>
-                  <span>Save <span className="text-[#958ea0] text-[10px]">F2</span></span>
-                </button>
+                    <button
+                      onClick={triggerQuickSave}
+                      className="h-8 px-2.5 rounded-lg bg-[#1e1f26] border border-[#494454]/30 text-[#e2e2eb] hover:border-emerald-500 hover:text-emerald-400 flex items-center gap-1 active:scale-95 transition-all font-mono text-xs"
+                      title="Quick Save (F2)"
+                    >
+                      <span className="material-symbols-outlined text-sm text-emerald-400">save</span>
+                      <span>Save <span className="text-[#958ea0] text-[10px]">F2</span></span>
+                    </button>
 
-                <button
-                  onClick={triggerQuickLoad}
-                  className="h-8 px-2.5 rounded-lg bg-[#1e1f26] border border-[#494454]/30 text-[#e2e2eb] hover:border-[#4cd7f6] hover:text-[#4cd7f6] flex items-center gap-1 active:scale-95 transition-all font-mono text-xs"
-                  title="Quick Load (F4)"
-                >
-                  <span className="material-symbols-outlined text-sm text-[#4cd7f6]">file_open</span>
-                  <span>Load <span className="text-[#958ea0] text-[10px]">F4</span></span>
-                </button>
+                    <button
+                      onClick={triggerQuickLoad}
+                      className="h-8 px-2.5 rounded-lg bg-[#1e1f26] border border-[#494454]/30 text-[#e2e2eb] hover:border-[#4cd7f6] hover:text-[#4cd7f6] flex items-center gap-1 active:scale-95 transition-all font-mono text-xs"
+                      title="Quick Load (F4)"
+                    >
+                      <span className="material-symbols-outlined text-sm text-[#4cd7f6]">file_open</span>
+                      <span>Load <span className="text-[#958ea0] text-[10px]">F4</span></span>
+                    </button>
+                  </>
+                ) : (
+                  <div className="px-2.5 py-1 rounded-lg bg-[#111319] border border-[#4cd7f6]/30 text-[11px] font-mono text-[#4cd7f6] flex items-center gap-1.5">
+                    <span className="material-symbols-outlined text-sm">lock</span>
+                    <span>Game cố định bởi Host • Điều khiển Port 2</span>
+                  </div>
+                )}
               </div>
 
               {/* Center: Slot & Shader Switcher */}
               <div className="flex items-center gap-2">
-                <div className="flex items-center bg-[#0c0e14] px-1.5 py-0.5 rounded-lg border border-[#494454]/40 text-xs font-mono">
-                  <span className="text-[#958ea0] text-[10px] uppercase px-1">Slot:</span>
-                  {[1, 2, 3].map(slotNum => (
-                    <button
-                      key={slotNum}
-                      onClick={() => {
-                        setCurrentSlot(slotNum);
-                        showToast(`Switched to Save Slot #${slotNum}`);
-                      }}
-                      className={`px-2 py-0.5 rounded text-xs transition-colors ${
-                        currentSlot === slotNum
-                          ? 'bg-[#33343b] text-[#4cd7f6] border border-[#4cd7f6]/50 font-bold'
-                          : 'text-[#958ea0] hover:text-white'
-                      }`}
-                    >
-                      {slotNum}
-                    </button>
-                  ))}
-                </div>
+                {!isNetplayGuestOrSpec && (
+                  <div className="flex items-center bg-[#0c0e14] px-1.5 py-0.5 rounded-lg border border-[#494454]/40 text-xs font-mono">
+                    <span className="text-[#958ea0] text-[10px] uppercase px-1">Slot:</span>
+                    {[1, 2, 3].map(slotNum => (
+                      <button
+                        key={slotNum}
+                        onClick={() => {
+                          setCurrentSlot(slotNum);
+                          showToast(`Switched to Save Slot #${slotNum}`);
+                        }}
+                        className={`px-2 py-0.5 rounded text-xs transition-colors ${
+                          currentSlot === slotNum
+                            ? 'bg-[#33343b] text-[#4cd7f6] border border-[#4cd7f6]/50 font-bold'
+                            : 'text-[#958ea0] hover:text-white'
+                        }`}
+                      >
+                        {slotNum}
+                      </button>
+                    ))}
+                  </div>
+                )}
 
                 {/* Visual Settings Menu Button with Quick Cycle */}
                 <div className="flex items-center bg-[#1e1f26] rounded-lg border border-[#494454]/30 overflow-hidden shadow-sm">
@@ -2022,17 +2046,19 @@ export const EmulatorPage: React.FC<EmulatorPageProps> = ({
                 <span className="material-symbols-outlined text-sm">sports_esports</span>
                 <span>Controls</span>
               </button>
-              <button
-                onClick={() => setInspectorTab('states')}
-                className={`flex-1 py-2 text-center font-mono text-xs flex items-center justify-center gap-1 transition-colors ${
-                  inspectorTab === 'states'
-                    ? 'border-b-2 border-[#4cd7f6] text-[#4cd7f6] font-bold'
-                    : 'text-[#cbc3d7] hover:text-white'
-                }`}
-              >
-                <span className="material-symbols-outlined text-sm">save</span>
-                <span>States</span>
-              </button>
+              {!isNetplayGuestOrSpec && (
+                <button
+                  onClick={() => setInspectorTab('states')}
+                  className={`flex-1 py-2 text-center font-mono text-xs flex items-center justify-center gap-1 transition-colors ${
+                    inspectorTab === 'states'
+                      ? 'border-b-2 border-[#4cd7f6] text-[#4cd7f6] font-bold'
+                      : 'text-[#cbc3d7] hover:text-white'
+                  }`}
+                >
+                  <span className="material-symbols-outlined text-sm">save</span>
+                  <span>States</span>
+                </button>
+              )}
               <button
                 onClick={() => setInspectorTab('visuals')}
                 className={`flex-1 py-2 text-center font-mono text-xs flex items-center justify-center gap-1 transition-colors ${
@@ -2044,17 +2070,19 @@ export const EmulatorPage: React.FC<EmulatorPageProps> = ({
                 <span className="material-symbols-outlined text-sm text-[#d0bcff]">display_settings</span>
                 <span>Visuals</span>
               </button>
-              <button
-                onClick={() => setInspectorTab('cheats')}
-                className={`flex-1 py-2 text-center font-mono text-xs flex items-center justify-center gap-1 transition-colors ${
-                  inspectorTab === 'cheats'
-                    ? 'border-b-2 border-[#4cd7f6] text-[#4cd7f6] font-bold'
-                    : 'text-[#cbc3d7] hover:text-white'
-                }`}
-              >
-                <span className="material-symbols-outlined text-sm">terminal</span>
-                <span>Cheats</span>
-              </button>
+              {!isNetplayGuestOrSpec && (
+                <button
+                  onClick={() => setInspectorTab('cheats')}
+                  className={`flex-1 py-2 text-center font-mono text-xs flex items-center justify-center gap-1 transition-colors ${
+                    inspectorTab === 'cheats'
+                      ? 'border-b-2 border-[#4cd7f6] text-[#4cd7f6] font-bold'
+                      : 'text-[#cbc3d7] hover:text-white'
+                  }`}
+                >
+                  <span className="material-symbols-outlined text-sm">terminal</span>
+                  <span>Cheats</span>
+                </button>
+              )}
             </div>
 
             {/* Scrollable Body */}

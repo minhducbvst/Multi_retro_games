@@ -196,34 +196,12 @@ function detachClientFromRoom(client: ConnectedClient, immediate: boolean): void
     if (record.clients.has(client.uid)) return;
 
     if (currentRoom.hostUid === client.uid) {
-      if (currentRoom.guestUid) {
-        const promotedUid = currentRoom.guestUid;
-        const promotedName = currentRoom.guestName || 'Player 1';
-        currentRoom.hostUid = promotedUid;
-        currentRoom.hostName = promotedName;
-        currentRoom.hostAvatar = currentRoom.guestAvatar ?? undefined;
-        currentRoom.hostReady = currentRoom.guestReady;
-        currentRoom.hostPingMs = currentRoom.guestPingMs;
-        currentRoom.guestUid = null;
-        currentRoom.guestName = null;
-        currentRoom.guestAvatar = null;
-        currentRoom.guestReady = false;
-        currentRoom.guestPingMs = undefined;
-        currentRoom.status = 'waiting';
-        currentRoom.pauseAuthority = `Host Only (${promotedName})`;
-        currentRoom.updatedAt = new Date().toISOString();
-
-        addSystemMessage(record, `Host đã rời phòng. ${promotedName} được chuyển quyền làm Host (Port 1).`);
-        broadcastToRoom(record, { type: 'room:state', room: currentRoom });
-        broadcastLobbyRooms();
-      } else {
-        currentRoom.status = 'closed';
-        currentRoom.updatedAt = new Date().toISOString();
-        broadcastToRoom(record, { type: 'room:closed', roomId: currentRoom.id });
-        codeToRoomId.delete(currentRoom.code);
-        rooms.delete(currentRoom.id);
-        broadcastLobbyRooms();
-      }
+      currentRoom.status = 'closed';
+      currentRoom.updatedAt = new Date().toISOString();
+      broadcastToRoom(record, { type: 'room:closed', roomId: currentRoom.id });
+      codeToRoomId.delete(currentRoom.code);
+      rooms.delete(currentRoom.id);
+      broadcastLobbyRooms();
     } else if (currentRoom.guestUid === client.uid) {
       const leftName = currentRoom.guestName || 'Challenger';
       currentRoom.guestUid = null;

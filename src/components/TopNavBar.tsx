@@ -10,13 +10,15 @@ interface TopNavBarProps {
   onNavigate: (tab: string, param?: string) => void;
   searchQuery: string;
   onSearchChange: (q: string) => void;
+  guestLockedRoom?: { code: string; gameTitle: string } | null;
 }
 
 export const TopNavBar: React.FC<TopNavBarProps> = ({
   currentTab,
   onNavigate,
   searchQuery,
-  onSearchChange
+  onSearchChange,
+  guestLockedRoom = null,
 }) => {
   const games = useLibraryStore();
   const [currentUser, setCurrentUser] = useState<User | null>(null);
@@ -72,8 +74,12 @@ export const TopNavBar: React.FC<TopNavBarProps> = ({
       {/* Brand Logo & Version */}
       <div className="flex items-center gap-4 lg:gap-6">
         <button
-          onClick={() => onNavigate('browse')}
-          className="font-headline-lg text-xl lg:text-2xl tracking-wider text-[#d0bcff] flex items-center gap-2 uppercase font-bold focus:outline-none"
+          onClick={() => {
+            if (!guestLockedRoom) onNavigate('browse');
+          }}
+          className={`font-headline-lg text-xl lg:text-2xl tracking-wider text-[#d0bcff] flex items-center gap-2 uppercase font-bold focus:outline-none ${
+            guestLockedRoom ? 'cursor-default' : 'cursor-pointer'
+          }`}
         >
           <span className="w-9 h-9 rounded-lg bg-[#33343b] border border-[#494454]/40 flex items-center justify-center text-[#4cd7f6] shadow-sm">
             <span className="material-symbols-outlined fill-icon text-xl">sports_esports</span>
@@ -87,77 +93,91 @@ export const TopNavBar: React.FC<TopNavBarProps> = ({
         </span>
       </div>
 
-      {/* Center Search Bar */}
-      <div className="hidden lg:flex items-center flex-1 max-w-lg mx-6">
-        <div className="relative w-full">
-          <div className="absolute inset-y-0 left-0 pl-3 flex items-center pointer-events-none text-[#958ea0]">
-            <span className="material-symbols-outlined text-sm">search</span>
-          </div>
-          <input
-            className="w-full pl-9 pr-12 py-1.5 rounded-lg bg-[#191b22] border border-[#494454]/40 text-[#e2e2eb] placeholder:text-[#958ea0] font-mono text-xs focus:outline-none focus:border-[#4cd7f6] focus:ring-1 focus:ring-[#4cd7f6]/50 transition-all duration-150"
-            placeholder="Tìm kiếm trò chơi trong thư viện... (Ctrl+K)"
-            type="text"
-            value={searchQuery}
-            onChange={(e) => onSearchChange(e.target.value)}
-          />
-          <div className="absolute inset-y-0 right-0 pr-2.5 flex items-center">
-            <kbd className="px-1.5 py-0.5 text-[10px] font-mono text-[#958ea0] bg-[#1e1f26] border border-[#494454]/40 rounded">
-              ⌘K
-            </kbd>
+      {/* Center Search Bar (Hidden in Invited Guest Locked Mode) */}
+      {!guestLockedRoom ? (
+        <div className="hidden lg:flex items-center flex-1 max-w-lg mx-6">
+          <div className="relative w-full">
+            <div className="absolute inset-y-0 left-0 pl-3 flex items-center pointer-events-none text-[#958ea0]">
+              <span className="material-symbols-outlined text-sm">search</span>
+            </div>
+            <input
+              className="w-full pl-9 pr-12 py-1.5 rounded-lg bg-[#191b22] border border-[#494454]/40 text-[#e2e2eb] placeholder:text-[#958ea0] font-mono text-xs focus:outline-none focus:border-[#4cd7f6] focus:ring-1 focus:ring-[#4cd7f6]/50 transition-all duration-150"
+              placeholder="Tìm kiếm trò chơi trong thư viện... (Ctrl+K)"
+              type="text"
+              value={searchQuery}
+              onChange={(e) => onSearchChange(e.target.value)}
+            />
+            <div className="absolute inset-y-0 right-0 pr-2.5 flex items-center">
+              <kbd className="px-1.5 py-0.5 text-[10px] font-mono text-[#958ea0] bg-[#1e1f26] border border-[#494454]/40 rounded">
+                ⌘K
+              </kbd>
+            </div>
           </div>
         </div>
-      </div>
+      ) : (
+        <div className="hidden md:flex items-center gap-2 px-3.5 py-1.5 rounded-full bg-[#191b22] border border-[#4cd7f6]/35 font-mono text-xs">
+          <span className="w-2 h-2 rounded-full bg-emerald-400 animate-pulse"></span>
+          <span className="text-[#4cd7f6] font-bold">Phòng #{guestLockedRoom.code}</span>
+          <span className="text-[#494454]">•</span>
+          <span className="text-white truncate max-w-[220px]">{guestLockedRoom.gameTitle}</span>
+          <span className="px-1.5 py-0.5 rounded bg-[#a078ff]/20 text-[#d0bcff] text-[10px]">Khách Port 2</span>
+        </div>
+      )}
 
       {/* Navigation Links & Profile Actions */}
       <div className="flex items-center gap-3 lg:gap-4">
-        <nav className="hidden xl:flex items-center gap-6 mr-2">
-          <button
-            onClick={() => onNavigate('browse')}
-            className={`font-mono text-xs pb-1 transition-colors ${
-              currentTab === 'browse'
-                ? 'text-[#4cd7f6] border-b-2 border-[#4cd7f6]'
-                : 'text-[#cbc3d7] hover:text-white'
-            }`}
-          >
-            Browse
-          </button>
-          <button
-            onClick={() => onNavigate('rooms')}
-            className={`font-mono text-xs pb-1 transition-colors ${
-              currentTab === 'rooms'
-                ? 'text-[#4cd7f6] border-b-2 border-[#4cd7f6]'
-                : 'text-[#cbc3d7] hover:text-white'
-            }`}
-          >
-            Rooms
-          </button>
-          <button
-            onClick={() => onNavigate('saves')}
-            className={`font-mono text-xs pb-1 transition-colors ${
-              currentTab === 'saves'
-                ? 'text-[#4cd7f6] border-b-2 border-[#4cd7f6]'
-                : 'text-[#cbc3d7] hover:text-white'
-            }`}
-          >
-            Cloud Vault
-          </button>
-        </nav>
+        {!guestLockedRoom && (
+          <nav className="hidden xl:flex items-center gap-6 mr-2">
+            <button
+              onClick={() => onNavigate('browse')}
+              className={`font-mono text-xs pb-1 transition-colors ${
+                currentTab === 'browse'
+                  ? 'text-[#4cd7f6] border-b-2 border-[#4cd7f6]'
+                  : 'text-[#cbc3d7] hover:text-white'
+              }`}
+            >
+              Browse
+            </button>
+            <button
+              onClick={() => onNavigate('rooms')}
+              className={`font-mono text-xs pb-1 transition-colors ${
+                currentTab === 'rooms'
+                  ? 'text-[#4cd7f6] border-b-2 border-[#4cd7f6]'
+                  : 'text-[#cbc3d7] hover:text-white'
+              }`}
+            >
+              Rooms
+            </button>
+            <button
+              onClick={() => onNavigate('saves')}
+              className={`font-mono text-xs pb-1 transition-colors ${
+                currentTab === 'saves'
+                  ? 'text-[#4cd7f6] border-b-2 border-[#4cd7f6]'
+                  : 'text-[#cbc3d7] hover:text-white'
+              }`}
+            >
+              Cloud Vault
+            </button>
+          </nav>
+        )}
 
         {/* Cloud Sync Status Pill */}
-        <button
-          onClick={() => onNavigate('saves')}
-          className="hidden sm:flex items-center gap-2 px-3 py-1 rounded-full bg-[#282a30] border border-[#494454]/30 hover:border-[#4cd7f6] transition-colors cursor-pointer"
-          title="Xem kho lưu trữ Cloud & bản lưu Pin SRAM"
-        >
-          <span className="relative flex h-2 w-2">
-            <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-[#4cd7f6] opacity-75"></span>
-            <span className="relative inline-flex rounded-full h-2 w-2 bg-[#4cd7f6]"></span>
-          </span>
-          <span className="material-symbols-outlined text-[#4cd7f6] text-sm fill-icon">cloud_done</span>
-          <span className="font-mono text-[11px] text-[#cbc3d7]">
-            {currentUser ? `Đồng bộ: ${totalStorageText}` : `Bộ nhớ máy: ${totalStorageText}`}
-          </span>
-        </button>
+        {!guestLockedRoom && (
+          <button
+            onClick={() => onNavigate('saves')}
+            className="hidden sm:flex items-center gap-2 px-3 py-1 rounded-full bg-[#282a30] border border-[#494454]/30 hover:border-[#4cd7f6] transition-colors cursor-pointer"
+            title="Xem kho lưu trữ Cloud & bản lưu Pin SRAM"
+          >
+            <span className="relative flex h-2 w-2">
+              <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-[#4cd7f6] opacity-75"></span>
+              <span className="relative inline-flex rounded-full h-2 w-2 bg-[#4cd7f6]"></span>
+            </span>
+            <span className="material-symbols-outlined text-[#4cd7f6] text-sm fill-icon">cloud_done</span>
+            <span className="font-mono text-[11px] text-[#cbc3d7]">
+              {currentUser ? `Đồng bộ: ${totalStorageText}` : `Bộ nhớ máy: ${totalStorageText}`}
+            </span>
+          </button>
+        )}
 
         {/* Notifications Icon Button */}
         <div className="relative">
@@ -250,7 +270,7 @@ export const TopNavBar: React.FC<TopNavBarProps> = ({
                 </div>
               </div>
 
-              {!currentUser && (
+              {!guestLockedRoom && !currentUser && (
                 <div className="mb-2">
                   <button
                     onClick={handleGoogleLogin}
@@ -262,38 +282,44 @@ export const TopNavBar: React.FC<TopNavBarProps> = ({
                 </div>
               )}
 
-              <div className="space-y-1">
-                <button
-                  onClick={() => {
-                    onNavigate('saves');
-                    setShowProfileMenu(false);
-                  }}
-                  className="w-full flex items-center gap-2 px-2.5 py-1.5 rounded hover:bg-[#282a30] text-[#cbc3d7] hover:text-white text-left cursor-pointer"
-                >
-                  <span className="material-symbols-outlined text-sm">cloud_sync</span>
-                  <span>Quản lý bản lưu (SRAM & States)</span>
-                </button>
-                <button
-                  onClick={() => {
-                    onNavigate('settings');
-                    setShowProfileMenu(false);
-                  }}
-                  className="w-full flex items-center gap-2 px-2.5 py-1.5 rounded hover:bg-[#282a30] text-[#cbc3d7] hover:text-white text-left cursor-pointer"
-                >
-                  <span className="material-symbols-outlined text-sm">tune</span>
-                  <span>Cài đặt tay cầm & hiển thị</span>
-                </button>
-                <button
-                  onClick={() => {
-                    onNavigate('vault');
-                    setShowProfileMenu(false);
-                  }}
-                  className="w-full flex items-center gap-2 px-2.5 py-1.5 rounded hover:bg-[#282a30] text-[#cbc3d7] hover:text-white text-left cursor-pointer"
-                >
-                  <span className="material-symbols-outlined text-sm">inventory_2</span>
-                  <span>Kho ROM & Quét Google Drive</span>
-                </button>
-              </div>
+              {guestLockedRoom ? (
+                <div className="p-2 rounded bg-[#141620] border border-[#494454]/30 text-[11px] font-mono text-[#958ea0]">
+                  Đang khóa theo phòng mời <span className="text-[#4cd7f6] font-bold">#{guestLockedRoom.code}</span>. Chỉ Chủ phòng mới có quyền đổi game.
+                </div>
+              ) : (
+                <div className="space-y-1">
+                  <button
+                    onClick={() => {
+                      onNavigate('saves');
+                      setShowProfileMenu(false);
+                    }}
+                    className="w-full flex items-center gap-2 px-2.5 py-1.5 rounded hover:bg-[#282a30] text-[#cbc3d7] hover:text-white text-left cursor-pointer"
+                  >
+                    <span className="material-symbols-outlined text-sm">cloud_sync</span>
+                    <span>Quản lý bản lưu (SRAM & States)</span>
+                  </button>
+                  <button
+                    onClick={() => {
+                      onNavigate('settings');
+                      setShowProfileMenu(false);
+                    }}
+                    className="w-full flex items-center gap-2 px-2.5 py-1.5 rounded hover:bg-[#282a30] text-[#cbc3d7] hover:text-white text-left cursor-pointer"
+                  >
+                    <span className="material-symbols-outlined text-sm">tune</span>
+                    <span>Cài đặt tay cầm & hiển thị</span>
+                  </button>
+                  <button
+                    onClick={() => {
+                      onNavigate('vault');
+                      setShowProfileMenu(false);
+                    }}
+                    className="w-full flex items-center gap-2 px-2.5 py-1.5 rounded hover:bg-[#282a30] text-[#cbc3d7] hover:text-white text-left cursor-pointer"
+                  >
+                    <span className="material-symbols-outlined text-sm">inventory_2</span>
+                    <span>Kho ROM & Quét Google Drive</span>
+                  </button>
+                </div>
+              )}
 
               {currentUser && (
                 <div className="pt-2 border-t border-[#494454]/40 mt-2">
