@@ -37,6 +37,8 @@ export interface Game {
   sha1?: string;
   source?: 'local' | 'drive';
   driveFileId?: string;
+  driveFolderId?: string;
+  driveSubfolderName?: string;
   uploadedAt?: string;
 }
 

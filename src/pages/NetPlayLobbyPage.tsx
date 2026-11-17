@@ -76,13 +76,16 @@ export const NetPlayLobbyPage: React.FC<NetPlayLobbyPageProps> = ({
 
   // Create Room Form
   const availableGames = libraryGames.length > 0 ? libraryGames : [ARENA_FALLBACK_GAME];
+  const resolvedInitialGameId =
+    preselectedGameId && preselectedGameId !== '__create__' ? preselectedGameId : undefined;
   const [createGameId, setCreateGameId] = useState<string>(
-    () => preselectedGameId || libraryGames[0]?.id || ARENA_FALLBACK_GAME.id
+    () => resolvedInitialGameId || libraryGames[0]?.id || ARENA_FALLBACK_GAME.id
   );
   const [createPlatform, setCreatePlatform] = useState<Platform>(
     () =>
-      (preselectedGameId ? libraryGames.find((g) => g.id === preselectedGameId)?.platform : libraryGames[0]?.platform) ||
-      'SNES'
+      (resolvedInitialGameId
+        ? libraryGames.find((g) => g.id === resolvedInitialGameId)?.platform
+        : libraryGames[0]?.platform) || 'SNES'
   );
   const [createIsPublic, setCreateIsPublic] = useState<boolean>(true);
   const [createRollback, setCreateRollback] = useState<number>(1);
@@ -116,6 +119,13 @@ export const NetPlayLobbyPage: React.FC<NetPlayLobbyPageProps> = ({
   }, [roomId]);
 
   useEffect(() => {
+    if (preselectedGameId === '__create__') {
+      const fallback = libraryGames[0] || ARENA_FALLBACK_GAME;
+      setCreateGameId(fallback.id);
+      setCreatePlatform(fallback.platform);
+      setShowCreateModal(true);
+      return;
+    }
     if (preselectedGameId) {
       const found = libraryGames.find((g) => g.id === preselectedGameId);
       if (found) {
@@ -203,6 +213,11 @@ export const NetPlayLobbyPage: React.FC<NetPlayLobbyPageProps> = ({
         setRoom(null);
         setActiveRoomId(undefined);
         webrtcNetplay.stopSession();
+        try {
+          if (new URLSearchParams(window.location.search).has('room')) {
+            window.history.replaceState({}, '', window.location.pathname);
+          }
+        } catch {}
         showToast('Phòng chơi đã đóng.');
       }
     });
@@ -234,9 +249,14 @@ export const NetPlayLobbyPage: React.FC<NetPlayLobbyPageProps> = ({
     };
   }, [activeRoomId, playerProfile.uid]);
 
+  const prevLobbyGuestUidRef = useRef<string | null>(null);
+
   // Establish live WebRTC DataChannel peer connection while in Lobby for instant RTT measurement & warm NAT punch!
   useEffect(() => {
-    if (!room) return;
+    if (!room) {
+      prevLobbyGuestUidRef.current = null;
+      return;
+    }
     const myUid = playerProfile.uid;
     const role: 'host' | 'guest' | 'spectator' =
       room.hostUid === myUid ? 'host' : room.guestUid === myUid ? 'guest' : 'spectator';
@@ -244,6 +264,12 @@ export const NetPlayLobbyPage: React.FC<NetPlayLobbyPageProps> = ({
     webrtcNetplay.startSession(room.id, myUid, role);
 
     if (role === 'host') {
+      const prevGuest = prevLobbyGuestUidRef.current;
+      if (prevGuest && prevGuest !== room.guestUid) {
+        webrtcNetplay.disconnectPeer(prevGuest);
+      }
+      prevLobbyGuestUidRef.current = room.guestUid || null;
+
       if (room.guestUid) {
         webrtcNetplay.connectToPeer(room.guestUid, true);
       }
@@ -373,10 +399,11 @@ export const NetPlayLobbyPage: React.FC<NetPlayLobbyPageProps> = ({
         hostName: playerProfile.displayName,
       });
 
-      // Update browser URL cleanly so refreshing keeps or shares room cleanly
+      // Keep Host URL clean so refreshing/exiting never auto-rejoins a deleted room
       try {
-        const nextUrl = `${window.location.pathname}?room=${newRoom.code}`;
-        window.history.replaceState({}, '', nextUrl);
+        if (new URLSearchParams(window.location.search).has('room')) {
+          window.history.replaceState({}, '', window.location.pathname);
+        }
       } catch {}
 
       setActiveRoomId(newRoom.id);
@@ -411,12 +438,14 @@ export const NetPlayLobbyPage: React.FC<NetPlayLobbyPageProps> = ({
       const joinedRoom = await roomService.joinRoomByCode(code, profile);
       pendingInviteCodeRef.current = null;
       const myUid = auth.currentUser?.uid || profile.uid;
-      try {
-        const nextUrl = `${window.location.pathname}?room=${joinedRoom.code}`;
-        window.history.replaceState({}, '', nextUrl);
-      } catch {}
-
       const isJoinedHost = joinedRoom.hostUid === myUid;
+      if (!isJoinedHost) {
+        try {
+          const nextUrl = `${window.location.pathname}?room=${joinedRoom.code}`;
+          window.history.replaceState({}, '', nextUrl);
+        } catch {}
+      }
+
       if (!isJoinedHost && (fromInvite || joinedRoom.status === 'playing')) {
         const myRole: 'host' | 'guest' | 'spectator' =
           joinedRoom.guestUid === myUid ? 'guest' : 'spectator';
@@ -438,6 +467,13 @@ export const NetPlayLobbyPage: React.FC<NetPlayLobbyPageProps> = ({
       showToast(`Đã tham gia phòng ${joinedRoom.code}!`);
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : 'Không tìm thấy phòng với mã này.';
+      if (fromInvite) {
+        try {
+          if (new URLSearchParams(window.location.search).has('room')) {
+            window.history.replaceState({}, '', window.location.pathname);
+          }
+        } catch {}
+      }
       setJoinError(msg);
       showToast(msg);
     } finally {
@@ -1002,22 +1038,39 @@ export const NetPlayLobbyPage: React.FC<NetPlayLobbyPageProps> = ({
                   >
                     {room.guestUid ? (
                       <>
-                        <div className="flex items-center justify-between">
+                        <div className="flex items-center justify-between gap-2">
                           <span className="px-2 py-0.5 rounded bg-[#d0bcff]/10 text-[#d0bcff] border border-[#d0bcff]/30 font-mono text-[10px] font-bold">
                             PORT 2 • CHALLENGER {isGuest ? '(BẠN)' : ''}
                           </span>
-                          <span
-                            className={`px-2 py-0.5 rounded font-mono text-[10px] font-bold flex items-center gap-1 ${
-                              room.guestReady
-                                ? 'bg-emerald-500/10 text-emerald-400 border border-emerald-500/30'
-                                : 'bg-amber-500/10 text-amber-300 border border-amber-500/30'
-                            }`}
-                          >
-                            <span className="material-symbols-outlined text-xs">
-                              {room.guestReady ? 'check' : 'hourglass_empty'}
+                          <div className="flex items-center gap-1.5">
+                            <span
+                              className={`px-2 py-0.5 rounded font-mono text-[10px] font-bold flex items-center gap-1 ${
+                                room.guestReady
+                                  ? 'bg-emerald-500/10 text-emerald-400 border border-emerald-500/30'
+                                  : 'bg-amber-500/10 text-amber-300 border border-amber-500/30'
+                              }`}
+                            >
+                              <span className="material-symbols-outlined text-xs">
+                                {room.guestReady ? 'check' : 'hourglass_empty'}
+                              </span>
+                              {room.guestReady ? 'READY' : 'WAITING'}
                             </span>
-                            {room.guestReady ? 'READY' : 'WAITING'}
-                          </span>
+                            {isHost && (
+                              <button
+                                onClick={async () => {
+                                  if (!room.guestUid) return;
+                                  const oldUid = room.guestUid;
+                                  webrtcNetplay.disconnectPeer(oldUid);
+                                  await roomService.clearGuestSlot(room.id);
+                                  showToast('Đã làm trống Port 2 để bạn mới có thể tham gia.');
+                                }}
+                                title="Làm trống Port 2 (dùng khi khách bị treo kết nối)"
+                                className="p-1 rounded bg-rose-500/10 hover:bg-rose-500/20 text-rose-300 border border-rose-500/30 cursor-pointer"
+                              >
+                                <span className="material-symbols-outlined text-xs">person_remove</span>
+                              </button>
+                            )}
+                          </div>
                         </div>
 
                         <div className="flex items-center gap-3">

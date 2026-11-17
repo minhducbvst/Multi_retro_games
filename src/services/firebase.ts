@@ -13,8 +13,8 @@ export const db = (firebaseConfig as any).firestoreDatabaseId
 export const auth = getAuth(app);
 export const storage = getStorage(app);
 export const googleProvider = new GoogleAuthProvider();
-// Workspace Drive scope for importing ROMs and backup dumps
-googleProvider.addScope('https://www.googleapis.com/auth/drive.readonly');
+// Full Google Drive scope to link a fixed folder, create platform subfolders (NES/SNES/GBA), and upload ROM backups
+googleProvider.addScope('https://www.googleapis.com/auth/drive');
 
 // In-memory cache for OAuth access token (per workspace skill: never in localStorage)
 let cachedAccessToken: string | null = null;

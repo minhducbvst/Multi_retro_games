@@ -1,4 +1,5 @@
 import { auth, db, handleFirestoreError, OperationType, isFirestoreReachable } from '../firebase';
+import firebaseConfig from '../../../firebase-applet-config.json';
 import {
   collection,
   doc,
@@ -41,6 +42,7 @@ export type ServerConnectionStatus =
 export type TransportMode = 'probing' | 'ws' | 'cloud-p2p';
 
 const TAB_UID_KEY = 'retroverse_tab_player_uid';
+const GUEST_DEVICE_UID_KEY = 'retroverse_guest_device_uid';
 const NICKNAME_KEY = 'retroverse_player_nickname';
 
 export function generateRoomCode(platform: Platform): string {
@@ -50,18 +52,21 @@ export function generateRoomCode(platform: Platform): string {
 
 export function getOrCreatePlayerProfile(): PlayerProfile {
   const user = auth.currentUser;
-  let tabUid = '';
+  let guestUid = '';
   let storedNick = '';
 
   try {
-    tabUid = sessionStorage.getItem(TAB_UID_KEY) || '';
-    if (!tabUid) {
-      tabUid = `player-${Date.now().toString(36)}-${Math.random().toString(36).substring(2, 6)}`;
-      sessionStorage.setItem(TAB_UID_KEY, tabUid);
+    // Persist unauthenticated Guest UID in localStorage so closing & re-opening the invite link
+    // in the same browser reclaims the same Port 2 identity instead of creating ghost duplicates.
+    guestUid = localStorage.getItem(GUEST_DEVICE_UID_KEY) || sessionStorage.getItem(TAB_UID_KEY) || '';
+    if (!guestUid) {
+      guestUid = `player-${Date.now().toString(36)}-${Math.random().toString(36).substring(2, 6)}`;
     }
+    localStorage.setItem(GUEST_DEVICE_UID_KEY, guestUid);
+    sessionStorage.setItem(TAB_UID_KEY, guestUid);
     storedNick = localStorage.getItem(NICKNAME_KEY) || '';
   } catch {
-    tabUid = `player-${Math.random().toString(36).substring(2, 8)}`;
+    guestUid = `player-${Math.random().toString(36).substring(2, 8)}`;
   }
 
   if (user) {
@@ -73,11 +78,11 @@ export function getOrCreatePlayerProfile(): PlayerProfile {
   }
 
   if (!storedNick) {
-    storedNick = `Player-${tabUid.slice(-4).toUpperCase()}`;
+    storedNick = `Player-${guestUid.slice(-4).toUpperCase()}`;
   }
 
   return {
-    uid: tabUid,
+    uid: guestUid,
     displayName: storedNick,
   };
 }
@@ -111,6 +116,7 @@ export class RoomService {
 
   private activeRoom: NetPlayRoom | null = null;
   private activeRoomId: string | null = null;
+  private activeLocalUid: string | null = null;
   private prevRoomStatus: string | null = null;
   private messages: ChatMessage[] = [];
   private publicRooms: NetPlayRoom[] = [];
@@ -121,7 +127,8 @@ export class RoomService {
   private cloudRoomUnsubs = new Map<string, Unsubscribe>();
   private cloudMsgUnsubs = new Map<string, Unsubscribe>();
   private cloudSigUnsubs = new Map<string, Unsubscribe>();
-  private seenSignalIds = new Set<string>();
+  private seenSignalIdsByRoom = new Map<string, Set<string>>();
+  private signalSinceByRoom = new Map<string, number>();
 
   private pendingRequests = new Map<string, PendingRequest>();
 
@@ -133,6 +140,149 @@ export class RoomService {
   private launchListeners = new Set<(room: NetPlayRoom) => void>();
   private relayInputListeners = new Set<(mask: number, senderUid: string) => void>();
   private relayFrameListeners = new Set<(frameDataUrl: string) => void>();
+  private cachedIdToken: string | null = null;
+  private unloadListenersAttached = false;
+
+  constructor() {
+    this.initTokenAndUnloadHooks();
+  }
+
+  private initTokenAndUnloadHooks(): void {
+    if (typeof window === 'undefined' || this.unloadListenersAttached) return;
+    this.unloadListenersAttached = true;
+
+    try {
+      auth.onIdTokenChanged(async (user) => {
+        if (user) {
+          try {
+            this.cachedIdToken = await user.getIdToken();
+          } catch {
+            this.cachedIdToken = null;
+          }
+        } else {
+          this.cachedIdToken = null;
+        }
+      });
+    } catch {}
+
+    const handlePageUnload = () => {
+      this.cleanupRoomMembershipOnUnload();
+    };
+    window.addEventListener('pagehide', handlePageUnload);
+    window.addEventListener('beforeunload', handlePageUnload);
+  }
+
+  public getActiveRoom(): NetPlayRoom | null {
+    return this.activeRoom;
+  }
+
+  private cleanupRoomMembershipOnUnload(): void {
+    const room = this.activeRoom;
+    const roomId = room?.id || this.activeRoomId;
+    if (!room || !roomId) return;
+
+    const currentUid = auth.currentUser?.uid || this.activeLocalUid || getOrCreatePlayerProfile().uid;
+    const isHost = Boolean(auth.currentUser?.uid && room.hostUid === auth.currentUser.uid);
+    const isGuest = Boolean(!isHost && currentUid && room.guestUid === currentUid);
+
+    if (!isHost && !isGuest) return;
+
+    // Prevent duplicate execution across beforeunload + pagehide
+    this.activeRoom = null;
+    this.activeRoomId = null;
+    this.activeLocalUid = null;
+    this.prevRoomStatus = null;
+    this.messages = [];
+
+    if (this.transport === 'ws') {
+      this.sendRaw({ type: 'room:leave' });
+      return;
+    }
+
+    const dbId = (firebaseConfig as any).firestoreDatabaseId || '(default)';
+    const baseDocUrl = `https://firestore.googleapis.com/v1/projects/${firebaseConfig.projectId}/databases/${encodeURIComponent(dbId)}/documents/rooms/${encodeURIComponent(roomId)}`;
+
+    if (isHost) {
+      try {
+        deleteDoc(doc(db, 'rooms', roomId)).catch(() => {});
+      } catch {}
+
+      if (this.cachedIdToken) {
+        try {
+          fetch(baseDocUrl, {
+            method: 'DELETE',
+            headers: {
+              Authorization: `Bearer ${this.cachedIdToken}`,
+            },
+            keepalive: true,
+          }).catch(() => {});
+        } catch {}
+      }
+      return;
+    }
+
+    // Guest unload: notify Host and free Port 2 cleanly so Host never sees a stale Ghost guest
+    try {
+      const byeSigId = `sig-${Date.now()}-${Math.random().toString(36).substring(2, 6)}`;
+      const byeSignal = {
+        id: byeSigId,
+        roomId,
+        senderUid: currentUid,
+        targetUid: room.hostUid,
+        type: 'candidate',
+        payload: JSON.stringify({ __retroCtrl: 'bye', payload: 'unload' }),
+        createdAt: new Date().toISOString(),
+      };
+      setDoc(doc(db, 'rooms', roomId, 'signals', byeSigId), byeSignal).catch(() => {});
+    } catch {}
+
+    const nextStatus = room.status === 'ready' ? 'waiting' : room.status;
+    const nowIso = new Date().toISOString();
+
+    try {
+      updateDoc(doc(db, 'rooms', roomId), {
+        guestUid: null,
+        guestName: null,
+        guestAvatar: null,
+        guestReady: false,
+        status: nextStatus,
+        updatedAt: nowIso,
+      }).catch(() => {});
+    } catch {}
+
+    try {
+      const apiKeyParam = firebaseConfig.apiKey ? `key=${encodeURIComponent(firebaseConfig.apiKey)}&` : '';
+      const maskParams = [
+        'guestUid',
+        'guestName',
+        'guestAvatar',
+        'guestReady',
+        'status',
+        'updatedAt',
+      ]
+        .map((f) => `updateMask.fieldPaths=${f}`)
+        .join('&');
+      const headers: Record<string, string> = { 'Content-Type': 'application/json' };
+      if (this.cachedIdToken) {
+        headers.Authorization = `Bearer ${this.cachedIdToken}`;
+      }
+      fetch(`${baseDocUrl}?${apiKeyParam}${maskParams}`, {
+        method: 'PATCH',
+        headers,
+        body: JSON.stringify({
+          fields: {
+            guestUid: { nullValue: null },
+            guestName: { nullValue: null },
+            guestAvatar: { nullValue: null },
+            guestReady: { booleanValue: false },
+            status: { stringValue: nextStatus },
+            updatedAt: { stringValue: nowIso },
+          },
+        }),
+        keepalive: true,
+      }).catch(() => {});
+    } catch {}
+  }
 
   private getDefaultWsUrl(): string {
     const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
@@ -421,6 +571,7 @@ export class RoomService {
       const msgs = Array.isArray(msg.messages) ? (msg.messages as ChatMessage[]) : [];
       this.activeRoom = room;
       this.activeRoomId = room.id;
+      this.activeLocalUid = getOrCreatePlayerProfile().uid;
       this.prevRoomStatus = room.status;
       this.messages = msgs;
 
@@ -611,9 +762,11 @@ export class RoomService {
     };
 
     try {
+      this.cachedIdToken = await auth.currentUser.getIdToken().catch(() => this.cachedIdToken);
       await setDoc(doc(db, 'rooms', roomId), newRoom);
       this.activeRoom = newRoom;
       this.activeRoomId = roomId;
+      this.activeLocalUid = auth.currentUser.uid;
       this.prevRoomStatus = 'waiting';
       this.messages = [];
       return newRoom;
@@ -681,8 +834,39 @@ export class RoomService {
       if (roomData.hostUid === uid) {
         this.activeRoom = roomData;
         this.activeRoomId = targetId;
+        this.activeLocalUid = uid;
         this.prevRoomStatus = roomData.status;
         return roomData;
+      }
+
+      // If previous Guest slot is clearly stale (>45s without heartbeat while in lobby), release it cleanly
+      const updatedMs = roomData.updatedAt ? new Date(roomData.updatedAt).getTime() : 0;
+      const isStaleGuestSlot =
+        Boolean(roomData.guestUid) &&
+        roomData.guestUid !== uid &&
+        roomData.status !== 'playing' &&
+        updatedMs > 0 &&
+        Date.now() - updatedMs > 45_000;
+
+      if (isStaleGuestSlot) {
+        try {
+          await updateDoc(doc(db, 'rooms', targetId), {
+            guestUid: null,
+            guestName: null,
+            guestAvatar: null,
+            guestReady: false,
+            status: 'waiting',
+            updatedAt: new Date().toISOString(),
+          });
+          roomData = {
+            ...roomData,
+            guestUid: null,
+            guestName: null,
+            guestAvatar: null,
+            guestReady: false,
+            status: 'waiting',
+          };
+        } catch {}
       }
 
       if (!roomData.guestUid || roomData.guestUid === uid) {
@@ -706,6 +890,7 @@ export class RoomService {
 
       this.activeRoom = roomData;
       this.activeRoomId = targetId;
+      this.activeLocalUid = uid;
       this.prevRoomStatus = roomData.status;
       return roomData;
     } catch (err: any) {
@@ -717,6 +902,29 @@ export class RoomService {
 
   public async joinRoomById(roomId: string, player?: PlayerProfile): Promise<NetPlayRoom> {
     return this.joinRoomByCode(roomId, player);
+  }
+
+  public async clearGuestSlot(roomId: string): Promise<void> {
+    if (this.transport === 'ws') {
+      await this.waitForSocketOpen();
+      this.sendRaw({ type: 'room:kick_guest' });
+      return;
+    }
+    try {
+      const snap = await getDoc(doc(db, 'rooms', roomId));
+      if (!snap.exists()) return;
+      const cur = snap.data() as NetPlayRoom;
+      await updateDoc(doc(db, 'rooms', roomId), {
+        guestUid: null,
+        guestName: null,
+        guestAvatar: null,
+        guestReady: false,
+        status: cur.status === 'ready' ? 'waiting' : cur.status,
+        updatedAt: new Date().toISOString(),
+      });
+    } catch (err) {
+      handleFirestoreError(err, OperationType.UPDATE, `rooms/${roomId}`);
+    }
   }
 
   public async toggleReady(roomId: string, isHost: boolean, nextReadyState: boolean): Promise<void> {
@@ -806,10 +1014,12 @@ export class RoomService {
   }
 
   public async leaveRoom(roomId?: string, playerUid?: string): Promise<void> {
+    const previousRoom = this.activeRoom;
     const targetId = roomId || this.activeRoomId;
-    const targetUid = playerUid || auth.currentUser?.uid || getOrCreatePlayerProfile().uid;
+    const targetUid = playerUid || auth.currentUser?.uid || this.activeLocalUid || getOrCreatePlayerProfile().uid;
     this.activeRoom = null;
     this.activeRoomId = null;
+    this.activeLocalUid = null;
     this.prevRoomStatus = null;
     this.messages = [];
 
@@ -821,8 +1031,21 @@ export class RoomService {
     }
 
     if (!targetId) return;
+    if (!auth.currentUser) {
+      await auth.authStateReady();
+    }
+
     const roomRef = doc(db, 'rooms', targetId);
+    const knownHost =
+      Boolean(auth.currentUser) &&
+      Boolean(previousRoom && previousRoom.id === targetId && previousRoom.hostUid === auth.currentUser?.uid);
+
     try {
+      if (knownHost) {
+        await deleteDoc(roomRef);
+        return;
+      }
+
       const snap = await getDoc(roomRef);
       if (!snap.exists()) return;
       const cur = snap.data() as NetPlayRoom;
@@ -838,8 +1061,10 @@ export class RoomService {
           updatedAt: new Date().toISOString(),
         });
       }
-    } catch {
-      // Best-effort cleanup
+    } catch (err: any) {
+      if (err?.code === 'permission-denied') {
+        handleFirestoreError(err, OperationType.DELETE, `rooms/${targetId}`);
+      }
     }
   }
 
@@ -930,15 +1155,45 @@ export class RoomService {
 
   private startCloudSignalsListener(roomId: string): void {
     if (this.cloudSigUnsubs.has(roomId) || !isFirestoreReachable()) return;
+    if (!this.seenSignalIdsByRoom.has(roomId)) {
+      this.seenSignalIdsByRoom.set(roomId, new Set<string>());
+    }
+    if (!this.signalSinceByRoom.has(roomId)) {
+      this.signalSinceByRoom.set(roomId, Date.now() - 12_000);
+    }
+
+    const seenSet = this.seenSignalIdsByRoom.get(roomId)!;
+    const sinceMs = this.signalSinceByRoom.get(roomId)!;
+
     const q = query(collection(db, 'rooms', roomId, 'signals'), orderBy('createdAt', 'asc'));
     const unsub = onSnapshot(
       q,
       (snap) => {
         snap.docChanges().forEach((change) => {
           if (change.type !== 'added') return;
-          const sig = change.doc.data() as SignalingMessage;
-          if (!sig || this.seenSignalIds.has(sig.id)) return;
-          this.seenSignalIds.add(sig.id);
+          const rawSig = change.doc.data() as SignalingMessage;
+          if (!rawSig || seenSet.has(rawSig.id)) return;
+          seenSet.add(rawSig.id);
+
+          // Ignore dead historical signals from earlier disconnected sessions
+          const createdMs = rawSig.createdAt ? new Date(rawSig.createdAt).getTime() : Date.now();
+          if (createdMs > 0 && createdMs < sinceMs) return;
+
+          // Unwrap control signals (renegotiate / bye) sent safely through candidate rules
+          let sig = rawSig;
+          if (rawSig.type === 'candidate' && rawSig.payload.includes('__retroCtrl')) {
+            try {
+              const parsed = JSON.parse(rawSig.payload);
+              if (parsed && parsed.__retroCtrl) {
+                sig = {
+                  ...rawSig,
+                  type: parsed.__retroCtrl,
+                  payload: typeof parsed.payload === 'string' ? parsed.payload : JSON.stringify(parsed.payload || {}),
+                };
+              }
+            } catch {}
+          }
+
           const listeners = this.signalListeners.get(roomId);
           if (listeners) {
             listeners.forEach((cb) => cb(sig));
@@ -1083,15 +1338,23 @@ export class RoomService {
       return;
     }
 
-    const senderUid = signal.senderUid || auth.currentUser?.uid || getOrCreatePlayerProfile().uid;
+    const senderUid = signal.senderUid || auth.currentUser?.uid || this.activeLocalUid || getOrCreatePlayerProfile().uid;
     const sigId = `sig-${Date.now()}-${Math.random().toString(36).substring(2, 6)}`;
+
+    // Encode control signals safely under Firestore security rule's allowed types ['offer','answer','candidate']
+    const isCtrlType = signal.type === 'renegotiate' || signal.type === 'bye';
+    const wireType: SignalingMessage['type'] = isCtrlType ? 'candidate' : signal.type;
+    const wirePayload = isCtrlType
+      ? JSON.stringify({ __retroCtrl: signal.type, payload: signal.payload })
+      : signal.payload.slice(0, 50000);
+
     const docData: SignalingMessage = {
       id: sigId,
       roomId,
       senderUid,
       targetUid: signal.targetUid,
-      type: signal.type,
-      payload: signal.payload.slice(0, 50000),
+      type: wireType,
+      payload: wirePayload.slice(0, 50000),
       createdAt: new Date().toISOString(),
     };
     try {
@@ -1109,6 +1372,8 @@ export class RoomService {
     this.ensureConnected();
     if (!this.signalListeners.has(roomId)) {
       this.signalListeners.set(roomId, new Set());
+      this.seenSignalIdsByRoom.set(roomId, new Set<string>());
+      this.signalSinceByRoom.set(roomId, Date.now() - 12_000);
     }
     const handler = (sig: SignalingMessage) => {
       if (sig.senderUid !== userUid) {
@@ -1127,6 +1392,8 @@ export class RoomService {
         this.signalListeners.delete(roomId);
         this.cloudSigUnsubs.get(roomId)?.();
         this.cloudSigUnsubs.delete(roomId);
+        this.seenSignalIdsByRoom.delete(roomId);
+        this.signalSinceByRoom.delete(roomId);
       }
     };
   }

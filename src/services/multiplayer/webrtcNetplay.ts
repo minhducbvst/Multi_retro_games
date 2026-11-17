@@ -64,14 +64,28 @@ export function decodeInputBitmask(mask: number): EmulatorInputState {
   return state;
 }
 
-// Global ICE config for cross-internet NAT traversal
+// Global ICE config for cross-internet NAT traversal (STUN direct first, TURN relay fallback)
 const ICE_CONFIGURATION: RTCConfiguration = {
   iceServers: [
     { urls: 'stun:stun.l.google.com:19302' },
     { urls: 'stun:stun1.l.google.com:19302' },
     { urls: 'stun:stun2.l.google.com:19302' },
-    { urls: 'stun:stun3.l.google.com:19302' },
     { urls: 'stun:global.stun.twilio.com:3478' },
+    {
+      urls: 'turn:openrelay.metered.ca:80',
+      username: 'openrelayproject',
+      credential: 'openrelayproject',
+    },
+    {
+      urls: 'turn:openrelay.metered.ca:443',
+      username: 'openrelayproject',
+      credential: 'openrelayproject',
+    },
+    {
+      urls: 'turn:openrelay.metered.ca:443?transport=tcp',
+      username: 'openrelayproject',
+      credential: 'openrelayproject',
+    },
   ],
   iceCandidatePoolSize: 6,
   bundlePolicy: 'max-bundle',
@@ -97,6 +111,7 @@ interface PeerLink {
   pc: RTCPeerConnection;
   inputChannel: RTCDataChannel;
   controlChannel: RTCDataChannel;
+  frameChannel: RTCDataChannel;
   makingOffer: boolean;
   ignoreOffer: boolean;
   needsRenegotiate: boolean;
@@ -111,6 +126,7 @@ export class WebRTCNetplayManager {
   private roomId: string | null = null;
   private localUid: string = '';
   private role: 'host' | 'guest' | 'spectator' = 'host';
+  private sessionEpoch = 0;
   private peers = new Map<string, PeerLink>();
   private localStream: MediaStream | null = null;
   private remoteStream: MediaStream | null = null;
@@ -118,6 +134,7 @@ export class WebRTCNetplayManager {
   private inputSeq = 0;
   private lastRecvSeq = -1;
   private wsFallbackActive = false;
+  private dcFrameFallbackRequested = false;
 
   private unsubSignals: (() => void) | null = null;
   private unsubRelayInput: (() => void) | null = null;
@@ -149,10 +166,12 @@ export class WebRTCNetplayManager {
     }
     this.stopSession();
 
+    this.sessionEpoch++;
     this.roomId = roomId;
     this.localUid = localUid;
     this.role = role;
     this.wsFallbackActive = false;
+    this.dcFrameFallbackRequested = false;
     this.lastRecvSeq = -1;
     this.updateStats({
       connectionState: 'new',
@@ -199,6 +218,11 @@ export class WebRTCNetplayManager {
   }
 
   public stopSession(): void {
+    const closingRoomId = this.roomId;
+    const closingLocalUid = this.localUid;
+    const peerIds = Array.from(this.peers.keys());
+
+    this.sessionEpoch++;
     if (this.unsubSignals) {
       this.unsubSignals();
       this.unsubSignals = null;
@@ -223,20 +247,44 @@ export class WebRTCNetplayManager {
     for (const peer of this.peers.values()) {
       if (peer.fallbackTimer) clearTimeout(peer.fallbackTimer);
       try {
+        if (peer.controlChannel.readyState === 'open') {
+          peer.controlChannel.send(JSON.stringify({ type: 'peer_bye' }));
+        }
+      } catch {}
+      try {
         peer.inputChannel.close();
       } catch {}
       try {
         peer.controlChannel.close();
       } catch {}
       try {
+        peer.frameChannel.close();
+      } catch {}
+      try {
         peer.pc.close();
       } catch {}
     }
+
+    if (closingRoomId && closingLocalUid && peerIds.length > 0) {
+      for (const peerUid of peerIds) {
+        roomService
+          .sendSignal(closingRoomId, {
+            roomId: closingRoomId,
+            senderUid: closingLocalUid,
+            targetUid: peerUid,
+            type: 'bye',
+            payload: 'stopSession',
+          })
+          .catch(() => {});
+      }
+    }
+
     this.peers.clear();
     this.localStream = null;
     this.remoteStream = null;
     this.roomId = null;
     this.wsFallbackActive = false;
+    this.dcFrameFallbackRequested = false;
     this.updateStats({
       connectionState: 'closed',
       iceConnectionState: 'closed',
@@ -251,25 +299,32 @@ export class WebRTCNetplayManager {
 
   public async connectToPeer(peerUid: string, shouldInitiate: boolean): Promise<void> {
     if (!this.roomId || !peerUid || peerUid === this.localUid) return;
+    const epoch = this.sessionEpoch;
     const link = this.ensurePeerLink(peerUid);
 
     if (shouldInitiate) {
+      if (link.makingOffer || link.pc.signalingState !== 'stable') {
+        link.needsRenegotiate = true;
+        return;
+      }
+
       try {
         link.makingOffer = true;
+        link.needsRenegotiate = false;
         const offer = await link.pc.createOffer({
           offerToReceiveAudio: this.role !== 'host',
           offerToReceiveVideo: this.role !== 'host',
         });
-        if (link.pc.signalingState !== 'stable') {
+        if (epoch !== this.sessionEpoch || link.pc.signalingState !== 'stable') {
           link.needsRenegotiate = true;
           return;
         }
-        link.needsRenegotiate = false;
         const tunedOffer: RTCSessionDescriptionInit = {
           type: offer.type,
           sdp: offer.sdp ? optimizeSdpForLowLatency(offer.sdp) : offer.sdp,
         };
         await link.pc.setLocalDescription(tunedOffer);
+        if (epoch !== this.sessionEpoch || !this.roomId) return;
         await roomService.sendSignal(this.roomId, {
           roomId: this.roomId,
           senderUid: this.localUid,
@@ -285,6 +340,32 @@ export class WebRTCNetplayManager {
     }
   }
 
+  public async requestOfferFromHost(hostUid: string, resetPeer: boolean = false): Promise<void> {
+    if (!this.roomId || !hostUid || hostUid === this.localUid || this.role === 'host') return;
+    if (resetPeer) {
+      this.disconnectPeer(hostUid);
+      this.remoteStream = null;
+    }
+    this.ensurePeerLink(hostUid);
+
+    const existing = this.peers.get(hostUid);
+    if (!resetPeer && existing && existing.controlChannel.readyState === 'open') {
+      try {
+        existing.controlChannel.send(JSON.stringify({ type: 'request_offer' }));
+      } catch {}
+    }
+
+    await roomService
+      .sendSignal(this.roomId, {
+        roomId: this.roomId,
+        senderUid: this.localUid,
+        targetUid: hostUid,
+        type: 'renegotiate',
+        payload: JSON.stringify({ action: 'request-offer', resetPeer, ts: Date.now() }),
+      })
+      .catch(() => {});
+  }
+
   public disconnectPeer(peerUid: string): void {
     const link = this.peers.get(peerUid);
     if (!link) return;
@@ -292,6 +373,7 @@ export class WebRTCNetplayManager {
     try {
       link.inputChannel.close();
       link.controlChannel.close();
+      link.frameChannel.close();
       link.pc.close();
     } catch {}
     this.peers.delete(peerUid);
@@ -369,11 +451,19 @@ export class WebRTCNetplayManager {
     });
     inputChannel.binaryType = 'arraybuffer';
 
-    // Negotiated reliable control channel for RTT pings & sync commands
+    // Negotiated reliable control channel for RTT pings, fallback negotiation & sync commands
     const controlChannel = pc.createDataChannel('control', {
       ordered: true,
       negotiated: true,
       id: 2,
+    });
+
+    // Negotiated unreliable frame fallback channel when WebRTC video track cannot render across strict WebGL/NAT setups
+    const frameChannel = pc.createDataChannel('frames', {
+      ordered: false,
+      maxRetransmits: 0,
+      negotiated: true,
+      id: 3,
     });
 
     const link: PeerLink = {
@@ -381,6 +471,7 @@ export class WebRTCNetplayManager {
       pc,
       inputChannel,
       controlChannel,
+      frameChannel,
       makingOffer: false,
       ignoreOffer: false,
       needsRenegotiate: false,
@@ -426,6 +517,12 @@ export class WebRTCNetplayManager {
       }
     };
 
+    frameChannel.onmessage = (ev) => {
+      if (this.role !== 'host' && typeof ev.data === 'string' && ev.data.startsWith('data:image/')) {
+        this.relayFrameListeners.forEach((cb) => cb(ev.data));
+      }
+    };
+
     controlChannel.onmessage = (ev) => {
       try {
         const data = JSON.parse(String(ev.data));
@@ -437,6 +534,15 @@ export class WebRTCNetplayManager {
           const rtt = Math.max(1, Math.round(performance.now() - data.t));
           this.updateStats({ rttMs: rtt });
           roomService.reportPing(rtt);
+        } else if (data.type === 'request_offer' && this.role === 'host') {
+          if (this.localStream) {
+            this.syncTracksOnPeer(link);
+          }
+          this.connectToPeer(peerUid, true);
+        } else if (data.type === 'need_frame_fallback' && this.role === 'host') {
+          this.dcFrameFallbackRequested = Boolean(data.active);
+        } else if (data.type === 'peer_bye') {
+          this.disconnectPeer(peerUid);
         }
       } catch {}
     };
@@ -499,8 +605,7 @@ export class WebRTCNetplayManager {
       if (!this.remoteStream.getTracks().some((t) => t.id === ev.track.id)) {
         this.remoteStream.addTrack(ev.track);
       }
-      const streamToEmit = ev.streams[0] || this.remoteStream;
-      this.remoteStreamListeners.forEach((cb) => cb(streamToEmit));
+      this.remoteStreamListeners.forEach((cb) => cb(this.remoteStream!));
     };
 
     this.peers.set(peerUid, link);
@@ -514,6 +619,39 @@ export class WebRTCNetplayManager {
   private async handleIncomingSignal(sig: SignalingMessage): Promise<void> {
     if (!this.roomId || sig.senderUid === this.localUid) return;
     if (sig.targetUid && sig.targetUid !== this.localUid) return;
+
+    if (sig.type === 'bye') {
+      this.disconnectPeer(sig.senderUid);
+      return;
+    }
+
+    if (sig.type === 'renegotiate') {
+      if (this.role !== 'host') return;
+      let shouldReset = false;
+      try {
+        const parsed = JSON.parse(sig.payload || '{}');
+        shouldReset = Boolean(parsed?.resetPeer);
+      } catch {}
+
+      const existing = this.peers.get(sig.senderUid);
+      const isDead =
+        !existing ||
+        shouldReset ||
+        existing.pc.connectionState === 'failed' ||
+        existing.pc.connectionState === 'closed' ||
+        existing.pc.iceConnectionState === 'failed' ||
+        existing.pc.iceConnectionState === 'closed';
+
+      if (existing && isDead) {
+        this.disconnectPeer(sig.senderUid);
+      }
+      const link = this.ensurePeerLink(sig.senderUid);
+      if (this.localStream) {
+        this.syncTracksOnPeer(link);
+      }
+      this.connectToPeer(sig.senderUid, true);
+      return;
+    }
 
     const link = this.ensurePeerLink(sig.senderUid);
     const pc = link.pc;
@@ -591,6 +729,41 @@ export class WebRTCNetplayManager {
     // Fallback to WS relay if P2P DataChannel isn't open
     if (!sentP2P) {
       roomService.sendRelayInput(mask, this.inputSeq);
+    }
+  }
+
+  public setFrameFallbackNeeded(active: boolean): void {
+    if (this.role === 'host') {
+      this.dcFrameFallbackRequested = active;
+      return;
+    }
+    for (const peer of this.peers.values()) {
+      if (peer.controlChannel.readyState === 'open') {
+        try {
+          peer.controlChannel.send(JSON.stringify({ type: 'need_frame_fallback', active }));
+        } catch {}
+      }
+    }
+  }
+
+  public isDataChannelFrameFallbackActive(): boolean {
+    if (this.role !== 'host' || !this.dcFrameFallbackRequested) return false;
+    for (const peer of this.peers.values()) {
+      if (peer.frameChannel.readyState === 'open' && peer.frameChannel.bufferedAmount < 262_144) {
+        return true;
+      }
+    }
+    return false;
+  }
+
+  public sendDataChannelFrame(frameDataUrl: string): void {
+    if (frameDataUrl.length > 60_000) return;
+    for (const peer of this.peers.values()) {
+      if (peer.frameChannel.readyState === 'open' && peer.frameChannel.bufferedAmount < 262_144) {
+        try {
+          peer.frameChannel.send(frameDataUrl);
+        } catch {}
+      }
     }
   }
 

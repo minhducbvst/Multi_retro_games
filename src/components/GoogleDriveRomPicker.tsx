@@ -8,10 +8,16 @@ import {
   extractDriveFolderIdFromUrl,
   scanAllDriveRoms,
   cleanRomTitle,
+  useLinkedDriveFolder,
+  saveLinkedDriveFolder,
+  clearLinkedDriveFolder,
+  getDriveFolderMetadata,
+  createDriveFolder,
 } from '../services/googleDriveService';
 import { auth, loginWithGoogle, logoutUser, getCachedAccessToken } from '../services/firebase';
-import { libraryStore, getCartridgeCoverArt } from '../services/games/libraryStore';
+import { libraryStore, getCartridgeCoverArt, useLibraryStore } from '../services/games/libraryStore';
 import { Game } from '../types';
+import { DriveFolderSyncModal } from './DriveFolderSyncModal';
 
 interface GoogleDriveRomPickerProps {
   onRomSelected: (romBytes: Uint8Array, filename: string) => void;
@@ -39,8 +45,15 @@ export const GoogleDriveRomPicker: React.FC<GoogleDriveRomPickerProps> = ({
   const [searchQuery, setSearchQuery] = useState('');
   const [isSearching, setIsSearching] = useState(false);
 
-  // Folder URL input jump
+  // Folder URL input jump & Create folder
   const [folderUrlInput, setFolderUrlInput] = useState('');
+  const [newFolderName, setNewFolderName] = useState('');
+  const [isCreatingFolder, setIsCreatingFolder] = useState(false);
+
+  // Linked fixed folder & library sync modal
+  const linkedFolder = useLinkedDriveFolder();
+  const libraryGames = useLibraryStore();
+  const [isSyncModalOpen, setIsSyncModalOpen] = useState(false);
 
   // Downloading / Processing state
   const [downloadingFileId, setDownloadingFileId] = useState<string | null>(null);
@@ -144,19 +157,53 @@ export const GoogleDriveRomPicker: React.FC<GoogleDriveRomPickerProps> = ({
     }
   };
 
-  const handleJumpToFolderUrl = () => {
+  const handleJumpToFolderUrl = async () => {
     if (!folderUrlInput.trim()) return;
     const folderId = extractDriveFolderIdFromUrl(folderUrlInput);
     if (!folderId) {
-      setAuthError('Could not parse Google Drive Folder ID from input. Please provide a valid URL or Folder ID.');
+      setAuthError('Không nhận diện được ID hoặc đường dẫn thư mục Google Drive hợp lệ.');
       return;
     }
-    setBreadcrumbs([
-      { id: 'root', name: 'My Drive' },
-      { id: folderId, name: `Folder (${folderId.slice(0, 8)}...)` },
-    ]);
-    setCurrentFolderId(folderId);
-    setFolderUrlInput('');
+    setAuthError(null);
+    try {
+      const meta = await getDriveFolderMetadata(folderId);
+      setBreadcrumbs([
+        { id: 'root', name: 'My Drive' },
+        { id: meta.id, name: meta.name },
+      ]);
+      setCurrentFolderId(meta.id);
+      setFolderUrlInput('');
+    } catch (err: any) {
+      setAuthError(err?.message || 'Không thể mở thư mục Google Drive này.');
+    }
+  };
+
+  const handleLinkFolder = async (folderId: string, folderName: string) => {
+    await saveLinkedDriveFolder({
+      id: folderId,
+      name: folderName,
+      linkedAt: new Date().toISOString(),
+    });
+    setSyncSuccessMsg(`Đã liên kết cố định thư mục "${folderName}". Game đồng bộ sẽ tự động lưu vào các thư mục con NES, SNES, GBA... bên trong.`);
+    setTimeout(() => setSyncSuccessMsg(null), 5000);
+  };
+
+  const handleCreateFolderInCurrent = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!newFolderName.trim()) return;
+    setIsCreatingFolder(true);
+    setAuthError(null);
+    try {
+      const created = await createDriveFolder(newFolderName.trim(), currentFolderId);
+      setNewFolderName('');
+      await loadFolder(currentFolderId);
+      setSyncSuccessMsg(`Đã tạo thư mục "${created.name}" trên Google Drive.`);
+      setTimeout(() => setSyncSuccessMsg(null), 3500);
+    } catch (err: any) {
+      setAuthError(err?.message?.replace('DRIVE_REAUTH_REQUIRED: ', '') || 'Không thể tạo thư mục trên Google Drive.');
+    } finally {
+      setIsCreatingFolder(false);
+    }
   };
 
   // Convert a single DriveItem into a Game record
@@ -344,7 +391,7 @@ export const GoogleDriveRomPicker: React.FC<GoogleDriveRomPickerProps> = ({
 
         <div className="flex items-center gap-2 text-[11px] font-mono text-[#958ea0]">
           <span className="material-symbols-outlined text-sm text-emerald-400">verified_user</span>
-          <span>Chỉ quyền đọc (drive.readonly). Không sửa đổi hoặc chia sẻ tệp của bạn.</span>
+          <span>Kết nối an toàn qua Google OAuth. Hỗ trợ liên kết thư mục cố định và đồng bộ ROM theo hệ máy (NES, SNES, GBA...).</span>
         </div>
       </div>
     );
@@ -419,6 +466,87 @@ export const GoogleDriveRomPicker: React.FC<GoogleDriveRomPickerProps> = ({
         </div>
       )}
 
+      {/* Fixed Linked Folder Status & Quick Sync Banner */}
+      <div className="p-3.5 bg-[#0c0e14] border-b border-[#494454]/20 flex flex-wrap items-center justify-between gap-3">
+        <div className="flex items-center gap-2.5 min-w-0">
+          <span className={`material-symbols-outlined text-xl ${linkedFolder ? 'text-emerald-400' : 'text-[#958ea0]'}`}>
+            folder_special
+          </span>
+          <div className="min-w-0">
+            <div className="text-xs font-bold text-white flex items-center gap-2 flex-wrap">
+              <span>
+                Thư mục cố định:{' '}
+                <span className={linkedFolder ? 'text-emerald-300' : 'text-amber-300'}>
+                  {linkedFolder ? linkedFolder.name : 'Chưa liên kết'}
+                </span>
+              </span>
+              {linkedFolder && (
+                <span className="px-1.5 py-0.2 rounded bg-emerald-500/10 border border-emerald-500/30 text-[10px] font-mono text-emerald-300">
+                  NES • SNES • GBA • GENESIS
+                </span>
+              )}
+            </div>
+            <div className="text-[11px] font-mono text-[#958ea0] truncate">
+              {linkedFolder
+                ? `Game khi đồng bộ sẽ tự động tải vào ${linkedFolder.name}/<Thể_loại>/`
+                : 'Chọn "Liên kết" bên cạnh một thư mục hoặc bấm "Liên kết thư mục hiện tại"'}
+            </div>
+          </div>
+        </div>
+
+        <div className="flex flex-wrap items-center gap-2">
+          <button
+            type="button"
+            onClick={() => {
+              const currentCrumb = breadcrumbs[breadcrumbs.length - 1];
+              handleLinkFolder(currentCrumb.id, currentCrumb.name);
+            }}
+            className="px-2.5 py-1.5 rounded-lg bg-[#282a30] hover:bg-[#34373f] border border-[#4cd7f6]/40 text-[#4cd7f6] font-mono text-[11px] font-bold flex items-center gap-1 transition-colors cursor-pointer"
+          >
+            <span className="material-symbols-outlined text-xs">link</span>
+            <span>Liên kết "{breadcrumbs[breadcrumbs.length - 1]?.name}"</span>
+          </button>
+
+          {linkedFolder && (
+            <>
+              <button
+                type="button"
+                onClick={() => {
+                  setSearchQuery('');
+                  setBreadcrumbs([
+                    { id: 'root', name: 'My Drive' },
+                    ...(linkedFolder.id !== 'root' ? [{ id: linkedFolder.id, name: linkedFolder.name }] : []),
+                  ]);
+                  setCurrentFolderId(linkedFolder.id);
+                }}
+                className="px-2.5 py-1.5 rounded-lg bg-[#282a30] hover:bg-[#34373f] border border-[#494454]/40 text-[#cbc3d7] hover:text-white font-mono text-[11px] flex items-center gap-1 transition-colors cursor-pointer"
+              >
+                <span className="material-symbols-outlined text-xs">folder_open</span>
+                <span>Mở thư mục cố định</span>
+              </button>
+
+              <button
+                type="button"
+                onClick={() => clearLinkedDriveFolder()}
+                className="px-2 py-1.5 rounded-lg bg-rose-950/40 hover:bg-rose-900/60 border border-rose-500/30 text-rose-300 font-mono text-[11px] transition-colors cursor-pointer"
+                title="Hủy liên kết thư mục cố định"
+              >
+                Hủy liên kết
+              </button>
+            </>
+          )}
+
+          <button
+            type="button"
+            onClick={() => setIsSyncModalOpen(true)}
+            className="px-3 py-1.5 rounded-lg bg-[#a078ff] hover:bg-[#b18eff] text-[#26005f] font-mono text-[11px] font-bold flex items-center gap-1.5 shadow transition-colors cursor-pointer"
+          >
+            <span className="material-symbols-outlined text-sm">cloud_upload</span>
+            <span>Đồng Bộ Thư Viện Lên Drive ({libraryGames.length})</span>
+          </button>
+        </div>
+      </div>
+
       {/* Action / Search & Jump Bar */}
       <div className="p-4 border-b border-[#494454]/20 bg-[#16171e] space-y-3">
         <div className="flex flex-col sm:flex-row gap-2">
@@ -447,12 +575,31 @@ export const GoogleDriveRomPicker: React.FC<GoogleDriveRomPickerProps> = ({
             />
             <button
               onClick={handleJumpToFolderUrl}
-              className="px-3 py-2 bg-[#282a30] hover:bg-[#34373f] text-[#4cd7f6] border border-[#494454]/30 rounded-lg text-xs font-mono font-bold transition-colors whitespace-nowrap"
+              className="px-3 py-2 bg-[#282a30] hover:bg-[#34373f] text-[#4cd7f6] border border-[#494454]/30 rounded-lg text-xs font-mono font-bold transition-colors whitespace-nowrap cursor-pointer"
             >
               Mở Thư Mục
             </button>
           </div>
         </div>
+
+        {/* Create New Folder Row */}
+        <form onSubmit={handleCreateFolderInCurrent} className="flex flex-col sm:flex-row gap-2">
+          <input
+            type="text"
+            value={newFolderName}
+            onChange={(e) => setNewFolderName(e.target.value)}
+            placeholder={`Tạo thư mục mới trong "${breadcrumbs[breadcrumbs.length - 1]?.name}"...`}
+            className="flex-1 px-3 py-1.5 rounded-lg bg-[#111319] border border-[#494454]/40 text-xs font-mono text-white placeholder-[#958ea0] focus:outline-none focus:border-[#a078ff]"
+          />
+          <button
+            type="submit"
+            disabled={!newFolderName.trim() || isCreatingFolder}
+            className="px-3 py-1.5 rounded-lg bg-[#a078ff]/20 hover:bg-[#a078ff]/35 border border-[#a078ff]/50 text-[#d0bcff] font-mono text-xs font-bold flex items-center justify-center gap-1.5 transition-colors disabled:opacity-40 cursor-pointer whitespace-nowrap"
+          >
+            <span className="material-symbols-outlined text-sm">create_new_folder</span>
+            <span>{isCreatingFolder ? 'Đang tạo...' : 'Tạo Thư Mục Mới'}</span>
+          </button>
+        </form>
 
         {/* Breadcrumb Trail & Folder Sync */}
         <div className="flex items-center justify-between gap-2 flex-wrap text-xs font-mono py-1">
@@ -580,15 +727,31 @@ export const GoogleDriveRomPicker: React.FC<GoogleDriveRomPickerProps> = ({
               {/* Action Buttons */}
               <div className="shrink-0 flex items-center gap-2">
                 {item.isFolder ? (
-                  <button
-                    onClick={(e) => {
-                      e.stopPropagation();
-                      handleOpenFolder(item);
-                    }}
-                    className="p-1.5 text-[#958ea0] hover:text-white rounded-lg hover:bg-[#282a30] transition-colors"
-                  >
-                    <span className="material-symbols-outlined text-base">chevron_right</span>
-                  </button>
+                  <>
+                    <button
+                      type="button"
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        handleLinkFolder(item.id, item.name);
+                      }}
+                      className={`px-2.5 py-1 rounded-lg font-mono text-[11px] font-bold border transition-colors cursor-pointer ${
+                        linkedFolder?.id === item.id
+                          ? 'bg-emerald-500/20 text-emerald-300 border-emerald-500/40'
+                          : 'bg-[#282a30] hover:bg-[#4cd7f6]/20 text-[#4cd7f6] border-[#4cd7f6]/40'
+                      }`}
+                    >
+                      {linkedFolder?.id === item.id ? 'Đang Liên Kết' : 'Liên kết'}
+                    </button>
+                    <button
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        handleOpenFolder(item);
+                      }}
+                      className="p-1.5 text-[#958ea0] hover:text-white rounded-lg hover:bg-[#282a30] transition-colors cursor-pointer"
+                    >
+                      <span className="material-symbols-outlined text-base">chevron_right</span>
+                    </button>
+                  </>
                 ) : item.isRom ? (
                   <>
                     <button
@@ -647,6 +810,18 @@ export const GoogleDriveRomPicker: React.FC<GoogleDriveRomPickerProps> = ({
         <span>Hiển thị {items.length} mục trong thư mục hiện tại</span>
         <span className="text-[#4cd7f6]">{romCountInFolder} tệp ROM hợp lệ</span>
       </div>
+
+      <DriveFolderSyncModal
+        isOpen={isSyncModalOpen}
+        onClose={() => setIsSyncModalOpen(false)}
+        gamesToSync={libraryGames}
+        title="Đồng Bộ Toàn Bộ Thư Viện Lên Google Drive"
+        onSyncCompleted={(msg) => {
+          setSyncSuccessMsg(msg);
+          setTimeout(() => setSyncSuccessMsg(null), 5000);
+          loadFolder(currentFolderId);
+        }}
+      />
     </div>
   );
 };

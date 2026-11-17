@@ -43,7 +43,7 @@ export interface NetPlaySessionProps {
   room: NetPlayRoom;
   role: 'host' | 'guest' | 'spectator';
   playerUid: string;
-  onLeaveMatch: () => void;
+  onLeaveMatch: (roomClosed?: boolean) => void;
 }
 
 interface EmulatorPageProps {
@@ -73,9 +73,14 @@ export const EmulatorPage: React.FC<EmulatorPageProps> = ({
 
   const [liveRoom, setLiveRoom] = useState<NetPlayRoom | null>(netplaySession?.room || null);
   const [netplayStats, setNetplayStats] = useState<NetplayTelemetryStats>(() => webrtcNetplay.getStats());
+  const [remoteStreamObj, setRemoteStreamObj] = useState<MediaStream | null>(() => webrtcNetplay.getRemoteStream());
   const [hasRemoteVideo, setHasRemoteVideo] = useState<boolean>(false);
   const [relayFrameUrl, setRelayFrameUrl] = useState<string | null>(null);
   const [needsAudioUnlock, setNeedsAudioUnlock] = useState<boolean>(false);
+  const [showManualRetryBtn, setShowManualRetryBtn] = useState<boolean>(false);
+  const hasRemoteVideoRef = useRef<boolean>(false);
+  const relayFrameUrlRef = useRef<string | null>(null);
+  const liveRoomRef = useRef<NetPlayRoom | null>(netplaySession?.room || null);
 
   const guestInputsRef = useRef<EmulatorInputState>({
     up: false, down: false, left: false, right: false,
@@ -655,24 +660,75 @@ export const EmulatorPage: React.FC<EmulatorPageProps> = ({
     select: 'KeyB',
   };
 
+  // Keep refs in sync for interval timers
+  useEffect(() => {
+    hasRemoteVideoRef.current = hasRemoteVideo;
+  }, [hasRemoteVideo]);
+
+  useEffect(() => {
+    relayFrameUrlRef.current = relayFrameUrl;
+  }, [relayFrameUrl]);
+
+  useEffect(() => {
+    liveRoomRef.current = liveRoom;
+  }, [liveRoom]);
+
+  // Attach remote MediaStream to <video> whenever stream or <video> mount state changes (autoplay-safe)
+  useEffect(() => {
+    if (!isNetplayGuestOrSpec || relayFrameUrl) return;
+    const videoEl = remoteVideoRef.current;
+    if (!videoEl || !remoteStreamObj) return;
+
+    if (videoEl.srcObject !== remoteStreamObj) {
+      videoEl.srcObject = remoteStreamObj;
+    }
+
+    const tryPlay = async () => {
+      videoEl.muted = isMuted;
+      videoEl.volume = Math.max(0, Math.min(1, volume / 100));
+      try {
+        await videoEl.play();
+        if (remoteStreamObj.getVideoTracks().length > 0 && videoEl.readyState >= 2) {
+          setHasRemoteVideo(true);
+        }
+      } catch {
+        // Browser autoplay policy blocked unmuted playback -> start muted & offer 1-click sound unlock
+        videoEl.muted = true;
+        setNeedsAudioUnlock(true);
+        try {
+          await videoEl.play();
+        } catch {}
+      }
+    };
+
+    tryPlay();
+  }, [isNetplayGuestOrSpec, remoteStreamObj, relayFrameUrl, isMuted, volume]);
+
   // Real-Time NetPlay Synchronization Loop (WebRTC 60fps Video/Audio + Port 2 Inputs + Relay Fallback)
   useEffect(() => {
     if (!netplaySession) return;
     const { room: initialRoom, role, playerUid } = netplaySession;
 
+    setHasRemoteVideo(false);
+    setRelayFrameUrl(null);
+    setShowManualRetryBtn(false);
     webrtcNetplay.startSession(initialRoom.id, playerUid, role);
 
     const unsubStats = webrtcNetplay.subscribeStats((st) => {
       setNetplayStats(st);
     });
 
+    let lastKnownGuestUid: string | null = null;
+    let requestedOfferOnce = false;
+
     const unsubRoom = roomService.subscribeToRoom(initialRoom.id, (updated) => {
       if (!updated) {
         showToast('Phòng chơi NetPlay đã đóng.');
-        netplaySession.onLeaveMatch();
+        netplaySession.onLeaveMatch(true);
         return;
       }
       setLiveRoom(updated);
+      liveRoomRef.current = updated;
       setGame((prev) =>
         prev.id === updated.gameId && prev.title === updated.gameTitle && prev.platform === updated.platform
           ? prev
@@ -685,25 +741,39 @@ export const EmulatorPage: React.FC<EmulatorPageProps> = ({
       );
 
       if (role === 'host') {
-        if (updated.guestUid) webrtcNetplay.connectToPeer(updated.guestUid, true);
+        if (lastKnownGuestUid && lastKnownGuestUid !== updated.guestUid) {
+          webrtcNetplay.disconnectPeer(lastKnownGuestUid);
+        }
+        lastKnownGuestUid = updated.guestUid || null;
+        if (updated.guestUid) {
+          webrtcNetplay.connectToPeer(updated.guestUid, true);
+        }
         for (const s of updated.spectators || []) {
           webrtcNetplay.connectToPeer(s.id, true);
         }
       } else if (updated.hostUid) {
+        // Auto-mark Guest READY when Host changes game while Guest is already waiting in Emulator screen
+        if (role === 'guest' && updated.guestUid === playerUid && !updated.guestReady) {
+          roomService.toggleReady(updated.id, false, true).catch(() => {});
+        }
         webrtcNetplay.connectToPeer(updated.hostUid, false);
+        if (!requestedOfferOnce) {
+          requestedOfferOnce = true;
+          webrtcNetplay.requestOfferFromHost(updated.hostUid, true).catch(() => {});
+        }
       }
     });
 
-    let streamAttached = false;
+    let attachedEngineMarker: unknown = null;
+    let attachedAudioTrackId: string | null = null;
     let streamAttachTimer: ReturnType<typeof setInterval> | null = null;
     let relayFrameTimer: ReturnType<typeof setInterval> | null = null;
+    let guestOfferRetryTimer: ReturnType<typeof setInterval> | null = null;
     let unsubRemoteInput: (() => void) | null = null;
     let unsubRemoteStream: (() => void) | null = null;
     let unsubRelayFrame: (() => void) | null = null;
 
     if (role === 'host') {
-      if (initialRoom.guestUid) webrtcNetplay.connectToPeer(initialRoom.guestUid, true);
-
       // Listen for Guest Port 2 bitmask inputs and inject into RetroArch / Arena Engine
       unsubRemoteInput = webrtcNetplay.onRemoteInput((mask) => {
         const nextState = decodeInputBitmask(mask);
@@ -728,72 +798,103 @@ export const EmulatorPage: React.FC<EmulatorPageProps> = ({
         }
       });
 
-      // Attach Host 60fps canvas + WebAudio stream as soon as canvas starts rendering
+      // Attach Host 60fps canvas + WebAudio stream cleanly whenever core boots or WebAudio initializes
       const tryAttachStream = () => {
-        if (streamAttached || !canvasRef.current) return;
-        if (!nostalgistRef.current && !engineRef.current) return;
+        if (!canvasRef.current) return;
+        const activeEngine = nostalgistRef.current || engineRef.current;
+        if (!activeEngine) return;
+        if (canvasRef.current.width <= 0 || canvasRef.current.height <= 0) return;
+
+        const audioStream = capturedAudioStreamRef.current || engineRef.current?.getAudioStream() || null;
+        const currentAudioTrackId = audioStream?.getAudioTracks()[0]?.id || null;
+
+        // Skip only if both the engine instance AND audio track are unchanged
+        if (attachedEngineMarker === activeEngine && attachedAudioTrackId === currentAudioTrackId) {
+          return;
+        }
+
         try {
           const canvasStream = canvasRef.current.captureStream(60);
-          const combined = new MediaStream();
-          canvasStream.getVideoTracks().forEach((t) => combined.addTrack(t));
+          const videoTracks = canvasStream.getVideoTracks();
+          if (videoTracks.length === 0) return;
 
-          const audioStream = capturedAudioStreamRef.current || engineRef.current?.getAudioStream() || null;
+          const combined = new MediaStream();
+          videoTracks.forEach((t) => combined.addTrack(t));
+
           if (audioStream) {
             audioStream.getAudioTracks().forEach((t) => combined.addTrack(t));
           }
 
           webrtcNetplay.attachLocalStream(combined);
-          streamAttached = true;
-          if (streamAttachTimer) {
-            clearInterval(streamAttachTimer);
-            streamAttachTimer = null;
-          }
+          attachedEngineMarker = activeEngine;
+          attachedAudioTrackId = currentAudioTrackId;
         } catch (err) {
           console.warn('Could not capture emulator stream:', err);
         }
       };
 
-      streamAttachTimer = setInterval(tryAttachStream, 400);
+      streamAttachTimer = setInterval(tryAttachStream, 450);
       tryAttachStream();
 
-      // WebSocket Fallback frame relay ONLY when strict symmetric NAT prevents P2P WebRTC
+      // Low-latency frame relay (WebSocket OR P2P DataChannel fallback if Guest's <video> cannot decode track)
       relayFrameTimer = setInterval(() => {
         if (!canvasRef.current) return;
-        if (!webrtcNetplay.isUsingRelayFallback()) return;
+        const useWsRelay = webrtcNetplay.isUsingRelayFallback();
+        const useDcFallback = webrtcNetplay.isDataChannelFrameFallbackActive();
+        if (!useWsRelay && !useDcFallback) return;
         try {
-          const dataUrl = canvasRef.current.toDataURL('image/webp', 0.55);
-          roomService.sendRelayFrame(dataUrl, canvasRef.current.width, canvasRef.current.height);
+          const dataUrl = canvasRef.current.toDataURL('image/webp', 0.52);
+          if (useWsRelay) {
+            roomService.sendRelayFrame(dataUrl, canvasRef.current.width, canvasRef.current.height);
+          } else if (useDcFallback) {
+            webrtcNetplay.sendDataChannelFrame(dataUrl);
+          }
         } catch {}
-      }, 33);
+      }, 45);
     } else {
       // Guest / Spectator receives Host live video + audio MediaStream
-      const applyStream = (stream: MediaStream) => {
-        setHasRemoteVideo(true);
-        setRelayFrameUrl(null);
-        const videoEl = remoteVideoRef.current;
-        if (!videoEl) return;
-        if (videoEl.srcObject !== stream) {
-          videoEl.srcObject = stream;
+      const handleStream = (stream: MediaStream) => {
+        setRemoteStreamObj(stream);
+        if (stream.getVideoTracks().some((t) => t.readyState === 'live')) {
+          setRelayFrameUrl(null);
         }
-        videoEl.muted = isMuted;
-        videoEl.volume = Math.max(0, Math.min(1, volume / 100));
-        videoEl.play().catch(() => {
-          // Autoplay policy blocked unmuted playback -> retry muted and show 1-click unmute pill
-          videoEl.muted = true;
-          setNeedsAudioUnlock(true);
-          videoEl.play().catch(() => {});
-        });
       };
 
-      unsubRemoteStream = webrtcNetplay.onRemoteStream(applyStream);
+      unsubRemoteStream = webrtcNetplay.onRemoteStream(handleStream);
       const existingStream = webrtcNetplay.getRemoteStream();
       if (existingStream) {
-        applyStream(existingStream);
+        handleStream(existingStream);
       }
 
       unsubRelayFrame = webrtcNetplay.onRelayFrame((frame) => {
-        setRelayFrameUrl(frame);
+        if (!hasRemoteVideoRef.current) {
+          setRelayFrameUrl(frame);
+        }
       });
+
+      // Request fresh Offer from Host on entry & retry periodically while still waiting for video stream
+      if (initialRoom.hostUid) {
+        requestedOfferOnce = true;
+        webrtcNetplay.requestOfferFromHost(initialRoom.hostUid, true).catch(() => {});
+      }
+
+      let playingWaitTicks = 0;
+      guestOfferRetryTimer = setInterval(() => {
+        const curRoom = liveRoomRef.current;
+        if (!curRoom || curRoom.status !== 'playing') {
+          playingWaitTicks = 0;
+          return;
+        }
+        if (hasRemoteVideoRef.current || relayFrameUrlRef.current) return;
+        playingWaitTicks += 1;
+        if (curRoom.hostUid) {
+          webrtcNetplay.requestOfferFromHost(curRoom.hostUid, playingWaitTicks % 3 === 0).catch(() => {});
+        }
+        if (playingWaitTicks >= 2) {
+          setShowManualRetryBtn(true);
+          webrtcNetplay.setFrameFallbackNeeded(true);
+        }
+      }, 3000);
     }
 
     return () => {
@@ -804,6 +905,7 @@ export const EmulatorPage: React.FC<EmulatorPageProps> = ({
       if (unsubRelayFrame) unsubRelayFrame();
       if (streamAttachTimer) clearInterval(streamAttachTimer);
       if (relayFrameTimer) clearInterval(relayFrameTimer);
+      if (guestOfferRetryTimer) clearInterval(guestOfferRetryTimer);
       webrtcNetplay.stopSession();
     };
   }, [netplaySession?.room.id, netplaySession?.role, netplaySession?.playerUid]);
@@ -1387,9 +1489,15 @@ export const EmulatorPage: React.FC<EmulatorPageProps> = ({
 
             {/* Navigation Back */}
             <button
-              onClick={() => (netplaySession ? netplaySession.onLeaveMatch() : onExit())}
+              onClick={() => (netplaySession ? netplaySession.onLeaveMatch(false) : onExit())}
               className="flex items-center gap-1 text-[#cbc3d7] hover:text-[#4cd7f6] transition-colors font-mono text-xs group min-w-0"
-              title={netplaySession ? 'Quay về phòng NetPlay' : 'Quay lại danh sách trò chơi'}
+              title={
+                netplaySession
+                  ? isNetplayHost
+                    ? 'Thoát game & xóa phòng chơi'
+                    : 'Quay về phòng NetPlay'
+                  : 'Quay lại danh sách trò chơi'
+              }
             >
               <span className="material-symbols-outlined text-sm group-hover:-translate-x-0.5 transition-transform shrink-0">arrow_back</span>
               <span className="truncate max-w-[85px] xs:max-w-[130px] sm:max-w-xs">{game.title}</span>
@@ -1506,9 +1614,15 @@ export const EmulatorPage: React.FC<EmulatorPageProps> = ({
 
             {/* Power / Exit */}
             <button
-              onClick={() => (netplaySession ? netplaySession.onLeaveMatch() : onExit())}
+              onClick={() => (netplaySession ? netplaySession.onLeaveMatch(false) : onExit())}
               className="p-1 sm:p-1.5 text-rose-400 hover:bg-rose-950/40 rounded-lg transition-colors"
-              title={netplaySession ? 'Thoát trận NetPlay' : 'Thoát trò chơi'}
+              title={
+                netplaySession
+                  ? isNetplayHost
+                    ? 'Thoát game & xóa phòng NetPlay ngay'
+                    : 'Thoát trận NetPlay'
+                  : 'Thoát trò chơi'
+              }
             >
               <span className="material-symbols-outlined text-base sm:text-lg">power_settings_new</span>
             </button>
@@ -1566,7 +1680,16 @@ export const EmulatorPage: React.FC<EmulatorPageProps> = ({
                   <video
                     ref={remoteVideoRef}
                     autoPlay
+                    muted={isMuted || needsAudioUnlock}
                     playsInline
+                    onLoadedData={() => {
+                      setHasRemoteVideo(true);
+                      webrtcNetplay.setFrameFallbackNeeded(false);
+                    }}
+                    onPlaying={() => {
+                      setHasRemoteVideo(true);
+                      webrtcNetplay.setFrameFallbackNeeded(false);
+                    }}
                     className={`w-full h-full object-contain outline-none ${visualSettings.filter === 'Pixelated' ? 'filter-pixelated' : '[image-rendering:pixelated]'}`}
                     style={colorTintStyle}
                   />
@@ -1586,6 +1709,20 @@ export const EmulatorPage: React.FC<EmulatorPageProps> = ({
                     <p className="text-[11px] font-mono text-[#958ea0] max-w-md">
                       Trạng thái ICE: {netplayStats.iceConnectionState} • Kênh: {netplayStats.transportMode}
                     </p>
+                    {liveRoom?.status === 'playing' && showManualRetryBtn && liveRoom.hostUid && (
+                      <button
+                        onClick={() => {
+                          setShowManualRetryBtn(false);
+                          webrtcNetplay.requestOfferFromHost(liveRoom.hostUid, true).catch(() => {});
+                          webrtcNetplay.setFrameFallbackNeeded(true);
+                          showToast('Đang yêu cầu Host gửi lại luồng hình ảnh...');
+                        }}
+                        className="mt-1 px-4 py-2 rounded-lg bg-[#4cd7f6]/20 hover:bg-[#4cd7f6]/30 border border-[#4cd7f6]/50 text-[#4cd7f6] font-mono font-bold text-xs flex items-center gap-1.5 cursor-pointer"
+                      >
+                        <span className="material-symbols-outlined text-sm">refresh</span>
+                        Kết nối lại luồng hình từ Host
+                      </button>
+                    )}
                   </div>
                 )}
 

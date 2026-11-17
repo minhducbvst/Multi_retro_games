@@ -460,7 +460,10 @@ async function startServer(): Promise<void> {
           room.guestUid = playerUid;
           room.guestName = playerName;
           room.guestAvatar = playerAvatar;
-          room.guestReady = false;
+          room.guestReady = true;
+          if (room.status === 'waiting' && room.hostReady) {
+            room.status = 'ready';
+          }
           room.guestPingMs = client.latencyMs || 0;
           room.updatedAt = new Date().toISOString();
           roleNotice = `${playerName} đã vào Port 2 (Challenger). Đang thiết lập kênh WebRTC P2P độ trễ thấp...`;
@@ -502,6 +505,28 @@ async function startServer(): Promise<void> {
       const record = client.roomId ? rooms.get(client.roomId) : undefined;
       if (!record) return;
       const room = record.room;
+
+      if (type === 'room:kick_guest') {
+        if (room.hostUid !== client.uid || !room.guestUid) return;
+        const removedUid = room.guestUid;
+        const removedName = room.guestName || 'Challenger';
+        const timer = record.disconnectTimers.get(removedUid);
+        if (timer) {
+          clearTimeout(timer);
+          record.disconnectTimers.delete(removedUid);
+        }
+        room.guestUid = null;
+        room.guestName = null;
+        room.guestAvatar = null;
+        room.guestReady = false;
+        room.guestPingMs = undefined;
+        if (room.status === 'ready') room.status = 'waiting';
+        room.updatedAt = new Date().toISOString();
+        addSystemMessage(record, `Host đã làm trống Port 2 (${removedName}).`);
+        broadcastToRoom(record, { type: 'room:state', room });
+        broadcastLobbyRooms();
+        return;
+      }
 
       if (type === 'room:ready') {
         const nextReady = Boolean(msg.ready);

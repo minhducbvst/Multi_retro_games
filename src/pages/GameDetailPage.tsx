@@ -3,6 +3,8 @@ import { Game, SaveMetadata } from '../types';
 import { getGameById } from '../services/games/catalog';
 import { useLibraryStore } from '../services/games/libraryStore';
 import { saveManager } from '../services/saves/saveManager';
+import { useLinkedDriveFolder, getPlatformSubfolderName } from '../services/googleDriveService';
+import { DriveFolderSyncModal } from '../components/DriveFolderSyncModal';
 
 interface GameDetailPageProps {
   gameId: string;
@@ -25,6 +27,8 @@ export const GameDetailPage: React.FC<GameDetailPageProps> = ({
   const [activeTab, setActiveTab] = useState<'overview' | 'states' | 'controls' | 'manual'>('overview');
   const [toastMessage, setToastMessage] = useState<string | null>(null);
   const [realSaves, setRealSaves] = useState<SaveMetadata[]>([]);
+  const [isSyncModalOpen, setIsSyncModalOpen] = useState(false);
+  const linkedDriveFolder = useLinkedDriveFolder();
 
   const game = libraryGames.find((g) => g.id === gameId) || getGameById(gameId);
 
@@ -215,6 +219,26 @@ export const GameDetailPage: React.FC<GameDetailPageProps> = ({
               </div>
               <span className="px-1.5 py-0.5 rounded text-[10px] font-mono font-bold bg-cyan-950 text-[#4cd7f6] border border-cyan-500/40">
                 WebRTC 2P
+              </span>
+            </button>
+
+            {/* Google Drive Folder Sync Button */}
+            <button
+              type="button"
+              onClick={() => setIsSyncModalOpen(true)}
+              className="flex items-center justify-between py-2 px-3 rounded-lg bg-[#191b22] border border-emerald-500/40 hover:border-emerald-400 text-white font-mono text-xs transition-all group cursor-pointer"
+              title="Tải game này lên thư mục con theo thể loại trên Google Drive"
+            >
+              <div className="flex items-center gap-2 min-w-0">
+                <span className="material-symbols-outlined text-emerald-400 shrink-0">cloud_upload</span>
+                <span className="truncate">
+                  {linkedDriveFolder
+                    ? `Đồng Bộ -> ${linkedDriveFolder.name}/${getPlatformSubfolderName(game)}`
+                    : 'Đồng Bộ Lên Google Drive'}
+                </span>
+              </div>
+              <span className="px-1.5 py-0.5 rounded text-[10px] font-mono font-bold bg-emerald-950 text-emerald-300 border border-emerald-500/40 shrink-0">
+                {getPlatformSubfolderName(game)}/
               </span>
             </button>
 
@@ -684,6 +708,14 @@ export const GameDetailPage: React.FC<GameDetailPageProps> = ({
           </div>
         </div>
       </div>
+
+      <DriveFolderSyncModal
+        isOpen={isSyncModalOpen}
+        onClose={() => setIsSyncModalOpen(false)}
+        gamesToSync={[game]}
+        title={`Đồng Bộ "${game.title}" Lên Google Drive`}
+        onSyncCompleted={(msg) => showToast(msg)}
+      />
     </div>
   );
 };

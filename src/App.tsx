@@ -20,6 +20,8 @@ import { Game } from './types';
 import { RomHeaderInfo } from './emulator/romParser';
 import { romStorage } from './services/roms/romStorage';
 import { roomService } from './services/multiplayer/roomService';
+import { webrtcNetplay } from './services/multiplayer/webrtcNetplay';
+import { auth } from './services/firebase';
 
 import { libraryStore, useLibraryStore, getCartridgeCoverArt } from './services/games/libraryStore';
 
@@ -51,6 +53,11 @@ export default function App() {
   const [netplaySession, setNetplaySession] = useState<ActiveNetplayLaunch | null>(null);
   const [lockedGuestSession, setLockedGuestSession] = useState<ActiveNetplayLaunch | null>(null);
   const [showGuestStandbyCard, setShowGuestStandbyCard] = useState<boolean>(false);
+  const [guestRoomClosedNotice, setGuestRoomClosedNotice] = useState<{
+    code: string;
+    gameTitle: string;
+    hostName: string;
+  } | null>(null);
 
   // User State (Clean production: starts empty, populates on user actions)
   const [favorites, setFavorites] = useState<string[]>(() => {
@@ -75,6 +82,32 @@ export default function App() {
   useEffect(() => {
     romStorage.init();
   }, []);
+
+  // Sync locked Guest standby screen with live room updates (auto-detect Host close or game changes)
+  useEffect(() => {
+    if (!lockedGuestSession) return;
+    const roomId = lockedGuestSession.room.id;
+    const unsub = roomService.subscribeToRoom(roomId, (updated) => {
+      if (!updated) {
+        setGuestRoomClosedNotice({
+          code: lockedGuestSession.room.code,
+          gameTitle: lockedGuestSession.room.gameTitle,
+          hostName: lockedGuestSession.room.hostName,
+        });
+        try {
+          if (new URLSearchParams(window.location.search).has('room')) {
+            window.history.replaceState({}, '', window.location.pathname);
+          }
+        } catch {}
+        return;
+      }
+      setLockedGuestSession((prev) =>
+        prev && prev.room.id === updated.id ? { ...prev, room: updated } : prev
+      );
+      setSelectedGameId(updated.gameId);
+    });
+    return () => unsub();
+  }, [lockedGuestSession?.room.id]);
 
   // Global ⌘K / Ctrl+K keyboard shortcut listener for Search (disabled in locked Guest invite mode)
   useEffect(() => {
@@ -101,12 +134,34 @@ export default function App() {
     });
   };
 
+  const cleanupHostedRoomIfActive = () => {
+    const currentUid = auth.currentUser?.uid;
+    const hostedRoom =
+      (netplaySession?.role === 'host' ? netplaySession.room : null) ||
+      roomService.getActiveRoom();
+    if (hostedRoom && currentUid && hostedRoom.hostUid === currentUid) {
+      webrtcNetplay.stopSession();
+      void roomService.leaveRoom(hostedRoom.id, currentUid);
+      try {
+        if (new URLSearchParams(window.location.search).has('room')) {
+          window.history.replaceState({}, '', window.location.pathname);
+        }
+      } catch {}
+      setNetplaySession(null);
+      setNetplayRoomId(undefined);
+      setInitialRoomCode(undefined);
+      setPreselectedNetplayGameId(undefined);
+    }
+  };
+
   const handleSelectGame = (gameId: string) => {
+    cleanupHostedRoomIfActive();
     setSelectedGameId(gameId);
     setActiveView('game-detail');
   };
 
   const handlePlayGame = (gameId: string, slot: number = 1) => {
+    cleanupHostedRoomIfActive();
     setSelectedGameId(gameId);
     setActiveSaveSlot(slot);
     setActiveView('emulator');
@@ -125,6 +180,7 @@ export default function App() {
   };
 
   const handleCustomRomLoaded = (customGame: Game, romData: Uint8Array) => {
+    cleanupHostedRoomIfActive();
     romStorage.saveRom(customGame.id, customGame.title, customGame.platform, romData);
     libraryStore.addGame(customGame);
     setSelectedGameId(customGame.id);
@@ -132,6 +188,7 @@ export default function App() {
   };
 
   const handleLaunchRomFromVault = (romData: Uint8Array, headerInfo: RomHeaderInfo) => {
+    cleanupHostedRoomIfActive();
     const plat = headerInfo.platform === 'UNKNOWN' ? 'NES' : headerInfo.platform;
     const title = headerInfo.internalTitle || headerInfo.filename;
     const customGame: Game = {
@@ -165,6 +222,20 @@ export default function App() {
       return;
     }
 
+    if (tab === 'rooms' || tab === 'netplay') {
+      const activeRoom = roomService.getActiveRoom();
+      if (activeRoom && param !== activeRoom.id) {
+        cleanupHostedRoomIfActive();
+      }
+      setNetplayRoomId(param || undefined);
+      setPreselectedNetplayGameId(undefined);
+      setActiveView('netplay');
+      setCurrentTab('rooms');
+      return;
+    }
+
+    cleanupHostedRoomIfActive();
+
     if (tab === 'game-detail' && param) {
       setSelectedGameId(param);
       setActiveView('game-detail');
@@ -172,13 +243,6 @@ export default function App() {
     }
     if (tab === 'emulator' && param) {
       handlePlayGame(param);
-      return;
-    }
-    if (tab === 'rooms' || tab === 'netplay') {
-      setNetplayRoomId(param || undefined);
-      setPreselectedNetplayGameId(undefined);
-      setActiveView('netplay');
-      setCurrentTab('rooms');
       return;
     }
     if (tab === 'vault') {
@@ -194,9 +258,22 @@ export default function App() {
     setActiveView('main');
   };
 
-  const handleLeaveNetplayMatch = () => {
+  const handleLeaveNetplayMatch = (roomClosed: boolean = false) => {
     if (lockedGuestSession) {
+      webrtcNetplay.stopSession();
       setNetplaySession(null);
+      if (roomClosed) {
+        setGuestRoomClosedNotice({
+          code: lockedGuestSession.room.code,
+          gameTitle: lockedGuestSession.room.gameTitle,
+          hostName: lockedGuestSession.room.hostName,
+        });
+        try {
+          if (new URLSearchParams(window.location.search).has('room')) {
+            window.history.replaceState({}, '', window.location.pathname);
+          }
+        } catch {}
+      }
       setShowGuestStandbyCard(true);
       setActiveView('main');
       return;
@@ -206,12 +283,37 @@ export default function App() {
       setActiveView(selectedGameId ? 'game-detail' : 'main');
       return;
     }
+
     const returnRoomId = netplaySession.room.id;
     if (netplaySession.role === 'host') {
-      roomService.stopMatch();
+      // Host exiting game deletes the room immediately
+      webrtcNetplay.stopSession();
+      void roomService.leaveRoom(returnRoomId, netplaySession.playerUid);
+      try {
+        if (new URLSearchParams(window.location.search).has('room')) {
+          window.history.replaceState({}, '', window.location.pathname);
+        }
+      } catch {}
+      setNetplaySession(null);
+      setNetplayRoomId(undefined);
+      setInitialRoomCode(undefined);
+      setPreselectedNetplayGameId(undefined);
+      setCurrentTab('rooms');
+      setActiveView('netplay');
+      return;
     }
+
     setNetplaySession(null);
-    setNetplayRoomId(returnRoomId);
+    if (roomClosed) {
+      try {
+        if (new URLSearchParams(window.location.search).has('room')) {
+          window.history.replaceState({}, '', window.location.pathname);
+        }
+      } catch {}
+      setNetplayRoomId(undefined);
+    } else {
+      setNetplayRoomId(returnRoomId);
+    }
     setCurrentTab('rooms');
     setActiveView('netplay');
   };
@@ -270,14 +372,19 @@ export default function App() {
               }
               onExit={() => {
                 if (netplaySession) {
-                  handleLeaveNetplayMatch();
+                  handleLeaveNetplayMatch(false);
                 } else {
                   setActiveView(selectedGameId ? 'game-detail' : 'main');
                 }
               }}
               onOpenSettings={() => {
                 if (netplaySession) {
-                  handleLeaveNetplayMatch();
+                  const wasHost = netplaySession.role === 'host';
+                  handleLeaveNetplayMatch(false);
+                  if (wasHost) {
+                    setActiveView('main');
+                    setCurrentTab('settings');
+                  }
                 } else {
                   setActiveView('main');
                   setCurrentTab('settings');
@@ -340,31 +447,98 @@ export default function App() {
           {activeView === 'main' && lockedGuestSession && showGuestStandbyCard && (
             <div className="min-h-[65vh] flex items-center justify-center p-4">
               <div className="max-w-md w-full bg-[#191b22] border border-[#4cd7f6]/40 rounded-2xl p-7 text-center space-y-5 shadow-2xl">
-                <div className="w-16 h-16 mx-auto rounded-2xl bg-[#4cd7f6]/10 border border-[#4cd7f6]/30 flex items-center justify-center text-[#4cd7f6]">
-                  <span className="material-symbols-outlined text-3xl">sports_esports</span>
-                </div>
-                <div className="space-y-1.5">
-                  <span className="px-2.5 py-0.5 rounded-full bg-[#a078ff]/20 border border-[#a078ff]/40 text-[#d0bcff] font-mono text-[10px] font-bold">
-                    PHÒNG MỜI #{lockedGuestSession.room.code}
+                <div className={`w-16 h-16 mx-auto rounded-2xl flex items-center justify-center ${
+                  guestRoomClosedNotice
+                    ? 'bg-rose-500/10 border border-rose-500/40 text-rose-400'
+                    : 'bg-[#4cd7f6]/10 border border-[#4cd7f6]/30 text-[#4cd7f6]'
+                }`}>
+                  <span className="material-symbols-outlined text-3xl">
+                    {guestRoomClosedNotice ? 'meeting_room' : 'sports_esports'}
                   </span>
-                  <h2 className="font-headline font-bold text-xl text-white pt-1">
-                    {lockedGuestSession.room.gameTitle}
-                  </h2>
-                  <p className="text-xs font-mono text-[#958ea0] leading-relaxed">
-                    Bạn đang tham gia bằng link mời ở chế độ Port 2. Trò chơi được cố định theo Chủ phòng ({lockedGuestSession.room.hostName}) và không thể đổi sang game khác.
-                  </p>
                 </div>
-                <button
-                  onClick={() => {
-                    setNetplaySession(lockedGuestSession);
-                    setShowGuestStandbyCard(false);
-                    setActiveView('emulator');
-                  }}
-                  className="w-full py-3 px-5 rounded-xl bg-[#4cd7f6] hover:bg-[#70e0f8] text-[#003641] font-mono font-bold text-xs shadow-lg shadow-[#4cd7f6]/20 flex items-center justify-center gap-2 cursor-pointer"
-                >
-                  <span className="material-symbols-outlined text-base">play_arrow</span>
-                  Quay Lại Màn Hình Chơi
-                </button>
+                {guestRoomClosedNotice ? (
+                  <>
+                    <div className="space-y-1.5">
+                      <span className="px-2.5 py-0.5 rounded-full bg-rose-500/15 border border-rose-500/40 text-rose-300 font-mono text-[10px] font-bold">
+                        PHÒNG #{guestRoomClosedNotice.code} ĐÃ ĐÓNG
+                      </span>
+                      <h2 className="font-headline font-bold text-xl text-white pt-1">
+                        Chủ phòng đã thoát game
+                      </h2>
+                      <p className="text-xs font-mono text-[#958ea0] leading-relaxed">
+                        Chủ phòng ({guestRoomClosedNotice.hostName}) đã rời khỏi ván chơi {guestRoomClosedNotice.gameTitle}, phòng chơi đã được xóa tự động.
+                      </p>
+                    </div>
+                    <button
+                      onClick={() => {
+                        setLockedGuestSession(null);
+                        setGuestRoomClosedNotice(null);
+                        setShowGuestStandbyCard(false);
+                        setNetplayRoomId(undefined);
+                        setInitialRoomCode(undefined);
+                        setCurrentTab('browse');
+                        setActiveView('main');
+                      }}
+                      className="w-full py-3 px-5 rounded-xl bg-[#282a30] hover:bg-[#33343b] text-white border border-[#494454]/50 font-mono font-bold text-xs flex items-center justify-center gap-2 cursor-pointer"
+                    >
+                      <span className="material-symbols-outlined text-base">home</span>
+                      Quay Về Trang Chủ
+                    </button>
+                  </>
+                ) : (
+                  <>
+                    <div className="space-y-1.5">
+                      <span className="px-2.5 py-0.5 rounded-full bg-[#a078ff]/20 border border-[#a078ff]/40 text-[#d0bcff] font-mono text-[10px] font-bold">
+                        PHÒNG MỜI #{lockedGuestSession.room.code}
+                      </span>
+                      <h2 className="font-headline font-bold text-xl text-white pt-1">
+                        {lockedGuestSession.room.gameTitle}
+                      </h2>
+                      <p className="text-xs font-mono text-[#958ea0] leading-relaxed">
+                        Bạn đang tham gia bằng link mời ở chế độ Port 2. Trò chơi được cố định theo Chủ phòng ({lockedGuestSession.room.hostName}) và không thể đổi sang game khác.
+                      </p>
+                    </div>
+                    <div className="space-y-2.5">
+                      <button
+                        onClick={() => {
+                          setNetplaySession(lockedGuestSession);
+                          setSelectedGameId(lockedGuestSession.room.gameId);
+                          setShowGuestStandbyCard(false);
+                          setActiveView('emulator');
+                        }}
+                        className="w-full py-3 px-5 rounded-xl bg-[#4cd7f6] hover:bg-[#70e0f8] text-[#003641] font-mono font-bold text-xs shadow-lg shadow-[#4cd7f6]/20 flex items-center justify-center gap-2 cursor-pointer"
+                      >
+                        <span className="material-symbols-outlined text-base">play_arrow</span>
+                        Quay Lại Màn Hình Chơi
+                      </button>
+                      <button
+                        onClick={async () => {
+                          webrtcNetplay.stopSession();
+                          await roomService.leaveRoom(
+                            lockedGuestSession.room.id,
+                            lockedGuestSession.playerUid
+                          );
+                          try {
+                            if (new URLSearchParams(window.location.search).has('room')) {
+                              window.history.replaceState({}, '', window.location.pathname);
+                            }
+                          } catch {}
+                          setLockedGuestSession(null);
+                          setGuestRoomClosedNotice(null);
+                          setShowGuestStandbyCard(false);
+                          setNetplayRoomId(undefined);
+                          setInitialRoomCode(undefined);
+                          setCurrentTab('browse');
+                          setActiveView('main');
+                        }}
+                        className="w-full py-2.5 px-5 rounded-xl bg-[#282a30] hover:bg-rose-500/20 text-[#cbc3d7] hover:text-rose-300 border border-[#494454]/50 hover:border-rose-500/40 font-mono text-xs flex items-center justify-center gap-2 cursor-pointer transition-colors"
+                      >
+                        <span className="material-symbols-outlined text-base">logout</span>
+                        Rời Phòng Hẳn &amp; Mở Port 2
+                      </button>
+                    </div>
+                  </>
+                )}
               </div>
             </div>
           )}
@@ -376,9 +550,10 @@ export default function App() {
                 <DashboardPage
                   onSelectGame={handleSelectGame}
                   onPlayGame={(id) => handlePlayGame(id, 1)}
-                  onOpenNetPlay={() => {
+                  onOpenNetPlay={(gId) => {
                     setNetplayRoomId(undefined);
-                    setPreselectedNetplayGameId(undefined);
+                    setInitialRoomCode(undefined);
+                    setPreselectedNetplayGameId(gId || '__create__');
                     setActiveView('netplay');
                     setCurrentTab('rooms');
                   }}

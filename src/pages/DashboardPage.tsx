@@ -4,12 +4,14 @@ import { useLibraryStore, libraryStore, getCartridgeCoverArt } from '../services
 import { parseRom } from '../emulator/romParser';
 import { romStorage } from '../services/roms/romStorage';
 import { auth } from '../services/firebase';
+import { useLinkedDriveFolder } from '../services/googleDriveService';
+import { DriveFolderSyncModal } from '../components/DriveFolderSyncModal';
 
 interface DashboardPageProps {
   onSelectGame: (gameId: string) => void;
   onPlayGame: (gameId: string) => void;
   onOpenSaves?: () => void;
-  onOpenNetPlay: (roomId?: string) => void;
+  onOpenNetPlay: (gameId?: string) => void;
   onOpenRomVault?: (mode?: 'local' | 'drive') => void;
   favorites: string[];
   onToggleFavorite: (gameId: string) => void;
@@ -36,6 +38,30 @@ export const DashboardPage: React.FC<DashboardPageProps> = ({
   const [dragActive, setDragActive] = useState<boolean>(false);
   const [toastMessage, setToastMessage] = useState<string | null>(null);
   const [gameToDelete, setGameToDelete] = useState<Game | null>(null);
+  const linkedDriveFolder = useLinkedDriveFolder();
+  const [driveSyncModal, setDriveSyncModal] = useState<{
+    isOpen: boolean;
+    games: Game[];
+    initialMode: 'sync' | 'pick-folder';
+    title?: string;
+  }>({
+    isOpen: false,
+    games: [],
+    initialMode: 'sync',
+  });
+
+  const openDriveSyncModal = (
+    targetGames: Game[],
+    initialMode: 'sync' | 'pick-folder' = 'sync',
+    title?: string
+  ) => {
+    setDriveSyncModal({
+      isOpen: true,
+      games: targetGames,
+      initialMode,
+      title,
+    });
+  };
 
   const showToast = (msg: string) => {
     setToastMessage(msg);
@@ -302,11 +328,20 @@ export const DashboardPage: React.FC<DashboardPageProps> = ({
             </span>
           </div>
           <div className="flex flex-col pl-4">
-            <span className="font-mono text-[11px] text-[#958ea0] uppercase tracking-wider">Google Drive</span>
-            <span className="text-lg text-emerald-400 font-bold flex items-center gap-1 font-mono">
-              {auth.currentUser ? 'Đã kết nối' : 'Sẵn sàng'}
-              <span className="material-symbols-outlined text-xs text-emerald-400">check_circle</span>
-            </span>
+            <span className="font-mono text-[11px] text-[#958ea0] uppercase tracking-wider">Thư Mục Google Drive</span>
+            <button
+              type="button"
+              onClick={() => openDriveSyncModal(games, 'pick-folder', 'Chọn Thư Mục Google Drive Cố Định')}
+              className="text-left text-sm text-emerald-400 hover:text-[#4cd7f6] font-bold flex items-center gap-1.5 font-mono transition-colors cursor-pointer mt-0.5"
+              title="Nhấn để chọn hoặc đổi thư mục Google Drive cố định"
+            >
+              <span className="material-symbols-outlined text-base">
+                {linkedDriveFolder ? 'folder_special' : auth.currentUser ? 'add_to_drive' : 'cloud_off'}
+              </span>
+              <span className="truncate max-w-[180px]">
+                {linkedDriveFolder ? linkedDriveFolder.name : auth.currentUser ? 'Chưa liên kết thư mục' : 'Chưa kết nối'}
+              </span>
+            </button>
           </div>
         </div>
       </section>
@@ -347,6 +382,15 @@ export const DashboardPage: React.FC<DashboardPageProps> = ({
               >
                 <span className="material-symbols-outlined text-base">upload_file</span>
                 <span>Tải ROM Từ Máy Tính</span>
+              </button>
+
+              <button
+                type="button"
+                onClick={() => onOpenNetPlay()}
+                className="px-5 py-3 rounded-xl bg-[#a078ff]/20 hover:bg-[#a078ff]/35 text-[#d0bcff] border border-[#a078ff]/50 font-mono text-xs font-bold flex items-center gap-2 transition-all cursor-pointer"
+              >
+                <span className="material-symbols-outlined text-base">hub</span>
+                <span>Tạo Phòng Chơi Trực Tuyến</span>
               </button>
             </div>
           </div>
@@ -422,8 +466,17 @@ export const DashboardPage: React.FC<DashboardPageProps> = ({
                   </button>
 
                   <button
+                    type="button"
+                    onClick={() => onOpenNetPlay(featuredHeroGame.id)}
+                    className="px-4 py-2.5 rounded-lg bg-[#a078ff]/20 hover:bg-[#a078ff]/35 border border-[#a078ff]/50 text-[#d0bcff] font-mono font-bold text-xs flex items-center gap-2 shadow-lg shadow-[#a078ff]/15 transition-all cursor-pointer"
+                  >
+                    <span className="material-symbols-outlined text-base">hub</span>
+                    Tạo Phòng Chơi Trực Tuyến
+                  </button>
+
+                  <button
                     onClick={() => onSelectGame(featuredHeroGame.id)}
-                    className="px-4 py-2.5 rounded-lg bg-[#282a30] border border-[#494454]/50 text-[#e2e2eb] hover:border-[#958ea0] font-mono text-xs flex items-center gap-2 transition-all"
+                    className="px-4 py-2.5 rounded-lg bg-[#282a30] border border-[#494454]/50 text-[#e2e2eb] hover:border-[#958ea0] font-mono text-xs flex items-center gap-2 transition-all cursor-pointer"
                   >
                     <span className="material-symbols-outlined text-base">info</span>
                     Thông Tin Chi Tiết
@@ -553,7 +606,43 @@ export const DashboardPage: React.FC<DashboardPageProps> = ({
             </p>
           </div>
 
-          <div className="flex items-center gap-2">
+          <div className="flex flex-wrap items-center gap-2">
+            <button
+              type="button"
+              onClick={() => openDriveSyncModal(games, 'pick-folder', 'Chọn Thư Mục Google Drive Cố Định')}
+              className={`px-3 py-1.5 rounded-lg border font-mono text-xs flex items-center gap-1.5 transition-colors cursor-pointer ${
+                linkedDriveFolder
+                  ? 'bg-emerald-500/10 hover:bg-emerald-500/20 border-emerald-500/40 text-emerald-300'
+                  : 'bg-[#282a30] hover:bg-[#34373f] border-[#494454]/40 text-[#cbc3d7] hover:text-white'
+              }`}
+              title="Liên kết một thư mục cố định trên Google Drive để lưu ROM theo từng thể loại"
+            >
+              <span className="material-symbols-outlined text-sm">folder_special</span>
+              <span className="max-w-[140px] truncate">
+                {linkedDriveFolder ? linkedDriveFolder.name : 'Liên Kết Thư Mục Drive'}
+              </span>
+            </button>
+
+            <button
+              type="button"
+              onClick={() => openDriveSyncModal(games, 'sync', 'Đồng Bộ Thư Viện Lên Google Drive')}
+              className="px-3 py-1.5 rounded-lg bg-emerald-500/15 hover:bg-emerald-500/25 border border-emerald-500/50 text-emerald-300 font-mono text-xs font-bold flex items-center gap-1.5 transition-colors cursor-pointer"
+              title="Tải game trong thư viện lên thư mục con theo hệ máy (NES, SNES, GBA...) trên Google Drive"
+            >
+              <span className="material-symbols-outlined text-sm">cloud_upload</span>
+              <span>Đồng Bộ Lên Drive</span>
+            </button>
+
+            <button
+              type="button"
+              onClick={() => onOpenNetPlay()}
+              className="px-3 py-1.5 rounded-lg bg-[#a078ff]/20 hover:bg-[#a078ff]/35 border border-[#a078ff]/50 text-[#d0bcff] font-mono text-xs font-bold flex items-center gap-1.5 transition-colors cursor-pointer"
+              title="Tạo phòng chơi trực tuyến với bạn bè qua link mời"
+            >
+              <span className="material-symbols-outlined text-sm">hub</span>
+              <span>Tạo Phòng Trực Tuyến</span>
+            </button>
+
             <button
               onClick={() => onOpenRomVault('drive')}
               className="px-3 py-1.5 rounded-lg bg-[#4cd7f6]/10 hover:bg-[#4cd7f6]/20 border border-[#4cd7f6]/40 text-[#4cd7f6] font-mono text-xs font-bold flex items-center gap-1.5 transition-colors cursor-pointer"
@@ -641,9 +730,15 @@ export const DashboardPage: React.FC<DashboardPageProps> = ({
                     {/* Source Origin Badge */}
                     <span className="absolute bottom-2 left-2 px-1.5 py-0.5 rounded font-mono text-[9px] bg-black/80 border border-[#494454]/40 text-[#4cd7f6] flex items-center gap-1">
                       <span className="material-symbols-outlined text-[10px]">
-                        {game.source === 'drive' ? 'cloud' : 'computer'}
+                        {game.driveFileId || game.source === 'drive' ? 'cloud' : 'computer'}
                       </span>
-                      <span>{game.source === 'drive' ? 'Drive' : 'Máy'}</span>
+                      <span>
+                        {game.driveSubfolderName
+                          ? `Drive/${game.driveSubfolderName}`
+                          : game.source === 'drive'
+                          ? 'Drive'
+                          : 'Máy'}
+                      </span>
                     </span>
 
                     {/* Star Favorite Button */}
@@ -660,23 +755,49 @@ export const DashboardPage: React.FC<DashboardPageProps> = ({
                     </button>
 
                     {/* Hover Quick Action Overlay */}
-                    <div className="absolute inset-0 bg-[#0c0e14]/85 backdrop-blur-sm opacity-0 group-hover:opacity-100 transition-opacity flex flex-col items-center justify-center gap-2 p-3">
+                    <div className="absolute inset-0 bg-[#0c0e14]/85 backdrop-blur-sm opacity-0 group-hover:opacity-100 transition-opacity flex flex-col items-center justify-center gap-1.5 p-2.5">
                       <button
                         onClick={(e) => {
                           e.stopPropagation();
                           onPlayGame(game.id);
                         }}
-                        className="w-full py-1.5 rounded bg-[#4cd7f6] text-[#003641] font-mono text-xs font-bold flex items-center justify-center gap-1 shadow-md hover:bg-[#70e0f8]"
+                        className="w-full py-1.5 rounded bg-[#4cd7f6] text-[#003641] font-mono text-xs font-bold flex items-center justify-center gap-1 shadow-md hover:bg-[#70e0f8] cursor-pointer"
                       >
                         <span className="material-symbols-outlined text-sm">play_arrow</span> Chơi Ngay
                       </button>
-                      <div className="flex items-center gap-1 w-full justify-center">
+                      <button
+                        type="button"
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          onOpenNetPlay(game.id);
+                        }}
+                        className="w-full py-1.5 rounded bg-[#a078ff]/25 hover:bg-[#a078ff]/40 border border-[#a078ff]/50 text-[#d0bcff] font-mono text-[11px] font-bold flex items-center justify-center gap-1 shadow-md transition-colors cursor-pointer"
+                        title="Tạo phòng chơi trực tuyến với tựa game này"
+                      >
+                        <span className="material-symbols-outlined text-sm">hub</span> Tạo Phòng Online
+                      </button>
+                      <div className="flex items-center gap-1 w-full justify-center pt-0.5">
+                        <button
+                          type="button"
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            openDriveSyncModal(
+                              [game],
+                              'sync',
+                              `Đồng Bộ "${game.title}" Lên Google Drive`
+                            );
+                          }}
+                          className="p-1.5 rounded bg-emerald-950/50 text-emerald-300 hover:bg-emerald-900/60 border border-emerald-500/30 transition-colors cursor-pointer"
+                          title={`Đồng bộ game này lên thư mục con ${game.platform} trên Google Drive`}
+                        >
+                          <span className="material-symbols-outlined text-xs">cloud_upload</span>
+                        </button>
                         <button
                           onClick={(e) => {
                             e.stopPropagation();
                             onSelectGame(game.id);
                           }}
-                          className="p-1.5 rounded bg-[#282a30] text-[#cbc3d7] hover:text-white"
+                          className="p-1.5 rounded bg-[#282a30] text-[#cbc3d7] hover:text-white cursor-pointer"
                           title="Chi tiết & cài đặt"
                         >
                           <span className="material-symbols-outlined text-xs">info</span>
@@ -726,16 +847,43 @@ export const DashboardPage: React.FC<DashboardPageProps> = ({
           </div>
         </div>
 
-        <div className="flex items-center gap-2">
+        <div className="flex flex-wrap items-center gap-2">
+          <button
+            type="button"
+            onClick={() => openDriveSyncModal(games, 'pick-folder', 'Chọn Thư Mục Google Drive Cố Định')}
+            className="px-3 py-1.5 rounded-lg bg-[#282a30] hover:bg-[#34373f] text-[#cbc3d7] hover:text-white border border-[#494454]/40 font-bold transition-all flex items-center gap-1.5 cursor-pointer"
+          >
+            <span className="material-symbols-outlined text-sm text-emerald-400">folder_special</span>
+            <span>{linkedDriveFolder ? `Thư mục: ${linkedDriveFolder.name}` : 'Chọn Thư Mục Drive'}</span>
+          </button>
+
+          <button
+            type="button"
+            onClick={() => openDriveSyncModal(games, 'sync', 'Đồng Bộ Thư Viện Lên Google Drive')}
+            className="px-3 py-1.5 rounded-lg bg-emerald-500/15 hover:bg-emerald-500/25 text-emerald-300 border border-emerald-500/40 font-bold transition-all flex items-center gap-1.5 cursor-pointer"
+          >
+            <span className="material-symbols-outlined text-sm">cloud_upload</span>
+            <span>Đồng bộ lên Drive</span>
+          </button>
+
           <button
             onClick={() => onOpenRomVault('drive')}
             className="px-3 py-1.5 rounded-lg bg-[#282a30] hover:bg-[#34373f] text-[#4cd7f6] border border-[#4cd7f6]/40 font-bold transition-all flex items-center gap-1.5 cursor-pointer"
           >
             <span className="material-symbols-outlined text-sm">cloud_sync</span>
-            <span>Đồng bộ Drive</span>
+            <span>Quét ROM Drive</span>
           </button>
         </div>
       </footer>
+
+      <DriveFolderSyncModal
+        isOpen={driveSyncModal.isOpen}
+        onClose={() => setDriveSyncModal((prev) => ({ ...prev, isOpen: false }))}
+        gamesToSync={driveSyncModal.games}
+        initialMode={driveSyncModal.initialMode}
+        title={driveSyncModal.title}
+        onSyncCompleted={(msg) => showToast(msg)}
+      />
     </div>
   );
 };
