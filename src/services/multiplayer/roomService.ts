@@ -740,7 +740,7 @@ export class RoomService {
       code,
       hostUid: auth.currentUser.uid,
       hostName: hostDisplayName,
-      hostAvatar: auth.currentUser.photoURL || undefined,
+      ...(auth.currentUser.photoURL ? { hostAvatar: auth.currentUser.photoURL } : {}),
       guestUid: null,
       guestName: null,
       guestAvatar: null,
@@ -763,14 +763,28 @@ export class RoomService {
 
     try {
       this.cachedIdToken = await auth.currentUser.getIdToken().catch(() => this.cachedIdToken);
-      await setDoc(doc(db, 'rooms', roomId), newRoom);
+      const writePromise = setDoc(doc(db, 'rooms', roomId), newRoom);
+      let timeoutHandle: ReturnType<typeof setTimeout> | null = null;
+      const timeoutPromise = new Promise<never>((_, reject) => {
+        timeoutHandle = setTimeout(() => {
+          reject(new Error('Không thể kết nối máy chủ phòng chơi (hết thời gian chờ). Vui lòng thử lại.'));
+        }, 8000);
+      });
+      try {
+        await Promise.race([writePromise, timeoutPromise]);
+      } finally {
+        if (timeoutHandle) clearTimeout(timeoutHandle);
+      }
       this.activeRoom = newRoom;
       this.activeRoomId = roomId;
       this.activeLocalUid = auth.currentUser.uid;
       this.prevRoomStatus = 'waiting';
       this.messages = [];
       return newRoom;
-    } catch (err) {
+    } catch (err: any) {
+      if (err?.message?.includes('hết thời gian chờ')) {
+        throw err;
+      }
       handleFirestoreError(err, OperationType.CREATE, `rooms/${roomId}`);
       throw err;
     }
@@ -839,14 +853,14 @@ export class RoomService {
         return roomData;
       }
 
-      // If previous Guest slot is clearly stale (>45s without heartbeat while in lobby), release it cleanly
+      // If previous Guest slot is clearly stale (>20s without update while in lobby), release it cleanly
       const updatedMs = roomData.updatedAt ? new Date(roomData.updatedAt).getTime() : 0;
       const isStaleGuestSlot =
         Boolean(roomData.guestUid) &&
         roomData.guestUid !== uid &&
         roomData.status !== 'playing' &&
         updatedMs > 0 &&
-        Date.now() - updatedMs > 45_000;
+        Date.now() - updatedMs > 20_000;
 
       if (isStaleGuestSlot) {
         try {
@@ -974,21 +988,23 @@ export class RoomService {
     }
   }
 
-  public async launchMatch(): Promise<void> {
+  public async launchMatch(roomId?: string): Promise<void> {
     if (this.transport === 'ws') {
       await this.waitForSocketOpen();
       this.sendRaw({ type: 'room:launch' });
       return;
     }
 
-    if (!this.activeRoomId) return;
+    const targetId = roomId || this.activeRoomId;
+    if (!targetId) return;
+    this.activeRoomId = targetId;
     try {
-      await updateDoc(doc(db, 'rooms', this.activeRoomId), {
+      await updateDoc(doc(db, 'rooms', targetId), {
         status: 'playing',
         updatedAt: new Date().toISOString(),
       });
     } catch (err) {
-      handleFirestoreError(err, OperationType.UPDATE, `rooms/${this.activeRoomId}`);
+      handleFirestoreError(err, OperationType.UPDATE, `rooms/${targetId}`);
     }
   }
 

@@ -390,6 +390,10 @@ export const EmulatorPage: React.FC<EmulatorPageProps> = ({
         },
         retroarchConfig: {
           input_max_users: 2,
+          input_libretro_device_p1: 1,
+          input_libretro_device_p2: 1,
+          input_player1_joypad_index: 0,
+          input_player2_joypad_index: 1,
           input_player1_analog_dpad_mode: 1,
           input_player1_up: 'up',
           input_player1_down: 'down',
@@ -683,25 +687,38 @@ export const EmulatorPage: React.FC<EmulatorPageProps> = ({
       videoEl.srcObject = remoteStreamObj;
     }
 
+    const markVideoReady = () => {
+      if (remoteStreamObj.getVideoTracks().length > 0 && (videoEl.readyState >= 2 || videoEl.videoWidth > 0)) {
+        setHasRemoteVideo(true);
+        webrtcNetplay.setFrameFallbackNeeded(false);
+      }
+    };
+
     const tryPlay = async () => {
       videoEl.muted = isMuted;
       videoEl.volume = Math.max(0, Math.min(1, volume / 100));
       try {
         await videoEl.play();
-        if (remoteStreamObj.getVideoTracks().length > 0 && videoEl.readyState >= 2) {
-          setHasRemoteVideo(true);
-        }
+        markVideoReady();
       } catch {
         // Browser autoplay policy blocked unmuted playback -> start muted & offer 1-click sound unlock
         videoEl.muted = true;
         setNeedsAudioUnlock(true);
         try {
           await videoEl.play();
+          markVideoReady();
         } catch {}
       }
     };
 
+    videoEl.addEventListener('canplay', markVideoReady);
+    videoEl.addEventListener('loadeddata', markVideoReady);
     tryPlay();
+
+    return () => {
+      videoEl.removeEventListener('canplay', markVideoReady);
+      videoEl.removeEventListener('loadeddata', markVideoReady);
+    };
   }, [isNetplayGuestOrSpec, remoteStreamObj, relayFrameUrl, isMuted, volume]);
 
   // Real-Time NetPlay Synchronization Loop (WebRTC 60fps Video/Audio + Port 2 Inputs + Relay Fallback)
@@ -789,10 +806,21 @@ export const EmulatorPage: React.FC<EmulatorPageProps> = ({
             if (engineRef.current) {
               engineRef.current.setPlayer2Input(btn, pressed);
             }
-            if (emu && typeof emu.fireKeyboardEvent === 'function') {
+            if (nostalgistRef.current) {
               try {
-                emu.fireKeyboardEvent(pressed ? 'keydown' : 'keyup', PORT2_KEY_MAPPING[btn]);
-              } catch {}
+                const retroBtn = RETRO_KEY_MAPPING[btn]?.retroButton || btn;
+                if (pressed) {
+                  nostalgistRef.current.pressDown({ button: retroBtn, player: 2 });
+                } else {
+                  nostalgistRef.current.pressUp({ button: retroBtn, player: 2 });
+                }
+              } catch {
+                if (emu && typeof emu.fireKeyboardEvent === 'function') {
+                  try {
+                    emu.fireKeyboardEvent(pressed ? 'keydown' : 'keyup', PORT2_KEY_MAPPING[btn]);
+                  } catch {}
+                }
+              }
             }
           }
         }
@@ -843,7 +871,7 @@ export const EmulatorPage: React.FC<EmulatorPageProps> = ({
         const useDcFallback = webrtcNetplay.isDataChannelFrameFallbackActive();
         if (!useWsRelay && !useDcFallback) return;
         try {
-          const dataUrl = canvasRef.current.toDataURL('image/webp', 0.52);
+          const dataUrl = canvasRef.current.toDataURL('image/jpeg', 0.55);
           if (useWsRelay) {
             roomService.sendRelayFrame(dataUrl, canvasRef.current.width, canvasRef.current.height);
           } else if (useDcFallback) {
@@ -890,7 +918,7 @@ export const EmulatorPage: React.FC<EmulatorPageProps> = ({
         if (curRoom.hostUid) {
           webrtcNetplay.requestOfferFromHost(curRoom.hostUid, playingWaitTicks % 3 === 0).catch(() => {});
         }
-        if (playingWaitTicks >= 2) {
+        if (playingWaitTicks >= 1) {
           setShowManualRetryBtn(true);
           webrtcNetplay.setFrameFallbackNeeded(true);
         }
@@ -1234,7 +1262,7 @@ export const EmulatorPage: React.FC<EmulatorPageProps> = ({
 
     animId = requestAnimationFrame(pollGamepad);
     return () => cancelAnimationFrame(animId);
-  }, [isPaused, game?.platform]);
+  }, [isPaused, game?.platform, isNetplayGuestOrSpec, handleVirtualInput]);
 
   const togglePlayPause = () => {
     if (nostalgistRef.current) {

@@ -417,6 +417,7 @@ export default function App() {
               roomId={netplayRoomId}
               initialRoomCode={initialRoomCode}
               preselectedGameId={preselectedNetplayGameId}
+              onConsumePreselectedGame={() => setPreselectedNetplayGameId(undefined)}
               onLaunchNetplayMatch={(launch) => {
                 setNetplaySession(launch);
                 setSelectedGameId(launch.room.gameId);

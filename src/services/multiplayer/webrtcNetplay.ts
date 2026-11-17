@@ -757,9 +757,9 @@ export class WebRTCNetplayManager {
   }
 
   public sendDataChannelFrame(frameDataUrl: string): void {
-    if (frameDataUrl.length > 60_000) return;
+    if (frameDataUrl.length > 180_000) return;
     for (const peer of this.peers.values()) {
-      if (peer.frameChannel.readyState === 'open' && peer.frameChannel.bufferedAmount < 262_144) {
+      if (peer.frameChannel.readyState === 'open' && peer.frameChannel.bufferedAmount < 524_288) {
         try {
           peer.frameChannel.send(frameDataUrl);
         } catch {}

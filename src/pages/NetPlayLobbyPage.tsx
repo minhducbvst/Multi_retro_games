@@ -24,6 +24,7 @@ interface NetPlayLobbyPageProps {
   roomId?: string;
   initialRoomCode?: string;
   preselectedGameId?: string;
+  onConsumePreselectedGame?: () => void;
   onLaunchNetplayMatch: (launch: ActiveNetplayLaunch) => void;
   onLeaveRoom: () => void;
 }
@@ -46,6 +47,7 @@ export const NetPlayLobbyPage: React.FC<NetPlayLobbyPageProps> = ({
   roomId,
   initialRoomCode,
   preselectedGameId,
+  onConsumePreselectedGame,
   onLaunchNetplayMatch,
   onLeaveRoom,
 }) => {
@@ -107,10 +109,37 @@ export const NetPlayLobbyPage: React.FC<NetPlayLobbyPageProps> = ({
   const romUploadInputRef = useRef<HTMLInputElement | null>(null);
   const autoJoinedCodeRef = useRef<string | null>(null);
   const pendingInviteCodeRef = useRef<string | null>(null);
+  const toastTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const createAttemptIdRef = useRef<number>(0);
+  const lastConsumedPreselectedRef = useRef<string | undefined>(undefined);
 
   const showToast = (msg: string) => {
+    if (toastTimerRef.current) {
+      clearTimeout(toastTimerRef.current);
+    }
     setToastMessage(msg);
-    setTimeout(() => setToastMessage(null), 2800);
+    toastTimerRef.current = setTimeout(() => {
+      setToastMessage(null);
+      toastTimerRef.current = null;
+    }, 3000);
+  };
+
+  const openCreateModal = () => {
+    setIsSubmitting(false);
+    setShowCreateModal(true);
+  };
+
+  const closeCreateModal = () => {
+    createAttemptIdRef.current += 1;
+    setIsSubmitting(false);
+    setShowCreateModal(false);
+    onConsumePreselectedGame?.();
+  };
+
+  const closeJoinModal = () => {
+    setIsSubmitting(false);
+    setJoinError(null);
+    setShowJoinModal(false);
   };
 
   // Sync props
@@ -119,22 +148,47 @@ export const NetPlayLobbyPage: React.FC<NetPlayLobbyPageProps> = ({
   }, [roomId]);
 
   useEffect(() => {
+    if (!preselectedGameId) {
+      lastConsumedPreselectedRef.current = undefined;
+      return;
+    }
+    if (lastConsumedPreselectedRef.current === preselectedGameId) {
+      return;
+    }
     if (preselectedGameId === '__create__') {
+      lastConsumedPreselectedRef.current = preselectedGameId;
       const fallback = libraryGames[0] || ARENA_FALLBACK_GAME;
       setCreateGameId(fallback.id);
       setCreatePlatform(fallback.platform);
+      setIsSubmitting(false);
       setShowCreateModal(true);
+      onConsumePreselectedGame?.();
       return;
     }
-    if (preselectedGameId) {
-      const found = libraryGames.find((g) => g.id === preselectedGameId);
-      if (found) {
-        setCreateGameId(found.id);
-        setCreatePlatform(found.platform);
-        setShowCreateModal(true);
-      }
+    const found = libraryGames.find((g) => g.id === preselectedGameId);
+    if (found) {
+      lastConsumedPreselectedRef.current = preselectedGameId;
+      setCreateGameId(found.id);
+      setCreatePlatform(found.platform);
+      setIsSubmitting(false);
+      setShowCreateModal(true);
+      onConsumePreselectedGame?.();
     }
   }, [preselectedGameId, libraryGames]);
+
+  // Allow Escape key to close any open modal immediately
+  useEffect(() => {
+    if (!showCreateModal && !showJoinModal && !showChangeCartridgeModal) return;
+    const onKeyDown = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') {
+        if (showCreateModal) closeCreateModal();
+        if (showJoinModal) closeJoinModal();
+        if (showChangeCartridgeModal) setShowChangeCartridgeModal(false);
+      }
+    };
+    window.addEventListener('keydown', onKeyDown);
+    return () => window.removeEventListener('keydown', onKeyDown);
+  }, [showCreateModal, showJoinModal, showChangeCartridgeModal]);
 
   // Auth tracking
   useEffect(() => {
@@ -383,7 +437,15 @@ export const NetPlayLobbyPage: React.FC<NetPlayLobbyPageProps> = ({
   };
 
   const handleCreateRoom = async () => {
+    if (isSubmitting) return;
+    const attemptId = ++createAttemptIdRef.current;
+
+    // Close popup immediately upon pressing "Tạo Phòng Ngay" so the dialog never gets stuck open
+    setShowCreateModal(false);
+    onConsumePreselectedGame?.();
     setIsSubmitting(true);
+    showToast('Đang khởi tạo phòng chơi...');
+
     try {
       const selectedGame =
         libraryGames.find((g) => g.id === createGameId) ||
@@ -399,6 +461,12 @@ export const NetPlayLobbyPage: React.FC<NetPlayLobbyPageProps> = ({
         hostName: playerProfile.displayName,
       });
 
+      if (createAttemptIdRef.current !== attemptId) {
+        // User cancelled while creation was in flight -> clean up orphaned room
+        void roomService.leaveRoom(newRoom.id, playerProfile.uid);
+        return;
+      }
+
       // Keep Host URL clean so refreshing/exiting never auto-rejoins a deleted room
       try {
         if (new URLSearchParams(window.location.search).has('room')) {
@@ -408,13 +476,18 @@ export const NetPlayLobbyPage: React.FC<NetPlayLobbyPageProps> = ({
 
       setActiveRoomId(newRoom.id);
       setRoom(newRoom);
-      setShowCreateModal(false);
       showToast(`Đã tạo phòng ${newRoom.code}!`);
     } catch (err: unknown) {
-      const msg = err instanceof Error ? err.message : 'Không thể tạo phòng lúc này.';
+      if (createAttemptIdRef.current !== attemptId) return;
+      let msg = err instanceof Error ? err.message : 'Không thể tạo phòng lúc này.';
+      if (msg.startsWith('{') && msg.includes('"operationType"')) {
+        msg = 'Không thể tạo phòng lúc này. Vui lòng kiểm tra đăng nhập Google và kết nối mạng.';
+      }
       showToast(msg);
     } finally {
-      setIsSubmitting(false);
+      if (createAttemptIdRef.current === attemptId) {
+        setIsSubmitting(false);
+      }
     }
   };
 
@@ -464,7 +537,11 @@ export const NetPlayLobbyPage: React.FC<NetPlayLobbyPageProps> = ({
       setRoom(joinedRoom);
       setShowJoinModal(false);
       setJoinCodeInput('');
-      showToast(`Đã tham gia phòng ${joinedRoom.code}!`);
+      if (isJoinedHost && fromInvite) {
+        showToast('Đang mở bằng tài khoản Chủ phòng. Dùng trình duyệt ẩn danh/tài khoản khác cho Máy 2!');
+      } else {
+        showToast(`Đã tham gia phòng ${joinedRoom.code}!`);
+      }
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : 'Không tìm thấy phòng với mã này.';
       if (fromInvite) {
@@ -506,13 +583,28 @@ export const NetPlayLobbyPage: React.FC<NetPlayLobbyPageProps> = ({
 
   const handleHostLaunch = async () => {
     if (!room) return;
-    await roomService.launchMatch();
+    if (room.status === 'playing') {
+      onLaunchNetplayMatch({
+        room,
+        role: 'host',
+        playerUid: playerProfile.uid,
+      });
+      return;
+    }
+    try {
+      await roomService.launchMatch(room.id);
+    } catch {
+      showToast('Không thể khởi chạy trận đấu. Vui lòng thử lại.');
+    }
   };
 
   const handleJoinActiveMatch = () => {
     if (!room) return;
     const myRole: 'host' | 'guest' | 'spectator' =
       room.hostUid === playerProfile.uid ? 'host' : room.guestUid === playerProfile.uid ? 'guest' : 'spectator';
+    if (myRole === 'guest' && !room.guestReady) {
+      roomService.toggleReady(room.id, false, true).catch(() => {});
+    }
     onLaunchNetplayMatch({
       room,
       role: myRole,
@@ -656,7 +748,7 @@ export const NetPlayLobbyPage: React.FC<NetPlayLobbyPageProps> = ({
                 Vào Bằng Mã ({publicRooms.length})
               </button>
               <button
-                onClick={() => setShowCreateModal(true)}
+                onClick={openCreateModal}
                 className="px-3 py-1 rounded bg-[#4cd7f6] hover:bg-[#70e0f8] text-[#003641] font-bold text-xs font-mono shadow-md shadow-[#4cd7f6]/20 transition-all flex items-center gap-1.5 cursor-pointer"
               >
                 <span className="material-symbols-outlined text-sm">add_circle</span>
@@ -701,7 +793,7 @@ export const NetPlayLobbyPage: React.FC<NetPlayLobbyPageProps> = ({
 
               <div className="flex flex-col sm:flex-row items-center gap-3 shrink-0">
                 <button
-                  onClick={() => setShowCreateModal(true)}
+                  onClick={openCreateModal}
                   className="w-full sm:w-auto px-5 py-2.5 rounded-xl bg-[#4cd7f6] hover:bg-[#70e0f8] text-[#003641] font-mono font-bold text-xs shadow-lg shadow-[#4cd7f6]/20 transition-all flex items-center justify-center gap-2 cursor-pointer"
                 >
                   <span className="material-symbols-outlined text-base">add_circle</span>
@@ -756,7 +848,7 @@ export const NetPlayLobbyPage: React.FC<NetPlayLobbyPageProps> = ({
                 </span>
               </div>
               <button
-                onClick={() => setShowCreateModal(true)}
+                onClick={openCreateModal}
                 className="text-xs font-mono text-[#4cd7f6] hover:underline flex items-center gap-1 cursor-pointer"
               >
                 + Tạo phòng mới
@@ -828,7 +920,7 @@ export const NetPlayLobbyPage: React.FC<NetPlayLobbyPageProps> = ({
                 </p>
                 <div className="flex flex-wrap items-center justify-center gap-3">
                   <button
-                    onClick={() => setShowCreateModal(true)}
+                    onClick={openCreateModal}
                     className="px-5 py-2.5 rounded-xl bg-[#4cd7f6] hover:bg-[#70e0f8] text-[#003641] font-mono font-bold text-xs shadow-lg shadow-[#4cd7f6]/20 transition-all flex items-center gap-2 cursor-pointer"
                   >
                     <span className="material-symbols-outlined text-base">add_circle</span>
@@ -940,18 +1032,24 @@ export const NetPlayLobbyPage: React.FC<NetPlayLobbyPageProps> = ({
                       ? 'KHỞI CHẠY NGAY (CHỜ P2 SẴN SÀNG)'
                       : 'VÀO GAME & MỞ PORT 2 CHỜ BẠN'}
                   </button>
-                ) : room.status === 'playing' ? (
+                ) : (
                   <button
                     onClick={handleJoinActiveMatch}
-                    className="px-5 py-2 rounded-lg bg-emerald-400 hover:bg-emerald-300 text-[#00291c] font-mono font-bold text-xs flex items-center gap-2 shadow-xl animate-pulse cursor-pointer"
+                    className={`px-5 py-2 rounded-lg font-mono font-bold text-xs flex items-center gap-2 transition-all cursor-pointer ${
+                      room.status === 'playing'
+                        ? 'bg-emerald-400 hover:bg-emerald-300 text-[#00291c] shadow-xl animate-pulse'
+                        : 'bg-[#4cd7f6] hover:bg-[#70e0f8] text-[#003641] shadow-lg shadow-[#4cd7f6]/20'
+                    }`}
                   >
-                    <span className="material-symbols-outlined text-base">play_circle</span>
-                    VÀO TRẬN ĐẤU ĐANG DIỄN RA
+                    <span className="material-symbols-outlined text-base">
+                      {room.status === 'playing' ? 'play_circle' : 'sports_esports'}
+                    </span>
+                    {room.status === 'playing'
+                      ? 'VÀO TRẬN ĐẤU ĐANG DIỄN RA'
+                      : isSpectator
+                      ? 'VÀO XEM TRẬN ĐẤU'
+                      : 'VÀO MÀN HÌNH CHƠI (PORT 2)'}
                   </button>
-                ) : (
-                  <div className="px-4 py-2 rounded-lg bg-[#111319] border border-[#494454]/30 text-xs font-mono text-[#958ea0]">
-                    {bothPlayersReady ? 'Chờ Host bấm Bắt Đầu Trận Đấu...' : 'Bấm Sẵn Sàng để Host khởi chạy...'}
-                  </div>
                 )}
               </div>
             </div>
@@ -1272,16 +1370,43 @@ export const NetPlayLobbyPage: React.FC<NetPlayLobbyPageProps> = ({
         </>
       )}
 
+      {/* Non-blocking room creation progress bar when popup auto-closed */}
+      {!room && isSubmitting && !showCreateModal && !showJoinModal && (
+        <div className="bg-[#191b22] border border-[#4cd7f6]/40 rounded-xl px-4 py-3 flex items-center justify-between gap-3 font-mono text-xs text-[#4cd7f6] shadow-lg">
+          <div className="flex items-center gap-2.5">
+            <div className="w-4 h-4 rounded-full border-2 border-[#4cd7f6] border-t-transparent animate-spin shrink-0"></div>
+            <span>Đang khởi tạo phòng chơi trực tuyến...</span>
+          </div>
+          <button
+            type="button"
+            onClick={closeCreateModal}
+            className="px-2.5 py-1 rounded bg-[#282a30] hover:bg-[#34373f] text-[#cbc3d7] hover:text-white cursor-pointer"
+          >
+            Hủy
+          </button>
+        </div>
+      )}
+
       {/* Create Room Modal */}
       {showCreateModal && (
-        <div className="fixed inset-0 z-50 bg-black/80 backdrop-blur-sm flex items-center justify-center p-4">
-          <div className="bg-[#1e1f26] border border-[#494454]/50 rounded-2xl max-w-lg w-full p-6 space-y-5 shadow-2xl">
+        <div
+          onClick={closeCreateModal}
+          className="fixed inset-0 z-50 bg-black/80 backdrop-blur-sm flex items-center justify-center p-4"
+        >
+          <div
+            onClick={(e) => e.stopPropagation()}
+            className="bg-[#1e1f26] border border-[#494454]/50 rounded-2xl max-w-lg w-full p-6 space-y-5 shadow-2xl"
+          >
             <div className="flex items-center justify-between border-b border-[#494454]/20 pb-3">
               <h3 className="font-headline font-bold text-lg text-white flex items-center gap-2">
                 <span className="material-symbols-outlined text-[#4cd7f6]">add_box</span>
                 Khởi Tạo Phòng Chơi NetPlay
               </h3>
-              <button onClick={() => setShowCreateModal(false)} className="text-[#958ea0] hover:text-white cursor-pointer">
+              <button
+                type="button"
+                onClick={closeCreateModal}
+                className="text-[#958ea0] hover:text-white cursor-pointer"
+              >
                 <span className="material-symbols-outlined text-xl">close</span>
               </button>
             </div>
@@ -1301,6 +1426,7 @@ export const NetPlayLobbyPage: React.FC<NetPlayLobbyPageProps> = ({
                 </div>
                 <div className="flex flex-col sm:flex-row items-center justify-center gap-3 pt-2">
                   <button
+                    type="button"
                     onClick={() => loginWithGoogle().catch(() => showToast('Đăng nhập Google chưa hoàn tất.'))}
                     className="w-full sm:w-auto px-5 py-2.5 rounded-xl bg-[#4cd7f6] hover:bg-[#70e0f8] text-[#003641] font-bold text-xs shadow-lg shadow-[#4cd7f6]/20 flex items-center justify-center gap-2 cursor-pointer"
                   >
@@ -1308,10 +1434,11 @@ export const NetPlayLobbyPage: React.FC<NetPlayLobbyPageProps> = ({
                     Đăng nhập Google để Tạo Phòng
                   </button>
                   <button
-                    onClick={() => setShowCreateModal(false)}
+                    type="button"
+                    onClick={closeCreateModal}
                     className="w-full sm:w-auto px-4 py-2.5 rounded-xl bg-[#282a30] text-xs text-[#cbc3d7] hover:text-white cursor-pointer"
                   >
-                    Đóng
+                    Hủy
                   </button>
                 </div>
               </div>
@@ -1403,15 +1530,17 @@ export const NetPlayLobbyPage: React.FC<NetPlayLobbyPageProps> = ({
 
                 <div className="flex justify-end gap-3 pt-3 border-t border-[#494454]/20">
                   <button
-                    onClick={() => setShowCreateModal(false)}
-                    className="px-4 py-2 rounded-lg bg-[#282a30] text-xs font-mono text-[#cbc3d7] hover:text-white cursor-pointer"
+                    type="button"
+                    onClick={closeCreateModal}
+                    className="px-4 py-2 rounded-lg bg-[#282a30] hover:bg-[#34373f] text-xs font-mono text-[#cbc3d7] hover:text-white cursor-pointer"
                   >
                     Hủy
                   </button>
                   <button
+                    type="button"
                     onClick={handleCreateRoom}
                     disabled={isSubmitting}
-                    className="px-5 py-2 rounded-lg bg-[#4cd7f6] hover:bg-[#70e0f8] text-[#003641] font-mono font-bold text-xs shadow-lg shadow-[#4cd7f6]/20 transition-all cursor-pointer"
+                    className="px-5 py-2 rounded-lg bg-[#4cd7f6] hover:bg-[#70e0f8] text-[#003641] font-mono font-bold text-xs shadow-lg shadow-[#4cd7f6]/20 transition-all cursor-pointer disabled:opacity-60"
                   >
                     {isSubmitting ? 'Đang tạo phòng...' : 'Tạo Phòng Ngay'}
                   </button>
@@ -1424,14 +1553,20 @@ export const NetPlayLobbyPage: React.FC<NetPlayLobbyPageProps> = ({
 
       {/* Join By Code Modal */}
       {showJoinModal && (
-        <div className="fixed inset-0 z-50 bg-black/80 backdrop-blur-sm flex items-center justify-center p-4">
-          <div className="bg-[#1e1f26] border border-[#494454]/50 rounded-2xl max-w-md w-full p-6 space-y-4 shadow-2xl">
+        <div
+          onClick={closeJoinModal}
+          className="fixed inset-0 z-50 bg-black/80 backdrop-blur-sm flex items-center justify-center p-4"
+        >
+          <div
+            onClick={(e) => e.stopPropagation()}
+            className="bg-[#1e1f26] border border-[#494454]/50 rounded-2xl max-w-md w-full p-6 space-y-4 shadow-2xl"
+          >
             <div className="flex items-center justify-between border-b border-[#494454]/20 pb-3">
               <h3 className="font-headline font-bold text-lg text-white flex items-center gap-2">
                 <span className="material-symbols-outlined text-emerald-400">login</span>
                 Tham Gia Phòng Bằng Mã
               </h3>
-              <button onClick={() => setShowJoinModal(false)} className="text-[#958ea0] hover:text-white cursor-pointer">
+              <button type="button" onClick={closeJoinModal} className="text-[#958ea0] hover:text-white cursor-pointer">
                 <span className="material-symbols-outlined text-xl">close</span>
               </button>
             </div>
@@ -1457,12 +1592,14 @@ export const NetPlayLobbyPage: React.FC<NetPlayLobbyPageProps> = ({
 
             <div className="flex justify-end gap-3 pt-2">
               <button
-                onClick={() => setShowJoinModal(false)}
-                className="px-4 py-2 rounded-lg bg-[#282a30] text-xs font-mono text-[#cbc3d7] hover:text-white cursor-pointer"
+                type="button"
+                onClick={closeJoinModal}
+                className="px-4 py-2 rounded-lg bg-[#282a30] hover:bg-[#34373f] text-xs font-mono text-[#cbc3d7] hover:text-white cursor-pointer"
               >
                 Hủy
               </button>
               <button
+                type="button"
                 onClick={() => handleJoinByCode()}
                 disabled={isSubmitting || !joinCodeInput.trim()}
                 className="px-5 py-2 rounded-lg bg-[#4cd7f6] hover:bg-[#70e0f8] text-[#003641] font-mono font-bold text-xs shadow-md transition-all cursor-pointer"
@@ -1476,8 +1613,14 @@ export const NetPlayLobbyPage: React.FC<NetPlayLobbyPageProps> = ({
 
       {/* Change Cartridge Modal */}
       {showChangeCartridgeModal && (
-        <div className="fixed inset-0 z-50 bg-black/80 backdrop-blur-sm flex items-center justify-center p-4">
-          <div className="bg-[#1e1f26] border border-[#494454]/50 rounded-2xl max-w-xl w-full p-6 space-y-4 shadow-2xl">
+        <div
+          onClick={() => setShowChangeCartridgeModal(false)}
+          className="fixed inset-0 z-50 bg-black/80 backdrop-blur-sm flex items-center justify-center p-4"
+        >
+          <div
+            onClick={(e) => e.stopPropagation()}
+            className="bg-[#1e1f26] border border-[#494454]/50 rounded-2xl max-w-xl w-full p-6 space-y-4 shadow-2xl"
+          >
             <div className="flex items-center justify-between border-b border-[#494454]/20 pb-3">
               <h3 className="font-headline font-bold text-lg text-white flex items-center gap-2">
                 <span className="material-symbols-outlined text-amber-400">swap_horiz</span>
