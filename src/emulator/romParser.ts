@@ -312,18 +312,18 @@ export function parseRom(arg1: string | ArrayBuffer | Uint8Array, arg2?: string 
 
     if (innerExt === 'nes') innerPlat = 'NES';
     else if (innerExt === 'sfc' || innerExt === 'smc') innerPlat = 'SNES';
-    else if (innerExt === 'gba') innerPlat = 'GBA';
+    else if (innerExt === 'gba' || innerExt === 'gb' || innerExt === 'gbc') innerPlat = 'GBA';
     else if (innerExt === 'md' || innerExt === 'gen') innerPlat = 'GENESIS';
     else {
       // Fallback heuristics from ZIP archive filename
       const fnLower = filename.toLowerCase();
-      if (fnLower.includes('gba') || fnLower.includes('advance')) innerPlat = 'GBA';
+      if (fnLower.includes('gba') || fnLower.includes('advance') || fnLower.includes('gbc')) innerPlat = 'GBA';
       else if (fnLower.includes('snes') || fnLower.includes('super')) innerPlat = 'SNES';
       else if (fnLower.includes('nes')) innerPlat = 'NES';
     }
 
     const cleanTitle = (innerFileName || filename)
-      .replace(/\.(nes|smc|sfc|gba|bin|zip|7z)$/i, '')
+      .replace(/\.(nes|smc|sfc|gba|gb|gbc|md|gen|bin|zip|7z)$/i, '')
       .replace(/[\[\(].*?[\]\)]/g, '')
       .replace(/[_\-]+/g, ' ')
       .trim();

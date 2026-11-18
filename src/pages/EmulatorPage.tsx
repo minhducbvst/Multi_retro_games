@@ -79,6 +79,7 @@ export const EmulatorPage: React.FC<EmulatorPageProps> = ({
   const [needsAudioUnlock, setNeedsAudioUnlock] = useState<boolean>(false);
   const [showManualRetryBtn, setShowManualRetryBtn] = useState<boolean>(false);
   const hasRemoteVideoRef = useRef<boolean>(false);
+  const blackVideoDetectedRef = useRef<boolean>(false);
   const relayFrameUrlRef = useRef<string | null>(null);
   const liveRoomRef = useRef<NetPlayRoom | null>(netplaySession?.room || null);
 
@@ -428,6 +429,24 @@ export const EmulatorPage: React.FC<EmulatorPageProps> = ({
         launchConfig.sram = sramBlob;
       }
 
+      // Force preserveDrawingBuffer: true on WebGL/WebGL2 contexts so captureStream() & toDataURL()
+      // never read cleared black buffers on mGBA / SNES9x / RetroArch WebGL cores
+      const origCanvasGetContext = canvas.getContext.bind(canvas);
+      (canvas as any).getContext = (contextType: string, contextAttributes?: any) => {
+        if (contextType === 'webgl' || contextType === 'webgl2' || contextType === 'experimental-webgl') {
+          return origCanvasGetContext(contextType, {
+            ...(contextAttributes || {}),
+            preserveDrawingBuffer: true,
+          });
+        }
+        return origCanvasGetContext(contextType, contextAttributes);
+      };
+      const restoreCanvasGetContext = () => {
+        try {
+          (canvas as any).getContext = origCanvasGetContext;
+        } catch {}
+      };
+
       const launchPromise = Nostalgist.launch(launchConfig);
 
       const timeoutPromise = new Promise<never>((_, reject) => {
@@ -438,6 +457,7 @@ export const EmulatorPage: React.FC<EmulatorPageProps> = ({
       try {
         instance = await Promise.race([launchPromise, timeoutPromise]);
       } finally {
+        setTimeout(restoreCanvasGetContext, 800);
         if (restoreAudioTap) {
           // Restore AudioNode prototype shortly after core audio initialization settles
           setTimeout(restoreAudioTap, 1200);
@@ -690,7 +710,9 @@ export const EmulatorPage: React.FC<EmulatorPageProps> = ({
     const markVideoReady = () => {
       if (remoteStreamObj.getVideoTracks().length > 0 && (videoEl.readyState >= 2 || videoEl.videoWidth > 0)) {
         setHasRemoteVideo(true);
-        webrtcNetplay.setFrameFallbackNeeded(false);
+        if (!blackVideoDetectedRef.current) {
+          webrtcNetplay.setFrameFallbackNeeded(false);
+        }
       }
     };
 
@@ -727,6 +749,7 @@ export const EmulatorPage: React.FC<EmulatorPageProps> = ({
     const { room: initialRoom, role, playerUid } = netplaySession;
 
     setHasRemoteVideo(false);
+    blackVideoDetectedRef.current = false;
     setRelayFrameUrl(null);
     setShowManualRetryBtn(false);
     webrtcNetplay.startSession(initialRoom.id, playerUid, role);
@@ -786,7 +809,12 @@ export const EmulatorPage: React.FC<EmulatorPageProps> = ({
     let streamAttachTimer: ReturnType<typeof setInterval> | null = null;
     let relayFrameTimer: ReturnType<typeof setInterval> | null = null;
     let guestOfferRetryTimer: ReturnType<typeof setInterval> | null = null;
+    let blackVideoWatchdogTimer: ReturnType<typeof setInterval> | null = null;
     let hostHeartbeatTimer: ReturnType<typeof setInterval> | null = null;
+    let streamPumpRafId: number | null = null;
+    let cachedMirrorCanvas: HTMLCanvasElement | null = null;
+    let cachedMirrorCtx: CanvasRenderingContext2D | null = null;
+    let cachedMirrorStream: MediaStream | null = null;
     let unsubRemoteInput: (() => void) | null = null;
     let unsubRemoteStream: (() => void) | null = null;
     let unsubRelayFrame: (() => void) | null = null;
@@ -831,9 +859,42 @@ export const EmulatorPage: React.FC<EmulatorPageProps> = ({
         }
       });
 
-      // Attach Host 60fps canvas + WebAudio stream cleanly whenever core boots or WebAudio initializes
+      // Persistent 2D offscreen mirror canvas at fixed platform resolution so WebGL buffer clears
+      // and RetroArch canvas resizes (e.g. mGBA .zip 256x224 -> 240x160) never freeze or black out WebRTC tracks
+      const mirrorCanvas = document.createElement('canvas');
+      const isGbaPlatform = initialRoom.platform === 'GBA';
+      mirrorCanvas.width = isGbaPlatform ? 480 : 512;
+      mirrorCanvas.height = isGbaPlatform ? 320 : 448;
+      const mirrorCtx = mirrorCanvas.getContext('2d', { alpha: false });
+      cachedMirrorCanvas = mirrorCanvas;
+      cachedMirrorCtx = mirrorCtx;
+
+      const pumpMirrorCanvas = () => {
+        const src = canvasRef.current;
+        if (src && src.width > 0 && src.height > 0 && cachedMirrorCtx && cachedMirrorCanvas) {
+          const dw = cachedMirrorCanvas.width;
+          const dh = cachedMirrorCanvas.height;
+          const scale = Math.min(dw / src.width, dh / src.height);
+          const drawW = Math.max(1, Math.round(src.width * scale));
+          const drawH = Math.max(1, Math.round(src.height * scale));
+          const dx = Math.floor((dw - drawW) / 2);
+          const dy = Math.floor((dh - drawH) / 2);
+          cachedMirrorCtx.imageSmoothingEnabled = false;
+          if (dx > 0 || dy > 0) {
+            cachedMirrorCtx.fillStyle = '#000000';
+            cachedMirrorCtx.fillRect(0, 0, dw, dh);
+          }
+          try {
+            cachedMirrorCtx.drawImage(src, 0, 0, src.width, src.height, dx, dy, drawW, drawH);
+          } catch {}
+        }
+        streamPumpRafId = requestAnimationFrame(pumpMirrorCanvas);
+      };
+      streamPumpRafId = requestAnimationFrame(pumpMirrorCanvas);
+
+      // Attach Host 60fps 2D-mirror canvas + WebAudio stream cleanly whenever core boots or WebAudio initializes
       const tryAttachStream = () => {
-        if (!canvasRef.current) return;
+        if (!canvasRef.current || !cachedMirrorCanvas) return;
         const activeEngine = nostalgistRef.current || engineRef.current;
         if (!activeEngine) return;
         if (canvasRef.current.width <= 0 || canvasRef.current.height <= 0) return;
@@ -847,8 +908,10 @@ export const EmulatorPage: React.FC<EmulatorPageProps> = ({
         }
 
         try {
-          const canvasStream = canvasRef.current.captureStream(60);
-          const videoTracks = canvasStream.getVideoTracks();
+          if (!cachedMirrorStream) {
+            cachedMirrorStream = cachedMirrorCanvas.captureStream(60);
+          }
+          const videoTracks = cachedMirrorStream.getVideoTracks();
           if (videoTracks.length === 0) return;
 
           const combined = new MediaStream();
@@ -871,14 +934,15 @@ export const EmulatorPage: React.FC<EmulatorPageProps> = ({
 
       // Low-latency frame relay (WebSocket OR P2P DataChannel fallback if Guest's <video> cannot decode track)
       relayFrameTimer = setInterval(() => {
-        if (!canvasRef.current) return;
+        const sourceCanvas = cachedMirrorCanvas || canvasRef.current;
+        if (!sourceCanvas) return;
         const useWsRelay = webrtcNetplay.isUsingRelayFallback();
         const useDcFallback = webrtcNetplay.isDataChannelFrameFallbackActive();
         if (!useWsRelay && !useDcFallback) return;
         try {
-          const dataUrl = canvasRef.current.toDataURL('image/jpeg', 0.55);
+          const dataUrl = sourceCanvas.toDataURL('image/jpeg', 0.65);
           if (useWsRelay) {
-            roomService.sendRelayFrame(dataUrl, canvasRef.current.width, canvasRef.current.height);
+            roomService.sendRelayFrame(dataUrl, sourceCanvas.width, sourceCanvas.height);
           } else if (useDcFallback) {
             webrtcNetplay.sendDataChannelFrame(dataUrl);
           }
@@ -889,6 +953,7 @@ export const EmulatorPage: React.FC<EmulatorPageProps> = ({
       const handleStream = (stream: MediaStream) => {
         setRemoteStreamObj(stream);
         if (stream.getVideoTracks().some((t) => t.readyState === 'live')) {
+          blackVideoDetectedRef.current = false;
           setRelayFrameUrl(null);
         }
       };
@@ -900,7 +965,7 @@ export const EmulatorPage: React.FC<EmulatorPageProps> = ({
       }
 
       unsubRelayFrame = webrtcNetplay.onRelayFrame((frame) => {
-        if (!hasRemoteVideoRef.current) {
+        if (!hasRemoteVideoRef.current || blackVideoDetectedRef.current) {
           setRelayFrameUrl(frame);
         }
       });
@@ -918,7 +983,7 @@ export const EmulatorPage: React.FC<EmulatorPageProps> = ({
           playingWaitTicks = 0;
           return;
         }
-        if (hasRemoteVideoRef.current || relayFrameUrlRef.current) return;
+        if ((hasRemoteVideoRef.current && !blackVideoDetectedRef.current) || relayFrameUrlRef.current) return;
         playingWaitTicks += 1;
         if (curRoom.hostUid) {
           webrtcNetplay.requestOfferFromHost(curRoom.hostUid, playingWaitTicks % 3 === 0).catch(() => {});
@@ -928,6 +993,49 @@ export const EmulatorPage: React.FC<EmulatorPageProps> = ({
           webrtcNetplay.setFrameFallbackNeeded(true);
         }
       }, 3000);
+
+      // Watchdog: if Guest <video> reports playing/loaded yet outputs solid black frames for ~3.6s,
+      // automatically switch to crisp DataChannel/WS JPEG frame stream so screen never stays stuck black
+      const probeCanvas = document.createElement('canvas');
+      probeCanvas.width = 8;
+      probeCanvas.height = 8;
+      const probeCtx = probeCanvas.getContext('2d', { willReadFrequently: true });
+      let consecutiveBlackTicks = 0;
+
+      blackVideoWatchdogTimer = setInterval(() => {
+        const curRoom = liveRoomRef.current;
+        if (!curRoom || curRoom.status !== 'playing') {
+          consecutiveBlackTicks = 0;
+          return;
+        }
+        if (relayFrameUrlRef.current) return;
+        const videoEl = remoteVideoRef.current;
+        if (!videoEl || videoEl.videoWidth <= 0 || videoEl.readyState < 2 || !probeCtx) return;
+
+        try {
+          probeCtx.drawImage(videoEl, 0, 0, 8, 8);
+          const pixels = probeCtx.getImageData(0, 0, 8, 8).data;
+          let maxChannel = 0;
+          for (let i = 0; i < pixels.length; i += 4) {
+            if (pixels[i] > maxChannel) maxChannel = pixels[i];
+            if (pixels[i + 1] > maxChannel) maxChannel = pixels[i + 1];
+            if (pixels[i + 2] > maxChannel) maxChannel = pixels[i + 2];
+            if (maxChannel >= 6) break;
+          }
+
+          if (maxChannel < 6) {
+            consecutiveBlackTicks += 1;
+            if (consecutiveBlackTicks >= 3) {
+              blackVideoDetectedRef.current = true;
+              webrtcNetplay.setFrameFallbackNeeded(true);
+              setShowManualRetryBtn(true);
+            }
+          } else {
+            consecutiveBlackTicks = 0;
+            blackVideoDetectedRef.current = false;
+          }
+        } catch {}
+      }, 1200);
     }
 
     return () => {
@@ -939,7 +1047,16 @@ export const EmulatorPage: React.FC<EmulatorPageProps> = ({
       if (streamAttachTimer) clearInterval(streamAttachTimer);
       if (relayFrameTimer) clearInterval(relayFrameTimer);
       if (guestOfferRetryTimer) clearInterval(guestOfferRetryTimer);
+      if (blackVideoWatchdogTimer) clearInterval(blackVideoWatchdogTimer);
       if (hostHeartbeatTimer) clearInterval(hostHeartbeatTimer);
+      if (streamPumpRafId !== null) cancelAnimationFrame(streamPumpRafId);
+      if (cachedMirrorStream) {
+        cachedMirrorStream.getTracks().forEach((t) => t.stop());
+      }
+      if (cachedMirrorCanvas) {
+        cachedMirrorCanvas.width = 0;
+        cachedMirrorCanvas.height = 0;
+      }
       webrtcNetplay.stopSession();
     };
   }, [netplaySession?.room.id, netplaySession?.role, netplaySession?.playerUid]);
@@ -1718,11 +1835,15 @@ export const EmulatorPage: React.FC<EmulatorPageProps> = ({
                     playsInline
                     onLoadedData={() => {
                       setHasRemoteVideo(true);
-                      webrtcNetplay.setFrameFallbackNeeded(false);
+                      if (!blackVideoDetectedRef.current) {
+                        webrtcNetplay.setFrameFallbackNeeded(false);
+                      }
                     }}
                     onPlaying={() => {
                       setHasRemoteVideo(true);
-                      webrtcNetplay.setFrameFallbackNeeded(false);
+                      if (!blackVideoDetectedRef.current) {
+                        webrtcNetplay.setFrameFallbackNeeded(false);
+                      }
                     }}
                     className={`w-full h-full object-contain outline-none ${visualSettings.filter === 'Pixelated' ? 'filter-pixelated' : '[image-rendering:pixelated]'}`}
                     style={colorTintStyle}
