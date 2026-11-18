@@ -25,6 +25,7 @@ interface NetPlayLobbyPageProps {
   initialRoomCode?: string;
   preselectedGameId?: string;
   onConsumePreselectedGame?: () => void;
+  onLockInviteRoom?: (launch: ActiveNetplayLaunch) => void;
   onLaunchNetplayMatch: (launch: ActiveNetplayLaunch) => void;
   onLeaveRoom: () => void;
 }
@@ -48,6 +49,7 @@ export const NetPlayLobbyPage: React.FC<NetPlayLobbyPageProps> = ({
   initialRoomCode,
   preselectedGameId,
   onConsumePreselectedGame,
+  onLockInviteRoom,
   onLaunchNetplayMatch,
   onLeaveRoom,
 }) => {
@@ -116,6 +118,8 @@ export const NetPlayLobbyPage: React.FC<NetPlayLobbyPageProps> = ({
       return false;
     }
   });
+  const [isInviteLocked, setIsInviteLocked] = useState<boolean>(false);
+  const isInviteLockedRef = useRef<boolean>(false);
 
   const chatScrollRef = useRef<HTMLDivElement | null>(null);
   const romUploadInputRef = useRef<HTMLInputElement | null>(null);
@@ -376,7 +380,7 @@ export const NetPlayLobbyPage: React.FC<NetPlayLobbyPageProps> = ({
 
     const unsubLaunch = roomService.subscribeToLaunch((launchedRoom) => {
       if (launchedRoom.id !== activeRoomId) return;
-      const myUid = playerProfile.uid;
+      const myUid = auth.currentUser?.uid || playerProfile.uid;
       const myRole: 'host' | 'guest' | 'spectator' =
         launchedRoom.hostUid === myUid
           ? 'host'
@@ -387,6 +391,7 @@ export const NetPlayLobbyPage: React.FC<NetPlayLobbyPageProps> = ({
         room: launchedRoom,
         role: myRole,
         playerUid: myUid,
+        lockToRoom: isInviteLockedRef.current,
       });
     });
 
@@ -476,13 +481,14 @@ export const NetPlayLobbyPage: React.FC<NetPlayLobbyPageProps> = ({
 
   const handleToggleReady = async () => {
     if (!room) return;
-    const amIHost = room.hostUid === playerProfile.uid;
+    const myUid = currentUser?.uid || playerProfile.uid;
+    const amIHost = room.hostUid === myUid;
     const currentReady = amIHost ? room.hostReady : room.guestReady;
     const nextReady = !currentReady;
 
     try {
       await roomService.toggleReady(room.id, amIHost, nextReady);
-      showToast(nextReady ? 'Bạn đã SẴN SÀNG!' : 'Đã hủy trạng thái sẵn sàng.');
+      showToast(nextReady ? 'Bạn đã SẴN SÀNG! Chờ Chủ phòng nhấn Bắt Đầu Game.' : 'Đã hủy trạng thái sẵn sàng.');
     } catch {
       showToast('Lỗi cập nhật trạng thái sẵn sàng');
     }
@@ -615,9 +621,11 @@ export const NetPlayLobbyPage: React.FC<NetPlayLobbyPageProps> = ({
         } catch {}
       }
 
-      if (!isJoinedHost && (fromInvite || joinedRoom.status === 'playing')) {
+      if (!isJoinedHost && joinedRoom.status === 'playing') {
         const myRole: 'host' | 'guest' | 'spectator' =
           joinedRoom.guestUid === myUid ? 'guest' : 'spectator';
+        isInviteLockedRef.current = fromInvite;
+        setIsInviteLocked(fromInvite);
         setShowJoinModal(false);
         setJoinCodeInput('');
         onLaunchNetplayMatch({
@@ -629,12 +637,30 @@ export const NetPlayLobbyPage: React.FC<NetPlayLobbyPageProps> = ({
         return;
       }
 
+      if (!isJoinedHost && fromInvite) {
+        const myRole: 'host' | 'guest' | 'spectator' =
+          joinedRoom.guestUid === myUid ? 'guest' : 'spectator';
+        isInviteLockedRef.current = true;
+        setIsInviteLocked(true);
+        onLockInviteRoom?.({
+          room: joinedRoom,
+          role: myRole,
+          playerUid: myUid,
+          lockToRoom: true,
+        });
+      } else if (isJoinedHost) {
+        isInviteLockedRef.current = false;
+        setIsInviteLocked(false);
+      }
+
       setActiveRoomId(joinedRoom.id);
       setRoom(joinedRoom);
       setShowJoinModal(false);
       setJoinCodeInput('');
       if (isJoinedHost && fromInvite) {
         showToast('Đang mở bằng tài khoản Chủ phòng. Dùng trình duyệt ẩn danh/tài khoản khác cho Máy 2!');
+      } else if (!isJoinedHost) {
+        showToast(`Đã vào phòng ${joinedRoom.code}! Hãy bấm "Sẵn Sàng" để Chủ phòng bắt đầu game.`);
       } else {
         showToast(`Đã tham gia phòng ${joinedRoom.code}!`);
       }
@@ -763,6 +789,16 @@ export const NetPlayLobbyPage: React.FC<NetPlayLobbyPageProps> = ({
       });
       return;
     }
+    if (!bothPlayersReady) {
+      showToast(
+        !room.guestUid
+          ? 'Đang chờ người chơi khác vào phòng Port 2...'
+          : !room.guestReady
+          ? 'Đang chờ Port 2 nhấn nút Sẵn Sàng...'
+          : 'Vui lòng nhấn Sẵn Sàng trước khi bắt đầu game.'
+      );
+      return;
+    }
     try {
       await roomService.launchMatch(room.id);
     } catch {
@@ -774,13 +810,15 @@ export const NetPlayLobbyPage: React.FC<NetPlayLobbyPageProps> = ({
     if (!room) return;
     const myRole: 'host' | 'guest' | 'spectator' =
       room.hostUid === effectiveUid ? 'host' : room.guestUid === effectiveUid ? 'guest' : 'spectator';
-    if (myRole === 'guest' && !room.guestReady) {
-      roomService.toggleReady(room.id, false, true).catch(() => {});
+    if (room.status !== 'playing' && !isSpectator) {
+      showToast('Vui lòng bấm "Sẵn Sàng" và chờ Chủ phòng nhấn Bắt Đầu Game.');
+      return;
     }
     onLaunchNetplayMatch({
       room,
       role: myRole,
       playerUid: effectiveUid,
+      lockToRoom: isInviteLocked,
     });
   };
 
@@ -861,10 +899,17 @@ export const NetPlayLobbyPage: React.FC<NetPlayLobbyPageProps> = ({
       {/* 1. Sub-Nav & Live Server Telemetry Strip */}
       <section className="w-full px-4 py-2.5 bg-[#0c0e14]/70 border-b border-[#494454]/20 flex flex-wrap items-center justify-between gap-3 text-xs font-mono text-[#cbc3d7]">
         <div className="flex items-center gap-2 flex-wrap">
-          <button onClick={handleLeave} className="hover:text-white transition-colors flex items-center gap-1 cursor-pointer">
-            <span className="material-symbols-outlined text-sm">arrow_back</span>
-            {room ? 'Rời Phòng' : 'Trang Chủ'}
-          </button>
+          {!isInviteLocked ? (
+            <button onClick={handleLeave} className="hover:text-white transition-colors flex items-center gap-1 cursor-pointer">
+              <span className="material-symbols-outlined text-sm">arrow_back</span>
+              {room ? 'Rời Phòng' : 'Trang Chủ'}
+            </button>
+          ) : (
+            <button onClick={onLeaveRoom} className="hover:text-amber-300 text-amber-400 transition-colors flex items-center gap-1 cursor-pointer">
+              <span className="material-symbols-outlined text-sm">lock</span>
+              Phòng Mời Cố Định
+            </button>
+          )}
           <span className="text-[#958ea0]">/</span>
           {room ? (
             <>
@@ -984,7 +1029,7 @@ export const NetPlayLobbyPage: React.FC<NetPlayLobbyPageProps> = ({
                 </h1>
                 <p className="text-xs md:text-sm font-mono text-[#958ea0] max-w-2xl">
                   Host đăng nhập Google để tạo phòng, chọn băng game và phát hình 60 FPS trực tiếp qua WebRTC STUN.
-                  Bạn bè chỉ cần bấm link mời là vào thẳng màn hình chơi Port 2 ngay lập tức.
+                  Bạn bè bấm link mời vào phòng, nhấn Sẵn Sàng là Host có thể Bắt Đầu Game ngay lập tức.
                 </p>
               </div>
 
@@ -1402,6 +1447,8 @@ export const NetPlayLobbyPage: React.FC<NetPlayLobbyPageProps> = ({
                     className={`px-4 py-2 rounded-lg font-mono text-xs font-bold transition-all flex items-center gap-2 shadow-lg cursor-pointer ${
                       (isHost ? room.hostReady : room.guestReady)
                         ? 'bg-emerald-500/20 text-emerald-400 border border-emerald-500/40 hover:bg-emerald-500/30'
+                        : isGuest
+                        ? 'bg-gradient-to-r from-amber-400 to-[#4cd7f6] text-[#002933] border border-amber-300/60 shadow-[0_0_20px_rgba(251,191,36,0.4)] animate-pulse hover:brightness-110'
                         : 'bg-amber-500/20 text-amber-300 border border-amber-500/40 hover:bg-amber-500/30'
                     }`}
                   >
@@ -1414,21 +1461,32 @@ export const NetPlayLobbyPage: React.FC<NetPlayLobbyPageProps> = ({
 
                 {isHost ? (
                   <button
+                    type="button"
                     onClick={handleHostLaunch}
-                    className={`px-5 py-2 rounded-lg font-mono font-bold text-xs flex items-center gap-2 transition-all cursor-pointer ${
+                    disabled={!bothPlayersReady && room.status !== 'playing'}
+                    title={
                       bothPlayersReady
-                        ? 'bg-gradient-to-r from-[#4cd7f6] to-[#70e0f8] text-[#003641] shadow-xl shadow-[#4cd7f6]/30 animate-pulse hover:scale-105'
-                        : 'bg-[#4cd7f6]/80 hover:bg-[#4cd7f6] text-[#003641] shadow-md'
+                        ? 'Cả 2 người chơi đã sẵn sàng — bấm để bắt đầu game!'
+                        : !room.guestUid
+                        ? 'Chờ người chơi khác vào phòng Port 2 trước khi bắt đầu'
+                        : !room.guestReady
+                        ? 'Chờ Port 2 nhấn nút Sẵn Sàng để nút Bắt Đầu Game sáng lên'
+                        : 'Hãy bật Sẵn Sàng để bắt đầu game'
+                    }
+                    className={`px-5 py-2.5 rounded-lg font-mono font-bold text-xs flex items-center gap-2 transition-all ${
+                      room.status === 'playing'
+                        ? 'bg-emerald-400 hover:bg-emerald-300 text-[#00291c] shadow-lg shadow-emerald-400/30 cursor-pointer'
+                        : bothPlayersReady
+                        ? 'bg-gradient-to-r from-[#4cd7f6] via-[#5ae6c6] to-[#34d399] text-[#00312d] shadow-[0_0_25px_rgba(76,215,246,0.55)] ring-2 ring-[#4cd7f6]/80 hover:brightness-110 hover:scale-[1.03] cursor-pointer'
+                        : 'bg-[#22242d] text-[#7c7689] border border-[#494454]/40 opacity-55 cursor-not-allowed shadow-none'
                     }`}
                   >
-                    <span className="material-symbols-outlined text-base">sports_esports</span>
-                    {bothPlayersReady
-                      ? 'BẮT ĐẦU TRẬN ĐẤU (2P ĐỒNG BỘ)'
-                      : room.guestUid
-                      ? 'KHỞI CHẠY NGAY (CHỜ P2 SẴN SÀNG)'
-                      : 'VÀO GAME & MỞ PORT 2 CHỜ BẠN'}
+                    <span className="material-symbols-outlined text-base">
+                      {bothPlayersReady || room.status === 'playing' ? 'play_arrow' : 'sports_esports'}
+                    </span>
+                    {room.status === 'playing' ? 'QUAY LẠI MÀN HÌNH CHƠI' : 'BẮT ĐẦU GAME'}
                   </button>
-                ) : (
+                ) : room.status === 'playing' || isSpectator ? (
                   <button
                     onClick={handleJoinActiveMatch}
                     className={`px-5 py-2 rounded-lg font-mono font-bold text-xs flex items-center gap-2 transition-all cursor-pointer ${
@@ -1438,16 +1496,91 @@ export const NetPlayLobbyPage: React.FC<NetPlayLobbyPageProps> = ({
                     }`}
                   >
                     <span className="material-symbols-outlined text-base">
-                      {room.status === 'playing' ? 'play_circle' : 'sports_esports'}
+                      {room.status === 'playing' ? 'play_circle' : 'visibility'}
                     </span>
-                    {room.status === 'playing'
-                      ? 'VÀO TRẬN ĐẤU ĐANG DIỄN RA'
-                      : isSpectator
-                      ? 'VÀO XEM TRẬN ĐẤU'
-                      : 'VÀO MÀN HÌNH CHƠI (PORT 2)'}
+                    {room.status === 'playing' ? 'VÀO TRẬN ĐẤU ĐANG DIỄN RA' : 'VÀO XEM TRẬN ĐẤU'}
                   </button>
+                ) : (
+                  <div
+                    className={`px-4 py-2 rounded-lg font-mono font-bold text-xs flex items-center gap-2 border ${
+                      room.guestReady
+                        ? 'bg-[#4cd7f6]/10 border-[#4cd7f6]/40 text-[#4cd7f6]'
+                        : 'bg-[#22242d] border-[#494454]/40 text-[#958ea0]'
+                    }`}
+                  >
+                    <span className="material-symbols-outlined text-sm animate-pulse">
+                      {room.guestReady ? 'hourglass_top' : 'touch_app'}
+                    </span>
+                    <span>
+                      {room.guestReady
+                        ? 'CHỜ CHỦ PHÒNG BẮT ĐẦU GAME...'
+                        : 'HÃY BẤM SẴN SÀNG ĐỂ BẮT ĐẦU'}
+                    </span>
+                  </div>
                 )}
               </div>
+            </div>
+
+            {/* 3-Step Room Flow Progress Bar */}
+            <div className="mt-4 pt-3 border-t border-[#494454]/25 flex flex-wrap items-center justify-between gap-2 text-[11px] font-mono relative z-10">
+              <div className="flex flex-wrap items-center gap-2 sm:gap-3">
+                <span className="inline-flex items-center gap-1.5 text-emerald-400">
+                  <span className="w-4 h-4 rounded-full bg-emerald-500/20 border border-emerald-500/40 flex items-center justify-center text-[10px] font-bold">
+                    1
+                  </span>
+                  Đã tạo phòng
+                </span>
+                <span className="text-[#494454]">→</span>
+                <span
+                  className={`inline-flex items-center gap-1.5 ${
+                    bothPlayersReady ? 'text-emerald-400' : 'text-amber-300'
+                  }`}
+                >
+                  <span
+                    className={`w-4 h-4 rounded-full flex items-center justify-center text-[10px] font-bold border ${
+                      bothPlayersReady
+                        ? 'bg-emerald-500/20 border-emerald-500/40 text-emerald-400'
+                        : 'bg-amber-500/20 border-amber-500/40 text-amber-300 animate-pulse'
+                    }`}
+                  >
+                    2
+                  </span>
+                  {!room.guestUid
+                    ? 'Đang chờ người khác vào phòng...'
+                    : !room.guestReady
+                    ? 'Port 2 đã vào — chờ bấm nút Sẵn Sàng'
+                    : !room.hostReady
+                    ? 'Chủ phòng hãy bấm Sẵn Sàng'
+                    : 'Cả 2 đã Sẵn Sàng!'}
+                </span>
+                <span className="text-[#494454]">→</span>
+                <span
+                  className={`inline-flex items-center gap-1.5 ${
+                    bothPlayersReady || room.status === 'playing' ? 'text-[#4cd7f6] font-bold' : 'text-[#7c7689]'
+                  }`}
+                >
+                  <span
+                    className={`w-4 h-4 rounded-full flex items-center justify-center text-[10px] font-bold border ${
+                      bothPlayersReady || room.status === 'playing'
+                        ? 'bg-[#4cd7f6]/20 border-[#4cd7f6] text-[#4cd7f6]'
+                        : 'bg-[#22242d] border-[#494454]/40 text-[#7c7689]'
+                    }`}
+                  >
+                    3
+                  </span>
+                  {bothPlayersReady ? 'Nút Bắt Đầu Game đã sáng — nhấn để chơi!' : 'Bắt Đầu Game'}
+                </span>
+              </div>
+              {!room.guestUid && isHost && (
+                <button
+                  type="button"
+                  onClick={handleCopyInviteLink}
+                  className="text-[#4cd7f6] hover:underline flex items-center gap-1 cursor-pointer"
+                >
+                  <span className="material-symbols-outlined text-xs">content_copy</span>
+                  Gửi link mời cho bạn bè
+                </button>
+              )}
             </div>
           </div>
 

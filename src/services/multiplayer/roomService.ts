@@ -918,17 +918,19 @@ export class RoomService {
       }
 
       if (!roomData.guestUid || roomData.guestUid === uid) {
+        const isExistingGuest = roomData.guestUid === uid;
+        const nextGuestReady = isExistingGuest ? Boolean(roomData.guestReady) : false;
         const nextStatus: NetPlayRoom['status'] =
           roomData.status === 'playing'
             ? 'playing'
-            : roomData.hostReady
+            : roomData.hostReady && nextGuestReady
             ? 'ready'
             : 'waiting';
         const updatedFields: Partial<NetPlayRoom> = {
           guestUid: uid,
           guestName: displayName,
           guestAvatar: photoURL,
-          guestReady: true,
+          guestReady: nextGuestReady,
           status: nextStatus,
           updatedAt: new Date().toISOString(),
         };

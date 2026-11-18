@@ -94,6 +94,8 @@ export default function App() {
           gameTitle: lockedGuestSession.room.gameTitle,
           hostName: lockedGuestSession.room.hostName,
         });
+        setShowGuestStandbyCard(true);
+        setActiveView('main');
         try {
           if (new URLSearchParams(window.location.search).has('room')) {
             window.history.replaceState({}, '', window.location.pathname);
@@ -425,6 +427,12 @@ export default function App() {
               initialRoomCode={initialRoomCode}
               preselectedGameId={preselectedNetplayGameId}
               onConsumePreselectedGame={() => setPreselectedNetplayGameId(undefined)}
+              onLockInviteRoom={(inviteLock) => {
+                setLockedGuestSession(inviteLock);
+                setSelectedGameId(inviteLock.room.gameId);
+                setNetplayRoomId(inviteLock.room.id);
+                setShowGuestStandbyCard(false);
+              }}
               onLaunchNetplayMatch={(launch) => {
                 setNetplaySession(launch);
                 setSelectedGameId(launch.room.gameId);
@@ -509,15 +517,23 @@ export default function App() {
                     <div className="space-y-2.5">
                       <button
                         onClick={() => {
-                          setNetplaySession(lockedGuestSession);
-                          setSelectedGameId(lockedGuestSession.room.gameId);
-                          setShowGuestStandbyCard(false);
-                          setActiveView('emulator');
+                          if (lockedGuestSession.room.status === 'playing') {
+                            setNetplaySession(lockedGuestSession);
+                            setSelectedGameId(lockedGuestSession.room.gameId);
+                            setShowGuestStandbyCard(false);
+                            setActiveView('emulator');
+                          } else {
+                            setNetplayRoomId(lockedGuestSession.room.id);
+                            setShowGuestStandbyCard(false);
+                            setActiveView('netplay');
+                          }
                         }}
                         className="w-full py-3 px-5 rounded-xl bg-[#4cd7f6] hover:bg-[#70e0f8] text-[#003641] font-mono font-bold text-xs shadow-lg shadow-[#4cd7f6]/20 flex items-center justify-center gap-2 cursor-pointer"
                       >
                         <span className="material-symbols-outlined text-base">play_arrow</span>
-                        Quay Lại Màn Hình Chơi
+                        {lockedGuestSession.room.status === 'playing'
+                          ? 'Quay Lại Màn Hình Chơi'
+                          : 'Quay Lại Phòng Chờ Sẵn Sàng'}
                       </button>
                       <button
                         onClick={async () => {

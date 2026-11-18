@@ -483,13 +483,13 @@ async function startServer(): Promise<void> {
           room.guestUid = playerUid;
           room.guestName = playerName;
           room.guestAvatar = playerAvatar;
-          room.guestReady = true;
-          if (room.status === 'waiting' && room.hostReady) {
-            room.status = 'ready';
+          room.guestReady = false;
+          if (room.status !== 'playing') {
+            room.status = 'waiting';
           }
           room.guestPingMs = client.latencyMs || 0;
           room.updatedAt = new Date().toISOString();
-          roleNotice = `${playerName} đã vào Port 2 (Challenger). Đang thiết lập kênh WebRTC P2P độ trễ thấp...`;
+          roleNotice = `${playerName} đã vào Port 2 (Challenger). Hãy bấm nút Sẵn Sàng để Chủ phòng bắt đầu game!`;
         } else {
           if (!room.spectators.some((s) => s.id === playerUid)) {
             room.spectators.push({
