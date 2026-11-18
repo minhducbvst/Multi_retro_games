@@ -81,12 +81,11 @@ export async function testConnection() {
     }
     if (code === 'not-found' || msg.includes('Database') || msg.includes('not found')) {
       firestoreReachable = false;
-      console.warn('Firestore database not provisioned; using local IndexedDB storage.');
+      console.warn('Firestore database not provisioned:', msg);
       return;
     }
     if (msg.includes('the client is offline') || code === 'unavailable') {
-      firestoreReachable = false;
-      console.warn('Firestore client is offline or network restricted.');
+      console.warn('Firestore initial boot check offline/retrying:', msg);
     }
   }
 }

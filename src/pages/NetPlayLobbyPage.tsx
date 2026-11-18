@@ -109,6 +109,7 @@ export const NetPlayLobbyPage: React.FC<NetPlayLobbyPageProps> = ({
   // Join Room Form
   const [joinCodeInput, setJoinCodeInput] = useState<string>('');
   const [joinError, setJoinError] = useState<string | null>(null);
+  const [createError, setCreateError] = useState<string | null>(null);
   const [isSubmitting, setIsSubmitting] = useState<boolean>(false);
   const [isAutoJoiningInvite, setIsAutoJoiningInvite] = useState<boolean>(() => {
     if (initialRoomCode) return true;
@@ -143,6 +144,7 @@ export const NetPlayLobbyPage: React.FC<NetPlayLobbyPageProps> = ({
 
   const openCreateModal = () => {
     setIsSubmitting(false);
+    setCreateError(null);
     setShowCreateModal(true);
   };
 
@@ -245,18 +247,18 @@ export const NetPlayLobbyPage: React.FC<NetPlayLobbyPageProps> = ({
     const params = new URLSearchParams(window.location.search);
     const code = initialRoomCode || params.get('room');
     if (code && autoJoinedCodeRef.current !== code) {
-      autoJoinedCodeRef.current = code;
       setIsAutoJoiningInvite(true);
       let cancelled = false;
       auth.authStateReady().then(() => {
-        if (!cancelled) {
+        if (!cancelled && autoJoinedCodeRef.current !== code) {
+          autoJoinedCodeRef.current = code;
           handleJoinByCode(code, getOrCreatePlayerProfile(), true);
         }
       });
       return () => {
         cancelled = true;
       };
-    } else {
+    } else if (!code) {
       setIsAutoJoiningInvite(false);
     }
   }, [initialRoomCode]);
@@ -543,6 +545,7 @@ export const NetPlayLobbyPage: React.FC<NetPlayLobbyPageProps> = ({
     // Close popup immediately upon pressing "Tạo Phòng Ngay" so the dialog never gets stuck open
     setShowCreateModal(false);
     onConsumePreselectedGame?.();
+    setCreateError(null);
     setIsSubmitting(true);
     showToast('Đang khởi tạo phòng chơi...');
 
@@ -575,6 +578,8 @@ export const NetPlayLobbyPage: React.FC<NetPlayLobbyPageProps> = ({
         }
       } catch {}
 
+      isInviteLockedRef.current = false;
+      setIsInviteLocked(false);
       setCreateRoomNote('');
       setActiveRoomId(newRoom.id);
       setRoom(newRoom);
@@ -585,6 +590,7 @@ export const NetPlayLobbyPage: React.FC<NetPlayLobbyPageProps> = ({
       if (msg.startsWith('{') && msg.includes('"operationType"')) {
         msg = 'Không thể tạo phòng lúc này. Vui lòng kiểm tra đăng nhập Google và kết nối mạng.';
       }
+      setCreateError(msg);
       showToast(msg);
     } finally {
       if (createAttemptIdRef.current === attemptId) {
@@ -1972,7 +1978,7 @@ export const NetPlayLobbyPage: React.FC<NetPlayLobbyPageProps> = ({
         </>
       )}
 
-      {/* Non-blocking room creation progress bar when popup auto-closed */}
+      {/* Non-blocking room creation progress bar or error alert when popup auto-closed */}
       {!room && isSubmitting && !showCreateModal && !showJoinModal && (
         <div className="bg-[#191b22] border border-[#4cd7f6]/40 rounded-xl px-4 py-3 flex items-center justify-between gap-3 font-mono text-xs text-[#4cd7f6] shadow-lg">
           <div className="flex items-center gap-2.5">
@@ -1986,6 +1992,34 @@ export const NetPlayLobbyPage: React.FC<NetPlayLobbyPageProps> = ({
           >
             Hủy
           </button>
+        </div>
+      )}
+
+      {!room && createError && !isSubmitting && (
+        <div className="bg-rose-500/10 border border-rose-500/40 rounded-xl px-4 py-3 flex flex-wrap items-center justify-between gap-3 font-mono text-xs text-rose-200 shadow-lg">
+          <div className="flex items-center gap-2">
+            <span className="material-symbols-outlined text-base text-rose-400">error</span>
+            <span>{createError}</span>
+          </div>
+          <div className="flex items-center gap-2">
+            <button
+              type="button"
+              onClick={() => {
+                setCreateError(null);
+                openCreateModal();
+              }}
+              className="px-3 py-1 rounded bg-[#4cd7f6] text-[#003641] font-bold cursor-pointer"
+            >
+              Thử Lại
+            </button>
+            <button
+              type="button"
+              onClick={() => setCreateError(null)}
+              className="px-2 py-1 rounded bg-[#282a30] text-[#cbc3d7] cursor-pointer"
+            >
+              Đóng
+            </button>
+          </div>
         </div>
       )}
 

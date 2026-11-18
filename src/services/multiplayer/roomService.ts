@@ -887,14 +887,14 @@ export class RoomService {
         return roomData;
       }
 
-      // If previous Guest slot is clearly stale (>20s without update while in lobby), release it cleanly
+      // If previous Guest slot is clearly stale (>75s without update while in lobby), release it cleanly
       const updatedMs = roomData.updatedAt ? new Date(roomData.updatedAt).getTime() : 0;
       const isStaleGuestSlot =
         Boolean(roomData.guestUid) &&
         roomData.guestUid !== uid &&
         roomData.status !== 'playing' &&
         updatedMs > 0 &&
-        Date.now() - updatedMs > 20_000;
+        Date.now() - updatedMs > 75_000;
 
       if (isStaleGuestSlot) {
         try {
@@ -1086,7 +1086,7 @@ export class RoomService {
   }
 
   public sendHostHeartbeat(roomId: string): void {
-    if (!roomId || this.transport !== 'cloud-p2p' || !isFirestoreReachable()) return;
+    if (!roomId || this.transport !== 'cloud-p2p') return;
     if (!auth.currentUser) return;
     updateDoc(doc(db, 'rooms', roomId), {
       updatedAt: new Date().toISOString(),
@@ -1192,11 +1192,14 @@ export class RoomService {
   // ==================== CLOUD FIRESTORE LISTENERS ====================
 
   private startCloudRoomListener(roomId: string): void {
-    if (this.cloudRoomUnsubs.has(roomId) || !isFirestoreReachable()) return;
+    if (this.cloudRoomUnsubs.has(roomId)) return;
     const unsub = onSnapshot(
       doc(db, 'rooms', roomId),
       (snap) => {
         if (!snap.exists()) {
+          if (snap.metadata.fromCache && this.activeRoom?.id === roomId) {
+            return;
+          }
           this.notifyRoomListeners(roomId, null);
           return;
         }
@@ -1226,7 +1229,7 @@ export class RoomService {
   }
 
   private startCloudPublicRoomsListener(): void {
-    if (this.cloudPublicUnsub || !isFirestoreReachable()) return;
+    if (this.cloudPublicUnsub) return;
     const q = query(collection(db, 'rooms'), where('isPublic', '==', true));
     this.cloudPublicUnsub = onSnapshot(
       q,
@@ -1254,7 +1257,7 @@ export class RoomService {
   }
 
   private startCloudMyHostedRoomsListener(hostUid: string): void {
-    if (this.cloudMyRoomsUnsub || !isFirestoreReachable() || !hostUid) return;
+    if (this.cloudMyRoomsUnsub || !hostUid) return;
     const q = query(collection(db, 'rooms'), where('hostUid', '==', hostUid));
     this.cloudMyRoomsUnsub = onSnapshot(
       q,
@@ -1281,7 +1284,7 @@ export class RoomService {
   }
 
   private startCloudMessagesListener(roomId: string): void {
-    if (this.cloudMsgUnsubs.has(roomId) || !isFirestoreReachable()) return;
+    if (this.cloudMsgUnsubs.has(roomId)) return;
     const q = query(collection(db, 'rooms', roomId, 'messages'), orderBy('timestamp', 'asc'));
     const unsub = onSnapshot(
       q,
@@ -1303,7 +1306,7 @@ export class RoomService {
   }
 
   private startCloudSignalsListener(roomId: string): void {
-    if (this.cloudSigUnsubs.has(roomId) || !isFirestoreReachable()) return;
+    if (this.cloudSigUnsubs.has(roomId)) return;
     if (!this.seenSignalIdsByRoom.has(roomId)) {
       this.seenSignalIdsByRoom.set(roomId, new Set<string>());
     }
