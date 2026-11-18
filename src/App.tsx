@@ -224,7 +224,14 @@ export default function App() {
 
     if (tab === 'rooms' || tab === 'netplay') {
       const activeRoom = roomService.getActiveRoom();
-      if (activeRoom && param !== activeRoom.id) {
+      if (activeRoom) {
+        if (!param || param === activeRoom.id) {
+          // Clicking Multiplayer/Rooms while already in a room keeps the active room alive
+          setNetplayRoomId(activeRoom.id);
+          setActiveView('netplay');
+          setCurrentTab('rooms');
+          return;
+        }
         cleanupHostedRoomIfActive();
       }
       setNetplayRoomId(param || undefined);
@@ -354,7 +361,7 @@ export default function App() {
         )}
 
         {/* Dynamic Center Viewport */}
-        <main className="flex-1 overflow-y-auto p-4 sm:p-6 lg:p-8">
+        <main className={`flex-1 overflow-y-auto p-4 sm:p-6 lg:p-8 ${activeView !== 'emulator' && !lockedGuestSession ? 'pb-20 lg:pb-8' : ''}`}>
           {/* View 1: Playable In-Game Emulator Screen */}
           {activeView === 'emulator' && (
             <EmulatorPage
@@ -611,7 +618,32 @@ export default function App() {
         </main>
       </div>
 
-      {/* 3. Global Command Palette Modal (⌘K) */}
+      {/* 3. Mobile / Tablet Bottom Navigation Bar */}
+      {activeView !== 'emulator' && !lockedGuestSession && (
+        <nav className="lg:hidden fixed bottom-0 inset-x-0 z-40 bg-[#0c0e14]/95 backdrop-blur-md border-t border-[#494454]/40 px-2 py-1.5 flex items-center justify-around font-mono text-[10px]">
+          {[
+            { id: 'browse', label: 'Thư viện', icon: 'sports_esports', active: activeView === 'main' && (currentTab === 'browse' || currentTab === 'library' || currentTab === 'favorites' || currentTab === 'recent') },
+            { id: 'rooms', label: 'Phòng Chơi', icon: 'hub', active: activeView === 'netplay' },
+            { id: 'vault', label: 'Kho ROM', icon: 'folder_zip', active: activeView === 'main' && currentTab === 'vault' },
+            { id: 'saves', label: 'Bản Lưu', icon: 'cloud_sync', active: activeView === 'main' && currentTab === 'saves' },
+            { id: 'settings', label: 'Cài Đặt', icon: 'tune', active: activeView === 'main' && currentTab === 'settings' },
+          ].map((item) => (
+            <button
+              key={item.id}
+              type="button"
+              onClick={() => handleNavigate(item.id)}
+              className={`flex flex-col items-center gap-0.5 px-2.5 py-1 rounded-lg transition-colors cursor-pointer ${
+                item.active ? 'text-[#4cd7f6] bg-[#4cd7f6]/10 font-bold' : 'text-[#958ea0] hover:text-white'
+              }`}
+            >
+              <span className="material-symbols-outlined text-lg">{item.icon}</span>
+              <span>{item.label}</span>
+            </button>
+          ))}
+        </nav>
+      )}
+
+      {/* 4. Global Command Palette Modal (⌘K) */}
       <SearchModal
         isOpen={searchModalOpen}
         onClose={() => setSearchModalOpen(false)}

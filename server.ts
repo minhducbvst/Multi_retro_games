@@ -39,6 +39,7 @@ interface NetPlayRoomState {
   rollbackFrames: number;
   inputDelayTarget: string;
   pauseAuthority: string;
+  roomNote?: string;
   createdAt: string;
   updatedAt: string;
 }
@@ -120,6 +121,18 @@ function getPublicRoomsList(): NetPlayRoomState[] {
   return list;
 }
 
+function getMyHostedRoomsList(hostUid: string): NetPlayRoomState[] {
+  if (!hostUid) return [];
+  const list: NetPlayRoomState[] = [];
+  for (const record of rooms.values()) {
+    if (record.room.hostUid === hostUid && record.room.status !== 'closed') {
+      list.push(record.room);
+    }
+  }
+  list.sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
+  return list;
+}
+
 function broadcastLobbyRooms(): void {
   const publicRooms = getPublicRoomsList();
   for (const client of allClients.values()) {
@@ -127,6 +140,10 @@ function broadcastLobbyRooms(): void {
       sendJson(client.ws, {
         type: 'lobby:rooms',
         rooms: publicRooms,
+      });
+      sendJson(client.ws, {
+        type: 'lobby:my_rooms',
+        rooms: getMyHostedRoomsList(client.uid),
       });
     }
   }
@@ -327,6 +344,10 @@ async function startServer(): Promise<void> {
           type: 'lobby:rooms',
           rooms: getPublicRoomsList(),
         });
+        sendJson(ws, {
+          type: 'lobby:my_rooms',
+          rooms: getMyHostedRoomsList(client.uid),
+        });
         return;
       }
 
@@ -349,6 +370,7 @@ async function startServer(): Promise<void> {
         const isPublic = msg.isPublic !== undefined ? Boolean(msg.isPublic) : true;
         const rollbackFrames = Number(msg.rollbackFrames || 1);
         const inputDelayTarget = String(msg.inputDelayTarget || '0-1 Frame (Sub-16ms)');
+        const roomNote = typeof msg.roomNote === 'string' && msg.roomNote.trim() ? msg.roomNote.trim().slice(0, 120) : undefined;
 
         client.uid = hostUid;
         client.displayName = hostName;
@@ -379,6 +401,7 @@ async function startServer(): Promise<void> {
           rollbackFrames,
           inputDelayTarget,
           pauseAuthority: `Host Only (${hostName})`,
+          ...(roomNote ? { roomNote } : {}),
           createdAt: nowIso,
           updatedAt: nowIso,
         };
@@ -501,6 +524,23 @@ async function startServer(): Promise<void> {
         return;
       }
 
+      if (type === 'room:delete_by_id') {
+        const targetId = String(msg.roomId || '');
+        const targetRec = rooms.get(targetId);
+        if (targetRec && targetRec.room.hostUid === client.uid) {
+          targetRec.room.status = 'closed';
+          targetRec.room.updatedAt = new Date().toISOString();
+          broadcastToRoom(targetRec, { type: 'room:closed', roomId: targetRec.room.id });
+          for (const c of targetRec.clients.values()) {
+            c.roomId = null;
+          }
+          codeToRoomId.delete(targetRec.room.code);
+          rooms.delete(targetRec.room.id);
+          broadcastLobbyRooms();
+        }
+        return;
+      }
+
       // Room-scoped actions below require active room membership
       const record = client.roomId ? rooms.get(client.roomId) : undefined;
       if (!record) return;
@@ -567,6 +607,33 @@ async function startServer(): Promise<void> {
         room.updatedAt = new Date().toISOString();
 
         addSystemMessage(record, `Host đã đổi băng game sang: ${room.gameTitle} (${room.platform}).`);
+        broadcastToRoom(record, { type: 'room:state', room });
+        broadcastLobbyRooms();
+        return;
+      }
+
+      if (type === 'room:update_settings') {
+        if (room.hostUid !== client.uid) return;
+        const changes: string[] = [];
+        if (typeof msg.isPublic === 'boolean' && msg.isPublic !== room.isPublic) {
+          room.isPublic = msg.isPublic;
+          changes.push(msg.isPublic ? 'Chế độ: Công khai' : 'Chế độ: Riêng tư');
+        }
+        if (typeof msg.rollbackFrames === 'number' && Number.isFinite(msg.rollbackFrames)) {
+          room.rollbackFrames = Math.max(1, Math.min(4, Math.round(msg.rollbackFrames)));
+        }
+        if (typeof msg.inputDelayTarget === 'string' && msg.inputDelayTarget.trim()) {
+          room.inputDelayTarget = msg.inputDelayTarget.trim().slice(0, 60);
+          changes.push(`Độ trễ: ${room.inputDelayTarget}`);
+        }
+        if (typeof msg.roomNote === 'string') {
+          const cleaned = msg.roomNote.trim().slice(0, 120);
+          room.roomNote = cleaned || undefined;
+        }
+        room.updatedAt = new Date().toISOString();
+        if (changes.length > 0) {
+          addSystemMessage(record, `Host đã cập nhật cài đặt phòng (${changes.join(' • ')}).`);
+        }
         broadcastToRoom(record, { type: 'room:state', room });
         broadcastLobbyRooms();
         return;

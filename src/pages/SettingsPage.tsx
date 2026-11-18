@@ -14,13 +14,50 @@ interface SettingsPageProps {
   onLaunchRom?: () => void;
 }
 
+const SYSTEM_SETTINGS_KEY = 'retroverse_system_settings';
+
 export const SettingsPage: React.FC<SettingsPageProps> = ({ onBack }) => {
   const [activeTab, setActiveTab] = useState<'controller' | 'video' | 'audio' | 'system' | 'bios'>('controller');
-  const [videoFilter, setVideoFilter] = useState<string>('CRT Trinitron Scanlines');
-  const [aspectRatio, setAspectRatio] = useState<string>('4:3 CRT Square Pixels');
-  const [audioLatency, setAudioLatency] = useState<number>(16); // ms
-  const [enableDsp, setEnableDsp] = useState<boolean>(true);
+  const [videoFilter, setVideoFilter] = useState<string>(() => {
+    try {
+      const saved = JSON.parse(localStorage.getItem(SYSTEM_SETTINGS_KEY) || '{}');
+      return saved.videoFilter || 'CRT Trinitron Scanlines';
+    } catch {
+      return 'CRT Trinitron Scanlines';
+    }
+  });
+  const [aspectRatio, setAspectRatio] = useState<string>(() => {
+    try {
+      const saved = JSON.parse(localStorage.getItem(SYSTEM_SETTINGS_KEY) || '{}');
+      return saved.aspectRatio || '4:3 CRT Square Pixels (Authentic NES/SNES)';
+    } catch {
+      return '4:3 CRT Square Pixels (Authentic NES/SNES)';
+    }
+  });
+  const [audioLatency, setAudioLatency] = useState<number>(() => {
+    try {
+      const saved = JSON.parse(localStorage.getItem(SYSTEM_SETTINGS_KEY) || '{}');
+      return typeof saved.audioLatency === 'number' ? saved.audioLatency : 16;
+    } catch {
+      return 16;
+    }
+  });
+  const [enableDsp, setEnableDsp] = useState<boolean>(() => {
+    try {
+      const saved = JSON.parse(localStorage.getItem(SYSTEM_SETTINGS_KEY) || '{}');
+      return typeof saved.enableDsp === 'boolean' ? saved.enableDsp : true;
+    } catch {
+      return true;
+    }
+  });
   const [toastMessage, setToastMessage] = useState<string | null>(null);
+
+  const persistSystemSettings = (patch: Partial<{ videoFilter: string; aspectRatio: string; audioLatency: number; enableDsp: boolean }>) => {
+    try {
+      const current = { videoFilter, aspectRatio, audioLatency, enableDsp, ...patch };
+      localStorage.setItem(SYSTEM_SETTINGS_KEY, JSON.stringify(current));
+    } catch {}
+  };
 
   // Live Gamepad connection state
   const [connectedControllers, setConnectedControllers] = useState<ConnectedGamepadInfo[]>(() =>
@@ -116,7 +153,10 @@ export const SettingsPage: React.FC<SettingsPageProps> = ({ onBack }) => {
             Reset Defaults
           </button>
           <button
-            onClick={() => showToast('Configuration saved to browser profile')}
+            onClick={() => {
+              persistSystemSettings({});
+              showToast('Đã lưu cấu hình hiển thị & âm thanh vào trình duyệt!');
+            }}
             className="px-4 py-1.5 rounded-lg bg-[#4cd7f6] hover:bg-[#70e0f8] text-[#003641] font-mono font-bold text-xs shadow-lg shadow-[#4cd7f6]/20 transition-all flex items-center gap-1.5"
           >
             <span className="material-symbols-outlined text-sm">save</span>
@@ -206,6 +246,7 @@ export const SettingsPage: React.FC<SettingsPageProps> = ({ onBack }) => {
                   key={shader.name}
                   onClick={() => {
                     setVideoFilter(shader.name);
+                    persistSystemSettings({ videoFilter: shader.name });
                     showToast(`Active shader set to: ${shader.name}`);
                   }}
                   className={`p-3 rounded-lg border cursor-pointer transition-all ${
@@ -233,7 +274,10 @@ export const SettingsPage: React.FC<SettingsPageProps> = ({ onBack }) => {
                 <label className="text-xs font-mono text-[#cbc3d7] block mb-1.5">Canvas Scaling Ratio</label>
                 <select
                   value={aspectRatio}
-                  onChange={(e) => setAspectRatio(e.target.value)}
+                  onChange={(e) => {
+                    setAspectRatio(e.target.value);
+                    persistSystemSettings({ aspectRatio: e.target.value });
+                  }}
                   className="w-full bg-[#111319] border border-[#494454]/40 rounded-lg p-2.5 font-mono text-xs text-white focus:outline-none focus:border-[#4cd7f6]"
                 >
                   <option>4:3 CRT Square Pixels (Authentic NES/SNES)</option>
@@ -288,7 +332,11 @@ export const SettingsPage: React.FC<SettingsPageProps> = ({ onBack }) => {
                 max="64"
                 step="4"
                 value={audioLatency}
-                onChange={(e) => setAudioLatency(Number(e.target.value))}
+                onChange={(e) => {
+                  const val = Number(e.target.value);
+                  setAudioLatency(val);
+                  persistSystemSettings({ audioLatency: val });
+                }}
                 className="w-full accent-[#4cd7f6] cursor-pointer"
               />
               <p className="text-[10px] font-mono text-[#958ea0]">Lower reduces audio lag; higher prevents dropouts</p>
@@ -302,7 +350,11 @@ export const SettingsPage: React.FC<SettingsPageProps> = ({ onBack }) => {
                 </span>
               </div>
               <button
-                onClick={() => setEnableDsp(!enableDsp)}
+                onClick={() => {
+                  const next = !enableDsp;
+                  setEnableDsp(next);
+                  persistSystemSettings({ enableDsp: next });
+                }}
                 className="w-full py-2 rounded bg-[#282a30] hover:bg-[#34373f] text-xs font-mono text-[#cbc3d7] border border-[#494454]/30 transition-colors"
               >
                 {enableDsp ? 'Disable DSP Filtering' : 'Enable DSP Filtering'}

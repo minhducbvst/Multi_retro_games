@@ -786,11 +786,16 @@ export const EmulatorPage: React.FC<EmulatorPageProps> = ({
     let streamAttachTimer: ReturnType<typeof setInterval> | null = null;
     let relayFrameTimer: ReturnType<typeof setInterval> | null = null;
     let guestOfferRetryTimer: ReturnType<typeof setInterval> | null = null;
+    let hostHeartbeatTimer: ReturnType<typeof setInterval> | null = null;
     let unsubRemoteInput: (() => void) | null = null;
     let unsubRemoteStream: (() => void) | null = null;
     let unsubRelayFrame: (() => void) | null = null;
 
     if (role === 'host') {
+      roomService.sendHostHeartbeat(initialRoom.id);
+      hostHeartbeatTimer = setInterval(() => {
+        roomService.sendHostHeartbeat(initialRoom.id);
+      }, 25000);
       // Listen for Guest Port 2 bitmask inputs and inject into RetroArch / Arena Engine
       unsubRemoteInput = webrtcNetplay.onRemoteInput((mask) => {
         const nextState = decodeInputBitmask(mask);
@@ -934,6 +939,7 @@ export const EmulatorPage: React.FC<EmulatorPageProps> = ({
       if (streamAttachTimer) clearInterval(streamAttachTimer);
       if (relayFrameTimer) clearInterval(relayFrameTimer);
       if (guestOfferRetryTimer) clearInterval(guestOfferRetryTimer);
+      if (hostHeartbeatTimer) clearInterval(hostHeartbeatTimer);
       webrtcNetplay.stopSession();
     };
   }, [netplaySession?.room.id, netplaySession?.role, netplaySession?.playerUid]);

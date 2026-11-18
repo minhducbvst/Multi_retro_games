@@ -24,7 +24,8 @@ export const TopNavBar: React.FC<TopNavBarProps> = ({
   const [currentUser, setCurrentUser] = useState<User | null>(null);
   const [showProfileMenu, setShowProfileMenu] = useState(false);
   const [showNotifications, setShowNotifications] = useState(false);
-  const [totalStorageText, setTotalStorageText] = useState('4.2MB');
+  const [totalStorageText, setTotalStorageText] = useState('0 KB');
+  const headerActionsRef = React.useRef<HTMLDivElement | null>(null);
 
   useEffect(() => {
     const updateStorage = () => {
@@ -36,12 +37,34 @@ export const TopNavBar: React.FC<TopNavBarProps> = ({
       } else if (total > 0) {
         setTotalStorageText(`${(total / 1024).toFixed(0)}KB`);
       } else {
-        setTotalStorageText('4.2MB');
+        setTotalStorageText('0 KB');
       }
     };
     updateStorage();
     const t = setInterval(updateStorage, 3000);
     return () => clearInterval(t);
+  }, []);
+
+  useEffect(() => {
+    const handleOutsideOrEsc = (ev: MouseEvent | KeyboardEvent) => {
+      if (ev instanceof KeyboardEvent) {
+        if (ev.key === 'Escape') {
+          setShowProfileMenu(false);
+          setShowNotifications(false);
+        }
+        return;
+      }
+      if (headerActionsRef.current && !headerActionsRef.current.contains(ev.target as Node)) {
+        setShowProfileMenu(false);
+        setShowNotifications(false);
+      }
+    };
+    document.addEventListener('mousedown', handleOutsideOrEsc);
+    document.addEventListener('keydown', handleOutsideOrEsc);
+    return () => {
+      document.removeEventListener('mousedown', handleOutsideOrEsc);
+      document.removeEventListener('keydown', handleOutsideOrEsc);
+    };
   }, []);
 
   useEffect(() => {
@@ -125,7 +148,7 @@ export const TopNavBar: React.FC<TopNavBarProps> = ({
       )}
 
       {/* Navigation Links & Profile Actions */}
-      <div className="flex items-center gap-3 lg:gap-4">
+      <div ref={headerActionsRef} className="flex items-center gap-3 lg:gap-4">
         {!guestLockedRoom && (
           <nav className="hidden xl:flex items-center gap-6 mr-2">
             <button

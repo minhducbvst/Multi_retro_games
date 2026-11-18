@@ -61,10 +61,16 @@ export const NetPlayLobbyPage: React.FC<NetPlayLobbyPageProps> = ({
   const [room, setRoom] = useState<NetPlayRoom | null>(null);
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [publicRooms, setPublicRooms] = useState<NetPlayRoom[]>([]);
+  const [myHostedRooms, setMyHostedRooms] = useState<NetPlayRoom[]>([]);
   const [inputText, setInputText] = useState<string>('');
   const [copiedCode, setCopiedCode] = useState<boolean>(false);
   const [copiedLink, setCopiedLink] = useState<boolean>(false);
   const [toastMessage, setToastMessage] = useState<string | null>(null);
+
+  // Lobby Discovery Filters
+  const [roomSearchQuery, setRoomSearchQuery] = useState<string>('');
+  const [roomPlatformFilter, setRoomPlatformFilter] = useState<'ALL' | Platform>('ALL');
+  const [onlyVacantRooms, setOnlyVacantRooms] = useState<boolean>(false);
 
   // Real Server & WebRTC Network Telemetry
   const [serverStatus, setServerStatus] = useState<ServerConnectionStatus>('connecting');
@@ -91,6 +97,12 @@ export const NetPlayLobbyPage: React.FC<NetPlayLobbyPageProps> = ({
   );
   const [createIsPublic, setCreateIsPublic] = useState<boolean>(true);
   const [createRollback, setCreateRollback] = useState<number>(1);
+  const [createRoomNote, setCreateRoomNote] = useState<string>('');
+  const [createRomReady, setCreateRomReady] = useState<'ready' | 'drive' | 'arena' | 'missing'>('arena');
+  const [activeRomReady, setActiveRomReady] = useState<'ready' | 'drive' | 'arena' | 'missing'>('arena');
+  const [editingRoomNote, setEditingRoomNote] = useState<boolean>(false);
+  const [roomNoteDraft, setRoomNoteDraft] = useState<string>('');
+  const [isUpdatingSettings, setIsUpdatingSettings] = useState<boolean>(false);
 
   // Join Room Form
   const [joinCodeInput, setJoinCodeInput] = useState<string>('');
@@ -112,6 +124,7 @@ export const NetPlayLobbyPage: React.FC<NetPlayLobbyPageProps> = ({
   const toastTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const createAttemptIdRef = useRef<number>(0);
   const lastConsumedPreselectedRef = useRef<string | undefined>(undefined);
+  const intentionalLeaveRef = useRef<boolean>(false);
 
   const showToast = (msg: string) => {
     if (toastTimerRef.current) {
@@ -252,6 +265,83 @@ export const NetPlayLobbyPage: React.FC<NetPlayLobbyPageProps> = ({
     return () => unsub();
   }, []);
 
+  // Subscribe to rooms created by current Google-authenticated Host (includes Private rooms)
+  useEffect(() => {
+    const uid = currentUser?.uid || null;
+    if (!uid) {
+      setMyHostedRooms([]);
+      return;
+    }
+    const unsub = roomService.subscribeToMyHostedRooms(uid, (roomsList) => {
+      setMyHostedRooms(roomsList);
+    });
+    return () => unsub();
+  }, [currentUser?.uid]);
+
+  // Check ROM readiness for selected game in Create Modal
+  useEffect(() => {
+    let cancelled = false;
+    const check = async () => {
+      if (createGameId === ARENA_FALLBACK_GAME.id) {
+        if (!cancelled) setCreateRomReady('arena');
+        return;
+      }
+      const g = libraryGames.find((item) => item.id === createGameId);
+      const cached = romStorage.getRom(createGameId) || (await romStorage.getRomAsync(createGameId));
+      if (cancelled) return;
+      if (cached && cached.data?.length > 0) {
+        setCreateRomReady('ready');
+      } else if (g?.driveFileId) {
+        setCreateRomReady('drive');
+      } else {
+        setCreateRomReady('missing');
+      }
+    };
+    check();
+    return () => {
+      cancelled = true;
+    };
+  }, [createGameId, libraryGames]);
+
+  // Check ROM readiness for current Active Room cartridge
+  useEffect(() => {
+    let cancelled = false;
+    const gId = room?.gameId;
+    if (!gId) return;
+    const check = async () => {
+      if (gId === ARENA_FALLBACK_GAME.id) {
+        if (!cancelled) setActiveRomReady('arena');
+        return;
+      }
+      const g = libraryGames.find((item) => item.id === gId);
+      const cached = romStorage.getRom(gId) || (await romStorage.getRomAsync(gId));
+      if (cancelled) return;
+      if (cached && cached.data?.length > 0) {
+        setActiveRomReady('ready');
+      } else if (g?.driveFileId) {
+        setActiveRomReady('drive');
+      } else {
+        setActiveRomReady('missing');
+      }
+    };
+    check();
+    return () => {
+      cancelled = true;
+    };
+  }, [room?.gameId, libraryGames]);
+
+  // Host 25s heartbeat while inside an active room so room freshness stays accurate
+  useEffect(() => {
+    if (!room?.id) return;
+    const effectiveUid = currentUser?.uid || playerProfile.uid;
+    if (room.hostUid !== effectiveUid) return;
+    roomService.sendHostHeartbeat(room.id);
+    const t = setInterval(() => {
+      roomService.sendHostHeartbeat(room.id);
+    }, 25000);
+    return () => clearInterval(t);
+  }, [room?.id, room?.hostUid, currentUser?.uid, playerProfile.uid]);
+
   // Subscribe to active room state, messages, launch events & WebRTC signaling
   useEffect(() => {
     if (!activeRoomId) {
@@ -259,6 +349,8 @@ export const NetPlayLobbyPage: React.FC<NetPlayLobbyPageProps> = ({
       setMessages([]);
       return;
     }
+
+    intentionalLeaveRef.current = false;
 
     const unsubRoom = roomService.subscribeToRoom(activeRoomId, (updatedRoom) => {
       if (updatedRoom) {
@@ -272,7 +364,9 @@ export const NetPlayLobbyPage: React.FC<NetPlayLobbyPageProps> = ({
             window.history.replaceState({}, '', window.location.pathname);
           }
         } catch {}
-        showToast('Phòng chơi đã đóng.');
+        if (!intentionalLeaveRef.current) {
+          showToast('Phòng chơi đã đóng.');
+        }
       }
     });
 
@@ -459,6 +553,7 @@ export const NetPlayLobbyPage: React.FC<NetPlayLobbyPageProps> = ({
         rollbackFrames: createRollback,
         inputDelayTarget: createRollback <= 1 ? '0-1 Frame (<16ms)' : `${createRollback} Frames`,
         hostName: playerProfile.displayName,
+        ...(createRoomNote.trim() ? { roomNote: createRoomNote.trim() } : {}),
       });
 
       if (createAttemptIdRef.current !== attemptId) {
@@ -474,6 +569,7 @@ export const NetPlayLobbyPage: React.FC<NetPlayLobbyPageProps> = ({
         }
       } catch {}
 
+      setCreateRoomNote('');
       setActiveRoomId(newRoom.id);
       setRoom(newRoom);
       showToast(`Đã tạo phòng ${newRoom.code}!`);
@@ -571,8 +667,9 @@ export const NetPlayLobbyPage: React.FC<NetPlayLobbyPageProps> = ({
   };
 
   const handleLeave = async () => {
+    intentionalLeaveRef.current = true;
     webrtcNetplay.stopSession();
-    await roomService.leaveRoom(room?.id, playerProfile.uid);
+    await roomService.leaveRoom(room?.id, currentUser?.uid || playerProfile.uid);
     try {
       window.history.replaceState({}, '', window.location.pathname);
     } catch {}
@@ -581,13 +678,88 @@ export const NetPlayLobbyPage: React.FC<NetPlayLobbyPageProps> = ({
     onLeaveRoom();
   };
 
+  const handleDeleteActiveRoom = async () => {
+    if (!room) return;
+    intentionalLeaveRef.current = true;
+    const deletedCode = room.code;
+    webrtcNetplay.stopSession();
+    try {
+      await roomService.deleteHostedRoom(room.id);
+    } catch {}
+    try {
+      if (new URLSearchParams(window.location.search).has('room')) {
+        window.history.replaceState({}, '', window.location.pathname);
+      }
+    } catch {}
+    setActiveRoomId(undefined);
+    setRoom(null);
+    showToast(`Đã đóng và xóa vĩnh viễn phòng ${deletedCode}.`);
+  };
+
+  const handleDeleteHostedRoomFromList = async (targetRoom: NetPlayRoom) => {
+    try {
+      await roomService.deleteHostedRoom(targetRoom.id);
+      showToast(`Đã xóa phòng ${targetRoom.code}.`);
+    } catch {
+      showToast('Không thể xóa phòng này lúc này.');
+    }
+  };
+
+  const handleToggleVisibility = async () => {
+    if (!room || !isHost || isUpdatingSettings) return;
+    setIsUpdatingSettings(true);
+    const nextPublic = !room.isPublic;
+    try {
+      await roomService.updateRoomSettings(room.id, { isPublic: nextPublic });
+      showToast(nextPublic ? 'Phòng đã chuyển sang Công Khai (hiện ở sảnh).' : 'Phòng đã chuyển sang Riêng Tư (chỉ vào bằng Mã / Link).');
+    } catch {
+      showToast('Không thể cập nhật chế độ hiển thị phòng.');
+    } finally {
+      setIsUpdatingSettings(false);
+    }
+  };
+
+  const handleUpdateActiveRollback = async (nextRollback: number) => {
+    if (!room || !isHost || isUpdatingSettings) return;
+    setIsUpdatingSettings(true);
+    const nextDelay = nextRollback <= 1 ? '0-1 Frame (<16ms)' : `${nextRollback} Frames`;
+    try {
+      await roomService.updateRoomSettings(room.id, {
+        rollbackFrames: nextRollback,
+        inputDelayTarget: nextDelay,
+      });
+      showToast(`Đã chỉnh độ trễ mạng: ${nextDelay}`);
+    } catch {
+      showToast('Không thể cập nhật độ trễ phòng.');
+    } finally {
+      setIsUpdatingSettings(false);
+    }
+  };
+
+  const handleSaveRoomNote = async () => {
+    if (!room || !isHost) return;
+    try {
+      await roomService.updateRoomSettings(room.id, { roomNote: roomNoteDraft });
+      setEditingRoomNote(false);
+      showToast(roomNoteDraft.trim() ? 'Đã cập nhật ghi chú phòng!' : 'Đã xóa ghi chú phòng.');
+    } catch {
+      showToast('Không thể lưu ghi chú phòng.');
+    }
+  };
+
+  const handleCopyInviteForRoom = (code: string) => {
+    const url = `${window.location.origin}${window.location.pathname}?room=${code}`;
+    navigator.clipboard.writeText(url);
+    showToast(`Đã sao chép link mời phòng ${code}!`);
+  };
+
   const handleHostLaunch = async () => {
     if (!room) return;
     if (room.status === 'playing') {
       onLaunchNetplayMatch({
         room,
         role: 'host',
-        playerUid: playerProfile.uid,
+        playerUid: effectiveUid,
       });
       return;
     }
@@ -601,21 +773,46 @@ export const NetPlayLobbyPage: React.FC<NetPlayLobbyPageProps> = ({
   const handleJoinActiveMatch = () => {
     if (!room) return;
     const myRole: 'host' | 'guest' | 'spectator' =
-      room.hostUid === playerProfile.uid ? 'host' : room.guestUid === playerProfile.uid ? 'guest' : 'spectator';
+      room.hostUid === effectiveUid ? 'host' : room.guestUid === effectiveUid ? 'guest' : 'spectator';
     if (myRole === 'guest' && !room.guestReady) {
       roomService.toggleReady(room.id, false, true).catch(() => {});
     }
     onLaunchNetplayMatch({
       room,
       role: myRole,
-      playerUid: playerProfile.uid,
+      playerUid: effectiveUid,
     });
   };
 
-  // Correct role detection
-  const isHost = Boolean(room && room.hostUid === playerProfile.uid);
-  const isGuest = Boolean(room && room.guestUid === playerProfile.uid);
+  // Correct role detection using live Firebase Auth UID when signed in
+  const effectiveUid = currentUser?.uid || playerProfile.uid;
+  const isHost = Boolean(room && room.hostUid === effectiveUid);
+  const isGuest = Boolean(room && room.guestUid === effectiveUid);
   const isSpectator = Boolean(room && !isHost && !isGuest);
+
+  const filteredPublicRooms = publicRooms.filter((r) => {
+    if (roomPlatformFilter !== 'ALL' && r.platform !== roomPlatformFilter) return false;
+    if (onlyVacantRooms && r.guestUid) return false;
+    if (roomSearchQuery.trim()) {
+      const q = roomSearchQuery.trim().toLowerCase();
+      return (
+        r.code.toLowerCase().includes(q) ||
+        r.gameTitle.toLowerCase().includes(q) ||
+        r.hostName.toLowerCase().includes(q) ||
+        (r.roomNote || '').toLowerCase().includes(q)
+      );
+    }
+    return true;
+  });
+
+  const formatFreshness = (iso?: string) => {
+    if (!iso) return { label: 'Đang mở', stale: false };
+    const diffSec = Math.max(0, Math.floor((Date.now() - new Date(iso).getTime()) / 1000));
+    if (diffSec < 60) return { label: 'Vừa hoạt động', stale: false };
+    const mins = Math.floor(diffSec / 60);
+    if (mins < 5) return { label: `${mins} phút trước`, stale: false };
+    return { label: `${mins} phút trước (chờ lâu)`, stale: true };
+  };
 
   const activeGame =
     libraryGames.find((g) => g.id === room?.gameId) ||
@@ -835,16 +1032,105 @@ export const NetPlayLobbyPage: React.FC<NetPlayLobbyPageProps> = ({
             )}
           </div>
 
+          {/* My Hosted Rooms Manager (Shows Public & Private rooms owned by signed-in Host) */}
+          {currentUser && !currentUser.isAnonymous && myHostedRooms.length > 0 && (
+            <div className="bg-[#191b22] border border-[#a078ff]/40 rounded-2xl p-5 space-y-4 shadow-lg">
+              <div className="flex flex-wrap items-center justify-between gap-2 border-b border-[#494454]/20 pb-3">
+                <div className="flex items-center gap-2">
+                  <span className="material-symbols-outlined text-[#d0bcff]">admin_panel_settings</span>
+                  <h3 className="font-headline font-bold text-white text-base">
+                    Phòng Bạn Đã Tạo (Quản Lý Nhanh)
+                  </h3>
+                  <span className="px-2 py-0.5 rounded-full bg-[#a078ff]/15 text-[11px] font-mono text-[#d0bcff] border border-[#a078ff]/40">
+                    {myHostedRooms.length} phòng đang mở
+                  </span>
+                </div>
+                <span className="text-[11px] font-mono text-[#958ea0]">
+                  Quản lý cả phòng Công khai &amp; Riêng tư, vào lại hoặc dọn phòng cũ
+                </span>
+              </div>
+
+              <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-3">
+                {myHostedRooms.map((myRoom) => {
+                  const fresh = formatFreshness(myRoom.updatedAt);
+                  return (
+                    <div
+                      key={myRoom.id}
+                      className="p-4 bg-[#111319] border border-[#494454]/40 hover:border-[#a078ff]/60 rounded-xl flex flex-col justify-between gap-3 transition-all"
+                    >
+                      <div className="space-y-1.5">
+                        <div className="flex items-center justify-between gap-2">
+                          <span className="font-mono text-xs text-[#4cd7f6] font-bold">{myRoom.code}</span>
+                          <div className="flex items-center gap-1">
+                            <span
+                              className={`px-1.5 py-0.5 rounded text-[10px] font-mono border ${
+                                myRoom.isPublic
+                                  ? 'bg-emerald-500/10 text-emerald-300 border-emerald-500/30'
+                                  : 'bg-amber-500/10 text-amber-300 border-amber-500/30'
+                              }`}
+                            >
+                              {myRoom.isPublic ? 'Công khai' : 'Riêng tư'}
+                            </span>
+                            <span className="px-1.5 py-0.5 rounded text-[10px] font-mono bg-[#1e1f26] text-[#cbc3d7] border border-[#494454]/40">
+                              {myRoom.platform}
+                            </span>
+                          </div>
+                        </div>
+                        <h4 className="font-headline font-bold text-white text-sm line-clamp-1">{myRoom.gameTitle}</h4>
+                        {myRoom.roomNote && (
+                          <p className="text-[11px] font-mono text-[#d0bcff] line-clamp-1">“{myRoom.roomNote}”</p>
+                        )}
+                        <div className="flex items-center justify-between text-[11px] font-mono text-[#958ea0]">
+                          <span className={myRoom.guestUid ? 'text-emerald-400' : 'text-[#cbc3d7]'}>
+                            {myRoom.guestUid ? `Port 2: ${myRoom.guestName || 'Khách'}` : 'Port 2: Đang trống'}
+                          </span>
+                          <span className={fresh.stale ? 'text-amber-400' : 'text-emerald-400'}>{fresh.label}</span>
+                        </div>
+                      </div>
+
+                      <div className="flex items-center gap-2 pt-2 border-t border-[#494454]/20">
+                        <button
+                          type="button"
+                          onClick={() => handleJoinByCode(myRoom.code)}
+                          className="flex-1 py-1.5 px-2.5 rounded-lg bg-[#4cd7f6] hover:bg-[#70e0f8] text-[#003641] font-mono font-bold text-xs flex items-center justify-center gap-1 cursor-pointer"
+                        >
+                          <span className="material-symbols-outlined text-sm">login</span>
+                          Vào Lại
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => handleCopyInviteForRoom(myRoom.code)}
+                          title="Sao chép link mời"
+                          className="p-1.5 rounded-lg bg-[#1e1f26] hover:bg-[#282a30] text-[#4cd7f6] border border-[#494454]/40 cursor-pointer"
+                        >
+                          <span className="material-symbols-outlined text-sm">share</span>
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => handleDeleteHostedRoomFromList(myRoom)}
+                          title="Đóng & xóa phòng này"
+                          className="p-1.5 rounded-lg bg-rose-500/10 hover:bg-rose-500/25 text-rose-300 border border-rose-500/30 cursor-pointer"
+                        >
+                          <span className="material-symbols-outlined text-sm">delete</span>
+                        </button>
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            </div>
+          )}
+
           {/* Public Rooms Section */}
           <div className="space-y-4">
-            <div className="flex items-center justify-between border-b border-[#494454]/20 pb-3">
+            <div className="flex flex-wrap items-center justify-between gap-3 border-b border-[#494454]/20 pb-3">
               <div className="flex items-center gap-2">
                 <span className="material-symbols-outlined text-[#4cd7f6]">meeting_room</span>
                 <h3 className="font-headline font-bold text-white text-base">
                   Phòng Chơi Công Khai Đang Mở
                 </h3>
                 <span className="px-2 py-0.5 rounded-full bg-[#1e1f26] text-[11px] font-mono text-[#4cd7f6] border border-[#4cd7f6]/30">
-                  {publicRooms.length} phòng online
+                  {filteredPublicRooms.length}/{publicRooms.length} phòng
                 </span>
               </div>
               <button
@@ -855,57 +1141,135 @@ export const NetPlayLobbyPage: React.FC<NetPlayLobbyPageProps> = ({
               </button>
             </div>
 
-            {publicRooms.length > 0 ? (
-              <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
-                {publicRooms.map((pubRoom) => (
-                  <div
-                    key={pubRoom.id}
-                    className="p-5 bg-[#1e1f26] border border-[#494454]/30 hover:border-[#4cd7f6]/50 rounded-2xl flex flex-col justify-between gap-4 transition-all shadow-md hover:shadow-xl"
+            {publicRooms.length > 0 && (
+              <div className="flex flex-wrap items-center justify-between gap-3 bg-[#191b22]/70 border border-[#494454]/25 rounded-xl p-3 font-mono text-xs">
+                <div className="flex items-center gap-2 flex-1 min-w-[200px]">
+                  <span className="material-symbols-outlined text-sm text-[#958ea0]">search</span>
+                  <input
+                    type="text"
+                    value={roomSearchQuery}
+                    onChange={(e) => setRoomSearchQuery(e.target.value)}
+                    placeholder="Tìm theo mã phòng, tên game, hoặc Host..."
+                    className="w-full bg-transparent text-white placeholder-[#958ea0] focus:outline-none text-xs"
+                  />
+                </div>
+                <div className="flex flex-wrap items-center gap-1.5">
+                  {(['ALL', 'NES', 'SNES', 'GBA', 'GENESIS'] as const).map((plat) => (
+                    <button
+                      key={plat}
+                      type="button"
+                      onClick={() => setRoomPlatformFilter(plat)}
+                      className={`px-2.5 py-1 rounded-lg text-[11px] border transition-colors cursor-pointer ${
+                        roomPlatformFilter === plat
+                          ? 'bg-[#4cd7f6]/20 border-[#4cd7f6] text-[#4cd7f6] font-bold'
+                          : 'bg-[#111319] border-[#494454]/30 text-[#958ea0] hover:text-white'
+                      }`}
+                    >
+                      {plat === 'ALL' ? 'Tất cả' : plat}
+                    </button>
+                  ))}
+                  <button
+                    type="button"
+                    onClick={() => setOnlyVacantRooms((v) => !v)}
+                    className={`px-2.5 py-1 rounded-lg text-[11px] border transition-colors cursor-pointer ${
+                      onlyVacantRooms
+                        ? 'bg-emerald-500/20 border-emerald-400 text-emerald-300 font-bold'
+                        : 'bg-[#111319] border-[#494454]/30 text-[#958ea0] hover:text-white'
+                    }`}
                   >
-                    <div>
-                      <div className="flex items-center justify-between mb-2">
-                        <span className="font-mono text-xs text-[#4cd7f6] font-bold tracking-wider">
-                          {pubRoom.code}
+                    Còn trống Port 2
+                  </button>
+                </div>
+              </div>
+            )}
+
+            {filteredPublicRooms.length > 0 ? (
+              <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+                {filteredPublicRooms.map((pubRoom) => {
+                  const fresh = formatFreshness(pubRoom.updatedAt);
+                  const isOwnRoom = Boolean(currentUser?.uid && pubRoom.hostUid === currentUser.uid);
+                  return (
+                    <div
+                      key={pubRoom.id}
+                      className="p-5 bg-[#1e1f26] border border-[#494454]/30 hover:border-[#4cd7f6]/50 rounded-2xl flex flex-col justify-between gap-4 transition-all shadow-md hover:shadow-xl"
+                    >
+                      <div>
+                        <div className="flex items-center justify-between mb-2">
+                          <span className="font-mono text-xs text-[#4cd7f6] font-bold tracking-wider">
+                            {pubRoom.code}
+                          </span>
+                          <div className="flex items-center gap-1.5">
+                            {pubRoom.status === 'playing' && (
+                              <span className="px-1.5 py-0.5 rounded text-[9px] font-mono font-bold bg-rose-500/20 text-rose-300 border border-rose-500/30 animate-pulse">
+                                LIVE
+                              </span>
+                            )}
+                            <span className="px-2 py-0.5 rounded text-[10px] font-mono font-bold bg-[#111319] text-[#cbc3d7] border border-[#494454]/40">
+                              {pubRoom.platform}
+                            </span>
+                          </div>
+                        </div>
+                        <h4 className="font-headline font-bold text-white text-sm line-clamp-1">
+                          {pubRoom.gameTitle}
+                        </h4>
+                        {pubRoom.roomNote && (
+                          <p className="text-[11px] font-mono text-[#d0bcff] mt-1 line-clamp-1">
+                            “{pubRoom.roomNote}”
+                          </p>
+                        )}
+                        <p className="text-xs font-mono text-[#958ea0] mt-1 flex items-center gap-2 flex-wrap">
+                          <span>Host: {pubRoom.hostName}</span>
+                          <span>•</span>
+                          <span className={fresh.stale ? 'text-amber-400' : 'text-emerald-400'}>
+                            {pubRoom.pingMs > 0 ? `${pubRoom.pingMs}ms` : fresh.label}
+                          </span>
+                        </p>
+                      </div>
+
+                      <div className="flex items-center justify-between pt-3 border-t border-[#494454]/20 gap-2">
+                        <span className={`text-[11px] font-mono ${pubRoom.guestUid ? 'text-amber-400' : 'text-emerald-400'}`}>
+                          {pubRoom.guestUid ? '2/2 Đã Đủ Người (Vào Xem)' : '1/2 Trống Port 2'}
                         </span>
                         <div className="flex items-center gap-1.5">
-                          {pubRoom.status === 'playing' && (
-                            <span className="px-1.5 py-0.5 rounded text-[9px] font-mono font-bold bg-rose-500/20 text-rose-300 border border-rose-500/30 animate-pulse">
-                              LIVE
-                            </span>
+                          {isOwnRoom && (
+                            <button
+                              type="button"
+                              onClick={() => handleDeleteHostedRoomFromList(pubRoom)}
+                              title="Xóa phòng bạn đã tạo"
+                              className="p-1.5 rounded-lg bg-rose-500/15 hover:bg-rose-500/30 text-rose-300 border border-rose-500/30 cursor-pointer"
+                            >
+                              <span className="material-symbols-outlined text-sm">delete</span>
+                            </button>
                           )}
-                          <span className="px-2 py-0.5 rounded text-[10px] font-mono font-bold bg-[#111319] text-[#cbc3d7] border border-[#494454]/40">
-                            {pubRoom.platform}
-                          </span>
+                          <button
+                            onClick={() => handleJoinByCode(pubRoom.code)}
+                            className="px-3.5 py-1.5 rounded-lg bg-[#4cd7f6] hover:bg-[#70e0f8] text-[#003641] font-mono font-bold text-xs shadow-md transition-all flex items-center gap-1 cursor-pointer"
+                          >
+                            <span className="material-symbols-outlined text-sm">
+                              {isOwnRoom ? 'login' : pubRoom.guestUid ? 'visibility' : 'sports_esports'}
+                            </span>
+                            {isOwnRoom ? 'Quản Lý' : pubRoom.guestUid ? 'Theo Dõi' : 'Tham Gia'}
+                          </button>
                         </div>
                       </div>
-                      <h4 className="font-headline font-bold text-white text-sm line-clamp-1">
-                        {pubRoom.gameTitle}
-                      </h4>
-                      <p className="text-xs font-mono text-[#958ea0] mt-1 flex items-center gap-2">
-                        <span>Host: {pubRoom.hostName}</span>
-                        <span>•</span>
-                        <span className="text-emerald-400">
-                          {pubRoom.pingMs > 0 ? `${pubRoom.pingMs}ms` : 'Online'}
-                        </span>
-                      </p>
                     </div>
-
-                    <div className="flex items-center justify-between pt-3 border-t border-[#494454]/20">
-                      <span className={`text-[11px] font-mono ${pubRoom.guestUid ? 'text-amber-400' : 'text-emerald-400'}`}>
-                        {pubRoom.guestUid ? '2/2 Đã Đủ Người (Vào Xem)' : '1/2 Trống Port 2'}
-                      </span>
-                      <button
-                        onClick={() => handleJoinByCode(pubRoom.code)}
-                        className="px-3.5 py-1.5 rounded-lg bg-[#4cd7f6] hover:bg-[#70e0f8] text-[#003641] font-mono font-bold text-xs shadow-md transition-all flex items-center gap-1 cursor-pointer"
-                      >
-                        <span className="material-symbols-outlined text-sm">
-                          {pubRoom.guestUid ? 'visibility' : 'sports_esports'}
-                        </span>
-                        {pubRoom.guestUid ? 'Theo Dõi' : 'Tham Gia'}
-                      </button>
-                    </div>
-                  </div>
-                ))}
+                  );
+                })}
+              </div>
+            ) : publicRooms.length > 0 ? (
+              <div className="bg-[#1e1f26] rounded-xl border border-[#494454]/30 p-8 text-center font-mono text-xs text-[#958ea0] space-y-3">
+                <p>Không có phòng công khai nào khớp bộ lọc hiện tại.</p>
+                <button
+                  type="button"
+                  onClick={() => {
+                    setRoomSearchQuery('');
+                    setRoomPlatformFilter('ALL');
+                    setOnlyVacantRooms(false);
+                  }}
+                  className="px-3 py-1.5 rounded-lg bg-[#282a30] hover:bg-[#34373f] text-[#4cd7f6] cursor-pointer"
+                >
+                  Đặt Lại Bộ Lọc
+                </button>
               </div>
             ) : (
               <div className="bg-[#1e1f26] rounded-2xl border border-[#494454]/30 p-10 text-center flex flex-col items-center justify-center max-w-xl mx-auto my-4">
@@ -971,13 +1335,33 @@ export const NetPlayLobbyPage: React.FC<NetPlayLobbyPageProps> = ({
                   </button>
                 </div>
 
-                {/* Visibility Pill */}
-                <div className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-[#0c0e14] border border-[#494454]/40 text-xs font-mono">
-                  <span className="material-symbols-outlined text-xs text-[#4cd7f6]">
-                    {room.isPublic ? 'public' : 'lock'}
-                  </span>
-                  <span className="text-[#cbc3d7]">{room.isPublic ? 'Công khai' : 'Riêng tư'}</span>
-                </div>
+                {/* Visibility Pill (Interactive for Host to toggle Public <-> Private live) */}
+                {isHost ? (
+                  <button
+                    type="button"
+                    onClick={handleToggleVisibility}
+                    disabled={isUpdatingSettings}
+                    title="Bấm để chuyển đổi giữa Công khai (hiện ở sảnh) và Riêng tư (chỉ vào bằng Mã/Link)"
+                    className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg border text-xs font-mono transition-colors cursor-pointer ${
+                      room.isPublic
+                        ? 'bg-emerald-500/10 border-emerald-500/40 text-emerald-300 hover:bg-emerald-500/20'
+                        : 'bg-amber-500/10 border-amber-500/40 text-amber-300 hover:bg-amber-500/20'
+                    }`}
+                  >
+                    <span className="material-symbols-outlined text-xs">
+                      {room.isPublic ? 'public' : 'lock'}
+                    </span>
+                    <span>{room.isPublic ? 'Công khai' : 'Riêng tư'}</span>
+                    <span className="material-symbols-outlined text-[12px] opacity-70">swap_horiz</span>
+                  </button>
+                ) : (
+                  <div className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-[#0c0e14] border border-[#494454]/40 text-xs font-mono">
+                    <span className="material-symbols-outlined text-xs text-[#4cd7f6]">
+                      {room.isPublic ? 'public' : 'lock'}
+                    </span>
+                    <span className="text-[#cbc3d7]">{room.isPublic ? 'Công khai' : 'Riêng tư'}</span>
+                  </div>
+                )}
 
                 {/* Real Transport & Latency Diagnostics */}
                 <div className="flex items-center gap-2 px-3 py-1.5 rounded-lg bg-[#1e1f26] border border-[#494454]/40 text-xs font-mono">
@@ -998,8 +1382,20 @@ export const NetPlayLobbyPage: React.FC<NetPlayLobbyPageProps> = ({
                 </div>
               </div>
 
-              {/* Ready & Launch CTAs */}
-              <div className="flex flex-wrap items-center gap-3">
+              {/* Ready, Close Room & Launch CTAs */}
+              <div className="flex flex-wrap items-center gap-2.5">
+                {isHost && (
+                  <button
+                    type="button"
+                    onClick={handleDeleteActiveRoom}
+                    title="Đóng và xóa phòng ngay lập tức"
+                    className="px-3 py-2 rounded-lg bg-rose-500/10 hover:bg-rose-500/25 text-rose-300 border border-rose-500/35 font-mono text-xs font-bold flex items-center gap-1.5 transition-colors cursor-pointer"
+                  >
+                    <span className="material-symbols-outlined text-sm">delete_forever</span>
+                    <span>Đóng &amp; Xóa Phòng</span>
+                  </button>
+                )}
+
                 {!isSpectator && (
                   <button
                     onClick={handleToggleReady}
@@ -1233,13 +1629,13 @@ export const NetPlayLobbyPage: React.FC<NetPlayLobbyPageProps> = ({
                 )}
               </div>
 
-              {/* Active Cartridge Card */}
+              {/* Active Cartridge & Room Controls Card */}
               <div className="bg-[#191b22] border border-[#494454]/30 rounded-2xl p-6 space-y-4">
-                <div className="flex items-center justify-between border-b border-[#494454]/20 pb-3">
+                <div className="flex flex-wrap items-center justify-between border-b border-[#494454]/20 pb-3 gap-2">
                   <div>
                     <h3 className="font-headline font-bold text-white text-base flex items-center gap-2">
                       <span className="material-symbols-outlined text-amber-400">sports_esports</span>
-                      Băng Game Đang Chọn Trong Phòng
+                      Băng Game &amp; Quản Lý Phòng
                     </h3>
                     <p className="text-xs font-mono text-[#958ea0]">
                       Host chạy lõi game &amp; stream trực tiếp sang Port 2 (Guest không cần có sẵn file ROM)
@@ -1247,15 +1643,49 @@ export const NetPlayLobbyPage: React.FC<NetPlayLobbyPageProps> = ({
                   </div>
 
                   {isHost && (
-                    <button
-                      onClick={() => setShowChangeCartridgeModal(true)}
-                      className="px-3 py-1.5 rounded-lg bg-[#282a30] hover:bg-[#34373f] text-[#4cd7f6] border border-[#4cd7f6]/30 font-mono text-xs transition-colors flex items-center gap-1 cursor-pointer"
-                    >
-                      <span className="material-symbols-outlined text-sm">swap_horiz</span>
-                      Đổi Game
-                    </button>
+                    <div className="flex items-center gap-2">
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setRoomNoteDraft(room.roomNote || '');
+                          setEditingRoomNote((v) => !v);
+                        }}
+                        className="px-2.5 py-1.5 rounded-lg bg-[#111319] hover:bg-[#282a30] text-[#cbc3d7] border border-[#494454]/40 font-mono text-xs flex items-center gap-1 cursor-pointer"
+                      >
+                        <span className="material-symbols-outlined text-xs">edit_note</span>
+                        Ghi chú
+                      </button>
+                      <button
+                        onClick={() => setShowChangeCartridgeModal(true)}
+                        className="px-3 py-1.5 rounded-lg bg-[#282a30] hover:bg-[#34373f] text-[#4cd7f6] border border-[#4cd7f6]/30 font-mono text-xs transition-colors flex items-center gap-1 cursor-pointer"
+                      >
+                        <span className="material-symbols-outlined text-sm">swap_horiz</span>
+                        Đổi Game
+                      </button>
+                    </div>
                   )}
                 </div>
+
+                {isHost && editingRoomNote && (
+                  <div className="flex items-center gap-2 bg-[#111319] border border-[#4cd7f6]/40 rounded-xl p-2.5 font-mono text-xs">
+                    <input
+                      type="text"
+                      maxLength={120}
+                      value={roomNoteDraft}
+                      onChange={(e) => setRoomNoteDraft(e.target.value)}
+                      onKeyDown={(e) => e.key === 'Enter' && handleSaveRoomNote()}
+                      placeholder="Nhập ghi chú phòng (VD: Chơi Co-op vui vẻ, P2 bấm nút nào cũng được)..."
+                      className="flex-1 bg-transparent text-white placeholder-[#958ea0] focus:outline-none"
+                    />
+                    <button
+                      type="button"
+                      onClick={handleSaveRoomNote}
+                      className="px-3 py-1 rounded bg-[#4cd7f6] text-[#003641] font-bold cursor-pointer"
+                    >
+                      Lưu
+                    </button>
+                  </div>
+                )}
 
                 <div className="flex flex-col sm:flex-row items-center gap-5">
                   <img
@@ -1268,16 +1698,55 @@ export const NetPlayLobbyPage: React.FC<NetPlayLobbyPageProps> = ({
                       <span className="px-2 py-0.5 rounded bg-[#4cd7f6]/10 text-[#4cd7f6] border border-[#4cd7f6]/30 font-mono text-xs font-bold">
                         {activeGame.platform}
                       </span>
-                      <span className="px-2 py-0.5 rounded bg-emerald-500/10 text-emerald-400 border border-emerald-500/30 font-mono text-xs">
-                        2-Player NetPlay Ready
-                      </span>
+                      {isHost ? (
+                        <span
+                          className={`px-2 py-0.5 rounded font-mono text-xs border ${
+                            activeRomReady === 'ready' || activeRomReady === 'arena'
+                              ? 'bg-emerald-500/10 text-emerald-400 border-emerald-500/30'
+                              : activeRomReady === 'drive'
+                              ? 'bg-sky-500/10 text-sky-300 border-sky-500/30'
+                              : 'bg-amber-500/15 text-amber-300 border-amber-500/40'
+                          }`}
+                        >
+                          {activeRomReady === 'ready'
+                            ? 'ROM Đã Nạp Sẵn'
+                            : activeRomReady === 'drive'
+                            ? 'Tự Tải Từ Drive'
+                            : activeRomReady === 'arena'
+                            ? 'Arena 2P Tích Hợp'
+                            : 'Chưa có file ROM (Sẽ chạy Arena 2P)'}
+                        </span>
+                      ) : (
+                        <span className="px-2 py-0.5 rounded bg-emerald-500/10 text-emerald-400 border border-emerald-500/30 font-mono text-xs">
+                          2-Player NetPlay Ready
+                        </span>
+                      )}
                     </div>
                     <h4 className="font-headline font-bold text-white text-lg">{activeGame.title}</h4>
+                    {room.roomNote && (
+                      <p className="text-xs font-mono text-[#d0bcff]">“{room.roomNote}”</p>
+                    )}
                     <p className="text-xs font-mono text-[#cbc3d7] line-clamp-2">{activeGame.description}</p>
                     <div className="flex flex-wrap items-center justify-center sm:justify-start gap-3 text-[11px] font-mono text-[#958ea0] pt-1">
                       <span>ICE: {rtcStats.iceConnectionState}</span>
                       <span>•</span>
-                      <span>Buffer: {room.inputDelayTarget}</span>
+                      {isHost ? (
+                        <label className="inline-flex items-center gap-1.5 text-[#cbc3d7]">
+                          <span>Buffer:</span>
+                          <select
+                            value={room.rollbackFrames || 1}
+                            onChange={(e) => handleUpdateActiveRollback(Number(e.target.value))}
+                            disabled={isUpdatingSettings}
+                            className="bg-[#111319] border border-[#494454]/50 rounded px-1.5 py-0.5 text-[11px] text-[#4cd7f6] focus:outline-none"
+                          >
+                            <option value={1}>0-1 Frame (P2P Nhanh)</option>
+                            <option value={2}>2 Frames (Cân Bằng)</option>
+                            <option value={3}>3 Frames (Ổn Định Xa)</option>
+                          </select>
+                        </label>
+                      ) : (
+                        <span>Buffer: {room.inputDelayTarget}</span>
+                      )}
                       <span>•</span>
                       <span>Stream: 60 FPS WebRTC + Relay</span>
                     </div>
@@ -1475,6 +1944,47 @@ export const NetPlayLobbyPage: React.FC<NetPlayLobbyPageProps> = ({
                         {ARENA_FALLBACK_GAME.title} (Chơi thử 2P ngay không cần ROM)
                       </option>
                     </select>
+
+                    {/* Pre-flight ROM Readiness Check */}
+                    <div
+                      className={`mt-2 px-3 py-2 rounded-lg border text-[11px] flex items-center justify-between gap-2 ${
+                        createRomReady === 'ready' || createRomReady === 'arena'
+                          ? 'bg-emerald-500/10 border-emerald-500/30 text-emerald-300'
+                          : createRomReady === 'drive'
+                          ? 'bg-sky-500/10 border-sky-500/30 text-sky-300'
+                          : 'bg-amber-500/10 border-amber-500/35 text-amber-200'
+                      }`}
+                    >
+                      <span className="flex items-center gap-1.5">
+                        <span className="material-symbols-outlined text-sm">
+                          {createRomReady === 'ready'
+                            ? 'check_circle'
+                            : createRomReady === 'drive'
+                            ? 'cloud_download'
+                            : createRomReady === 'arena'
+                            ? 'sports_esports'
+                            : 'warning'}
+                        </span>
+                        <span>
+                          {createRomReady === 'ready'
+                            ? 'Tệp ROM đã nạp sẵn trong máy, khởi chạy ngay.'
+                            : createRomReady === 'drive'
+                            ? 'Game sẽ tự tải ROM từ Google Drive khi bắt đầu.'
+                            : createRomReady === 'arena'
+                            ? 'Đấu trường 2P tích hợp sẵn — chơi ngay không cần ROM.'
+                            : 'Chưa tìm thấy tệp ROM trong bộ nhớ máy (sẽ chạy Arena 2P hoặc bấm Tải ROM).'}
+                        </span>
+                      </span>
+                      {createRomReady === 'missing' && (
+                        <button
+                          type="button"
+                          onClick={() => romUploadInputRef.current?.click()}
+                          className="px-2 py-0.5 rounded bg-amber-400/20 hover:bg-amber-400/30 text-amber-100 font-bold shrink-0 cursor-pointer"
+                        >
+                          Nạp ROM
+                        </button>
+                      )}
+                    </div>
                   </div>
 
                   <div className="grid grid-cols-2 gap-3">
@@ -1499,6 +2009,18 @@ export const NetPlayLobbyPage: React.FC<NetPlayLobbyPageProps> = ({
                         <option value={3}>Cross-Region (3 Frames • Ổn định)</option>
                       </select>
                     </div>
+                  </div>
+
+                  <div>
+                    <label className="text-[#cbc3d7] block mb-1">Ghi Chú Phòng (Tùy chọn)</label>
+                    <input
+                      type="text"
+                      maxLength={120}
+                      value={createRoomNote}
+                      onChange={(e) => setCreateRoomNote(e.target.value)}
+                      placeholder="VD: Chơi co-op đi cảnh, ai rảnh vào Port 2 nhé!"
+                      className="w-full bg-[#111319] border border-[#494454]/40 rounded-lg px-3 py-2 text-white placeholder-[#958ea0] focus:outline-none focus:border-[#4cd7f6]"
+                    />
                   </div>
 
                   <div>

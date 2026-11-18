@@ -100,6 +100,7 @@ export interface NetPlayRoom {
   rollbackFrames: number;
   inputDelayTarget: string;
   pauseAuthority: string;
+  roomNote?: string;
   createdAt: string;
   updatedAt: string;
 }

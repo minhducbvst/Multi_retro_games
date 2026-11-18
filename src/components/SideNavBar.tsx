@@ -33,7 +33,8 @@ export const SideNavBar: React.FC<SideNavBarProps> = ({
     const reader = new FileReader();
     reader.onload = () => {
       if (reader.result instanceof ArrayBuffer) {
-        const header = parseRom(file.name, reader.result);
+        const romBytes = new Uint8Array(reader.result);
+        const header = parseRom(romBytes, file.name);
         const customGame: Game = {
           id: `custom-${Date.now()}`,
           title: header.internalTitle,
@@ -63,7 +64,7 @@ export const SideNavBar: React.FC<SideNavBarProps> = ({
         if (onCustomRomLoaded) {
           onCustomRomLoaded(customGame, new Uint8Array(reader.result));
         } else {
-          onNavigate('play', customGame.id);
+          onNavigate('emulator', customGame.id);
         }
       }
     };
@@ -83,7 +84,7 @@ export const SideNavBar: React.FC<SideNavBarProps> = ({
         type="file"
         ref={fileInputRef}
         onChange={handleFileChange}
-        accept=".nes,.sfc,.smc,.gba,.zip"
+        accept=".nes,.sfc,.smc,.gba,.gb,.gbc,.md,.gen,.smd,.zip"
         className="hidden"
       />
 

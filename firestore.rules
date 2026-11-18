@@ -44,7 +44,8 @@ service cloud.firestore {
         && data.status in ['waiting', 'ready', 'playing', 'closed']
         && data.isPublic is bool
         && data.hostReady is bool
-        && data.guestReady is bool;
+        && data.guestReady is bool
+        && (!('roomNote' in data) || data.roomNote == null || (data.roomNote is string && data.roomNote.size() <= 120));
     }
 
     // User Profile
@@ -92,6 +93,7 @@ service cloud.firestore {
           && incoming().createdAt == existing().createdAt
           && incoming().diff(existing()).affectedKeys().hasOnly([
             'hostReady', 'status', 'gameId', 'gameTitle', 'platform',
+            'isPublic', 'rollbackFrames', 'inputDelayTarget', 'roomNote',
             'hostPingMs', 'pingMs', 'guestUid', 'guestName', 'guestAvatar', 'guestReady', 'updatedAt'
           ])
         )

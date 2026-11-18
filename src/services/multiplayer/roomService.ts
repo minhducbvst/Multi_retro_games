@@ -24,6 +24,7 @@ export interface CreateRoomInput {
   rollbackFrames?: number;
   inputDelayTarget?: string;
   hostName?: string;
+  roomNote?: string;
 }
 
 export interface PlayerProfile {
@@ -120,10 +121,13 @@ export class RoomService {
   private prevRoomStatus: string | null = null;
   private messages: ChatMessage[] = [];
   private publicRooms: NetPlayRoom[] = [];
+  private myHostedRooms: NetPlayRoom[] = [];
+  private myHostedRoomsUid: string | null = null;
   private lobbySubscribed = false;
 
   // Firestore listeners (used when static CDN hosting lacks Node /ws/netplay)
   private cloudPublicUnsub: Unsubscribe | null = null;
+  private cloudMyRoomsUnsub: Unsubscribe | null = null;
   private cloudRoomUnsubs = new Map<string, Unsubscribe>();
   private cloudMsgUnsubs = new Map<string, Unsubscribe>();
   private cloudSigUnsubs = new Map<string, Unsubscribe>();
@@ -134,6 +138,7 @@ export class RoomService {
 
   private statusListeners = new Set<(status: ServerConnectionStatus, rttMs: number) => void>();
   private publicRoomsListeners = new Set<(rooms: NetPlayRoom[]) => void>();
+  private myHostedRoomsListeners = new Set<(rooms: NetPlayRoom[]) => void>();
   private roomListeners = new Map<string, Set<(room: NetPlayRoom | null) => void>>();
   private messageListeners = new Map<string, Set<(messages: ChatMessage[]) => void>>();
   private signalListeners = new Map<string, Set<(signal: SignalingMessage) => void>>();
@@ -355,6 +360,9 @@ export class RoomService {
     if ((this.lobbySubscribed || this.publicRoomsListeners.size > 0) && !this.cloudPublicUnsub) {
       this.startCloudPublicRoomsListener();
     }
+    if (this.myHostedRoomsUid && this.myHostedRoomsListeners.size > 0 && !this.cloudMyRoomsUnsub) {
+      this.startCloudMyHostedRoomsListener(this.myHostedRoomsUid);
+    }
     for (const roomId of this.roomListeners.keys()) {
       if (!this.cloudRoomUnsubs.has(roomId)) {
         this.startCloudRoomListener(roomId);
@@ -566,6 +574,12 @@ export class RoomService {
       return;
     }
 
+    if (type === 'lobby:my_rooms') {
+      this.myHostedRooms = Array.isArray(msg.rooms) ? msg.rooms : [];
+      this.myHostedRoomsListeners.forEach((cb) => cb(this.myHostedRooms));
+      return;
+    }
+
     if (type === 'room:joined') {
       const room = msg.room as NetPlayRoom;
       const msgs = Array.isArray(msg.messages) ? (msg.messages as ChatMessage[]) : [];
@@ -727,14 +741,33 @@ export class RoomService {
         isPublic: input.isPublic !== undefined ? input.isPublic : true,
         rollbackFrames: input.rollbackFrames || 1,
         inputDelayTarget: input.inputDelayTarget || '0-1 Frame (Sub-16ms)',
+        ...(input.roomNote ? { roomNote: input.roomNote.trim().slice(0, 120) } : {}),
       });
     }
 
-    // Cloud Firestore P2P mode (Vercel / Static CDN)
-    const code = generateRoomCode(input.platform);
+    // Cloud Firestore P2P mode: clean up Host's own earlier active room before creating a new one
+    if (this.activeRoom && this.activeRoom.hostUid === auth.currentUser.uid) {
+      const prevId = this.activeRoom.id;
+      this.activeRoom = null;
+      this.activeRoomId = null;
+      deleteDoc(doc(db, 'rooms', prevId)).catch(() => {});
+    }
+
+    let code = generateRoomCode(input.platform);
+    for (let attempt = 0; attempt < 6; attempt++) {
+      try {
+        const existingSnap = await getDoc(doc(db, 'rooms', code));
+        if (!existingSnap.exists()) break;
+        code = generateRoomCode(input.platform);
+      } catch {
+        break;
+      }
+    }
+
     const roomId = code; // Using room code as doc ID enables direct `get` for both public & private invites without login
     const now = new Date().toISOString();
     const hostDisplayName = (input.hostName || auth.currentUser.displayName || profile.displayName).slice(0, 100);
+    const cleanedNote = input.roomNote?.trim().slice(0, 120);
     const newRoom: NetPlayRoom = {
       id: roomId,
       code,
@@ -757,6 +790,7 @@ export class RoomService {
       rollbackFrames: input.rollbackFrames || 1,
       inputDelayTarget: input.inputDelayTarget || '0-1 Frame (Sub-16ms)',
       pauseAuthority: `Host Only (${hostDisplayName})`,
+      ...(cleanedNote ? { roomNote: cleanedNote } : {}),
       createdAt: now,
       updatedAt: now,
     };
@@ -976,7 +1010,7 @@ export class RoomService {
     try {
       await updateDoc(doc(db, 'rooms', roomId), {
         gameId,
-        gameTitle,
+        gameTitle: gameTitle.slice(0, 150),
         platform,
         hostReady: true,
         guestReady: false,
@@ -986,6 +1020,75 @@ export class RoomService {
     } catch (err) {
       handleFirestoreError(err, OperationType.UPDATE, `rooms/${roomId}`);
     }
+  }
+
+  public async updateRoomSettings(
+    roomId: string,
+    updates: {
+      isPublic?: boolean;
+      rollbackFrames?: number;
+      inputDelayTarget?: string;
+      roomNote?: string;
+    }
+  ): Promise<void> {
+    if (this.transport === 'ws') {
+      await this.waitForSocketOpen();
+      this.sendRaw({ type: 'room:update_settings', ...updates });
+      return;
+    }
+
+    const payload: Record<string, unknown> = {
+      updatedAt: new Date().toISOString(),
+    };
+    if (typeof updates.isPublic === 'boolean') payload.isPublic = updates.isPublic;
+    if (typeof updates.rollbackFrames === 'number') {
+      payload.rollbackFrames = Math.max(1, Math.min(4, Math.round(updates.rollbackFrames)));
+    }
+    if (typeof updates.inputDelayTarget === 'string' && updates.inputDelayTarget.trim()) {
+      payload.inputDelayTarget = updates.inputDelayTarget.trim().slice(0, 60);
+    }
+    if (typeof updates.roomNote === 'string') {
+      const cleaned = updates.roomNote.trim().slice(0, 120);
+      payload.roomNote = cleaned || null;
+    }
+
+    try {
+      await updateDoc(doc(db, 'rooms', roomId), payload);
+    } catch (err) {
+      handleFirestoreError(err, OperationType.UPDATE, `rooms/${roomId}`);
+      throw err;
+    }
+  }
+
+  public async deleteHostedRoom(roomId: string): Promise<void> {
+    if (this.activeRoomId === roomId) {
+      this.activeRoom = null;
+      this.activeRoomId = null;
+      this.activeLocalUid = null;
+      this.prevRoomStatus = null;
+      this.messages = [];
+    }
+
+    if (this.transport === 'ws') {
+      await this.waitForSocketOpen();
+      this.sendRaw({ type: 'room:delete_by_id', roomId });
+      return;
+    }
+
+    try {
+      await deleteDoc(doc(db, 'rooms', roomId));
+    } catch (err) {
+      handleFirestoreError(err, OperationType.DELETE, `rooms/${roomId}`);
+      throw err;
+    }
+  }
+
+  public sendHostHeartbeat(roomId: string): void {
+    if (!roomId || this.transport !== 'cloud-p2p' || !isFirestoreReachable()) return;
+    if (!auth.currentUser) return;
+    updateDoc(doc(db, 'rooms', roomId), {
+      updatedAt: new Date().toISOString(),
+    }).catch(() => {});
   }
 
   public async launchMatch(roomId?: string): Promise<void> {
@@ -1127,7 +1230,8 @@ export class RoomService {
       q,
       (snap) => {
         const list: NetPlayRoom[] = [];
-        const cutoffMs = Date.now() - 6 * 60 * 60 * 1000;
+        // Keep recently active rooms (within 45 mins) to avoid listing stale/abandoned rooms
+        const cutoffMs = Date.now() - 45 * 60 * 1000;
         snap.forEach((d) => {
           const r = d.data() as NetPlayRoom;
           const updatedAtMs = r.updatedAt ? new Date(r.updatedAt).getTime() : Date.now();
@@ -1138,6 +1242,33 @@ export class RoomService {
         list.sort((a, b) => new Date(b.updatedAt || 0).getTime() - new Date(a.updatedAt || 0).getTime());
         this.publicRooms = list;
         this.publicRoomsListeners.forEach((cb) => cb(list));
+      },
+      (err) => {
+        if ((err as any)?.code === 'permission-denied') {
+          handleFirestoreError(err, OperationType.LIST, 'rooms');
+        }
+      }
+    );
+  }
+
+  private startCloudMyHostedRoomsListener(hostUid: string): void {
+    if (this.cloudMyRoomsUnsub || !isFirestoreReachable() || !hostUid) return;
+    const q = query(collection(db, 'rooms'), where('hostUid', '==', hostUid));
+    this.cloudMyRoomsUnsub = onSnapshot(
+      q,
+      (snap) => {
+        const list: NetPlayRoom[] = [];
+        const cutoffMs = Date.now() - 12 * 60 * 60 * 1000;
+        snap.forEach((d) => {
+          const r = d.data() as NetPlayRoom;
+          const updatedAtMs = r.updatedAt ? new Date(r.updatedAt).getTime() : Date.now();
+          if (r.status !== 'closed' && updatedAtMs > cutoffMs) {
+            list.push(r);
+          }
+        });
+        list.sort((a, b) => new Date(b.updatedAt || 0).getTime() - new Date(a.updatedAt || 0).getTime());
+        this.myHostedRooms = list;
+        this.myHostedRoomsListeners.forEach((cb) => cb(list));
       },
       (err) => {
         if ((err as any)?.code === 'permission-denied') {
@@ -1278,6 +1409,45 @@ export class RoomService {
         if (this.cloudPublicUnsub) {
           this.cloudPublicUnsub();
           this.cloudPublicUnsub = null;
+        }
+      }
+    };
+  }
+
+  public subscribeToMyHostedRooms(
+    hostUid: string | null | undefined,
+    onUpdate: (rooms: NetPlayRoom[]) => void
+  ): () => void {
+    if (!hostUid) {
+      onUpdate([]);
+      return () => {};
+    }
+    this.ensureConnected();
+    if (this.myHostedRoomsUid !== hostUid) {
+      if (this.cloudMyRoomsUnsub) {
+        this.cloudMyRoomsUnsub();
+        this.cloudMyRoomsUnsub = null;
+      }
+      this.myHostedRooms = [];
+      this.myHostedRoomsUid = hostUid;
+    }
+
+    this.myHostedRoomsListeners.add(onUpdate);
+    onUpdate(this.myHostedRooms);
+
+    if (this.transport === 'ws') {
+      this.sendHello();
+      this.sendRaw({ type: 'lobby:subscribe' });
+    } else if (this.transport === 'cloud-p2p') {
+      this.startCloudMyHostedRoomsListener(hostUid);
+    }
+
+    return () => {
+      this.myHostedRoomsListeners.delete(onUpdate);
+      if (this.myHostedRoomsListeners.size === 0) {
+        if (this.cloudMyRoomsUnsub) {
+          this.cloudMyRoomsUnsub();
+          this.cloudMyRoomsUnsub = null;
         }
       }
     };
