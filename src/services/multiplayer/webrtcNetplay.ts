@@ -116,6 +116,9 @@ interface PeerLink {
   ignoreOffer: boolean;
   needsRenegotiate: boolean;
   pendingCandidates: RTCIceCandidateInit[];
+  signalQueue: Promise<void>;
+  lastRenegotiateAt: number;
+  lastOfferSentAt: number;
   lastBytesRecv: number;
   lastBytesSent: number;
   lastStatsAt: number;
@@ -297,6 +300,12 @@ export class WebRTCNetplayManager {
     });
   }
 
+  public hasPeerLink(peerUid: string): boolean {
+    const link = this.peers.get(peerUid);
+    if (!link) return false;
+    return link.pc.connectionState !== 'closed' && link.pc.connectionState !== 'failed';
+  }
+
   public async connectToPeer(peerUid: string, shouldInitiate: boolean): Promise<void> {
     if (!this.roomId || !peerUid || peerUid === this.localUid) return;
     const epoch = this.sessionEpoch;
@@ -324,6 +333,7 @@ export class WebRTCNetplayManager {
           sdp: offer.sdp ? optimizeSdpForLowLatency(offer.sdp) : offer.sdp,
         };
         await link.pc.setLocalDescription(tunedOffer);
+        link.lastOfferSentAt = performance.now();
         if (epoch !== this.sessionEpoch || !this.roomId) return;
         await roomService.sendSignal(this.roomId, {
           roomId: this.roomId,
@@ -476,6 +486,9 @@ export class WebRTCNetplayManager {
       ignoreOffer: false,
       needsRenegotiate: false,
       pendingCandidates: [],
+      signalQueue: Promise.resolve(),
+      lastRenegotiateAt: 0,
+      lastOfferSentAt: 0,
       lastBytesRecv: 0,
       lastBytesSent: 0,
       lastStatsAt: performance.now(),
@@ -634,6 +647,17 @@ export class WebRTCNetplayManager {
       } catch {}
 
       const existing = this.peers.get(sig.senderUid);
+      const now = performance.now();
+      if (existing) {
+        // Ignore rapid duplicate renegotiate pulses while an offer is already in flight
+        if (now - existing.lastRenegotiateAt < 700) {
+          return;
+        }
+        if (shouldReset && (existing.makingOffer || now - existing.lastOfferSentAt < 900)) {
+          shouldReset = false;
+        }
+      }
+
       const isDead =
         !existing ||
         shouldReset ||
@@ -646,6 +670,7 @@ export class WebRTCNetplayManager {
         this.disconnectPeer(sig.senderUid);
       }
       const link = this.ensurePeerLink(sig.senderUid);
+      link.lastRenegotiateAt = now;
       if (this.localStream) {
         this.syncTracksOnPeer(link);
       }
@@ -654,62 +679,75 @@ export class WebRTCNetplayManager {
     }
 
     const link = this.ensurePeerLink(sig.senderUid);
-    const pc = link.pc;
+    const epoch = this.sessionEpoch;
 
-    try {
-      if (sig.type === 'offer' || sig.type === 'answer') {
-        const desc = JSON.parse(sig.payload) as RTCSessionDescriptionInit;
-        const polite = this.role !== 'host';
-        const offerCollision = desc.type === 'offer' && (link.makingOffer || pc.signalingState !== 'stable');
-        link.ignoreOffer = !polite && offerCollision;
-        if (link.ignoreOffer) return;
+    link.signalQueue = link.signalQueue
+      .then(async () => {
+        if (epoch !== this.sessionEpoch || !this.roomId) return;
+        const pc = link.pc;
+        if (pc.signalingState === 'closed' || pc.connectionState === 'closed') return;
 
-        if (offerCollision) {
-          await Promise.all([
-            pc.setLocalDescription({ type: 'rollback' }),
-            pc.setRemoteDescription(desc),
-          ]);
-        } else {
-          await pc.setRemoteDescription(desc);
-        }
+        if (sig.type === 'offer' || sig.type === 'answer') {
+          const desc = JSON.parse(sig.payload) as RTCSessionDescriptionInit;
 
-        // Flush queued ICE candidates
-        while (link.pendingCandidates.length > 0) {
-          const cand = link.pendingCandidates.shift();
-          if (cand) {
+          // Ignore stale or duplicate answers when peer connection is already stable (prevents InvalidStateError)
+          if (desc.type === 'answer' && pc.signalingState !== 'have-local-offer') {
+            return;
+          }
+
+          const polite = this.role !== 'host';
+          const offerCollision = desc.type === 'offer' && (link.makingOffer || pc.signalingState !== 'stable');
+          link.ignoreOffer = !polite && offerCollision;
+          if (link.ignoreOffer) return;
+
+          if (offerCollision) {
+            await Promise.all([
+              pc.setLocalDescription({ type: 'rollback' }),
+              pc.setRemoteDescription(desc),
+            ]);
+          } else {
+            await pc.setRemoteDescription(desc);
+          }
+
+          // Flush queued ICE candidates
+          while (link.pendingCandidates.length > 0) {
+            const cand = link.pendingCandidates.shift();
+            if (cand) {
+              await pc.addIceCandidate(cand).catch(() => {});
+            }
+          }
+
+          if (desc.type === 'offer') {
+            const answer = await pc.createAnswer();
+            if (epoch !== this.sessionEpoch || !this.roomId || (pc.connectionState as string) === 'closed') return;
+            const tunedAnswer: RTCSessionDescriptionInit = {
+              type: answer.type,
+              sdp: answer.sdp ? optimizeSdpForLowLatency(answer.sdp) : answer.sdp,
+            };
+            await pc.setLocalDescription(tunedAnswer);
+            await roomService.sendSignal(this.roomId, {
+              roomId: this.roomId,
+              senderUid: this.localUid,
+              targetUid: sig.senderUid,
+              type: 'answer',
+              payload: JSON.stringify(pc.localDescription),
+            });
+          } else if (desc.type === 'answer' && link.needsRenegotiate && this.role === 'host') {
+            link.needsRenegotiate = false;
+            this.connectToPeer(sig.senderUid, true);
+          }
+        } else if (sig.type === 'candidate') {
+          const cand = JSON.parse(sig.payload) as RTCIceCandidateInit;
+          if (!pc.remoteDescription) {
+            link.pendingCandidates.push(cand);
+          } else {
             await pc.addIceCandidate(cand).catch(() => {});
           }
         }
-
-        if (desc.type === 'offer') {
-          const answer = await pc.createAnswer();
-          const tunedAnswer: RTCSessionDescriptionInit = {
-            type: answer.type,
-            sdp: answer.sdp ? optimizeSdpForLowLatency(answer.sdp) : answer.sdp,
-          };
-          await pc.setLocalDescription(tunedAnswer);
-          await roomService.sendSignal(this.roomId, {
-            roomId: this.roomId,
-            senderUid: this.localUid,
-            targetUid: sig.senderUid,
-            type: 'answer',
-            payload: JSON.stringify(pc.localDescription),
-          });
-        } else if (desc.type === 'answer' && link.needsRenegotiate && this.role === 'host') {
-          link.needsRenegotiate = false;
-          this.connectToPeer(sig.senderUid, true);
-        }
-      } else if (sig.type === 'candidate') {
-        const cand = JSON.parse(sig.payload) as RTCIceCandidateInit;
-        if (!pc.remoteDescription) {
-          link.pendingCandidates.push(cand);
-        } else {
-          await pc.addIceCandidate(cand).catch(() => {});
-        }
-      }
-    } catch (err) {
-      console.warn('WebRTC signaling handler error:', err);
-    }
+      })
+      .catch((err) => {
+        console.warn('WebRTC signaling handler error:', err);
+      });
   }
 
   public sendInputBitmask(mask: number): void {

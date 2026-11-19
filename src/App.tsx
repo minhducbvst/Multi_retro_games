@@ -329,22 +329,19 @@ export default function App() {
 
   return (
     <div className="min-h-screen bg-[#111319] text-[#e2e2eb] font-sans antialiased flex flex-col selection:bg-[#4cd7f6]/30 selection:text-[#4cd7f6]">
-      {/* 1. Global Top Navigation Bar */}
-      <TopNavBar
-        currentTab={activeView === 'netplay' ? 'rooms' : currentTab}
-        onNavigate={handleNavigate}
-        searchQuery={searchQuery}
-        onSearchChange={(q) => {
-          if (lockedGuestSession) return;
-          setSearchQuery(q);
-          setSearchModalOpen(true);
-        }}
-        guestLockedRoom={
-          lockedGuestSession
-            ? { code: lockedGuestSession.room.code, gameTitle: lockedGuestSession.room.gameTitle }
-            : null
-        }
-      />
+      {/* 1. Global Top Navigation Bar (Hidden in Locked Guest Invite Mode so guest sees only game) */}
+      {!lockedGuestSession && (
+        <TopNavBar
+          currentTab={activeView === 'netplay' ? 'rooms' : currentTab}
+          onNavigate={handleNavigate}
+          searchQuery={searchQuery}
+          onSearchChange={(q) => {
+            setSearchQuery(q);
+            setSearchModalOpen(true);
+          }}
+          guestLockedRoom={null}
+        />
+      )}
 
       {/* 2. Main Body Grid */}
       <div className="flex-1 flex overflow-hidden">
@@ -363,7 +360,13 @@ export default function App() {
         )}
 
         {/* Dynamic Center Viewport */}
-        <main className={`flex-1 overflow-y-auto p-4 sm:p-6 lg:p-8 ${activeView !== 'emulator' && !lockedGuestSession ? 'pb-20 lg:pb-8' : ''}`}>
+        <main
+          className={`flex-1 overflow-y-auto ${
+            activeView === 'emulator' || lockedGuestSession
+              ? 'p-0'
+              : 'p-4 sm:p-6 lg:p-8 pb-20 lg:pb-8'
+          }`}
+        >
           {/* View 1: Playable In-Game Emulator Screen */}
           {activeView === 'emulator' && (
             <EmulatorPage

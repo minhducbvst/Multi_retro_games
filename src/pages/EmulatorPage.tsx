@@ -121,7 +121,9 @@ export const EmulatorPage: React.FC<EmulatorPageProps> = ({
   const [toastMessage, setToastMessage] = useState<string | null>(null);
   const [isHandheldTouchMode, setIsHandheldTouchMode] = useState<boolean>(() => {
     if (typeof window !== 'undefined') {
-      return window.innerWidth < 840 || ('ontouchstart' in window) || (navigator.maxTouchPoints > 0);
+      const isCoarsePointer = Boolean(window.matchMedia?.('(pointer: coarse)')?.matches);
+      const isMobileUa = /Android|iPhone|iPad|iPod/i.test(navigator.userAgent);
+      return isCoarsePointer || isMobileUa || window.innerWidth < 640;
     }
     return false;
   });
@@ -784,19 +786,24 @@ export const EmulatorPage: React.FC<EmulatorPageProps> = ({
         if (lastKnownGuestUid && lastKnownGuestUid !== updated.guestUid) {
           webrtcNetplay.disconnectPeer(lastKnownGuestUid);
         }
+        const guestChanged = updated.guestUid !== lastKnownGuestUid;
         lastKnownGuestUid = updated.guestUid || null;
-        if (updated.guestUid) {
+        if (updated.guestUid && (guestChanged || !webrtcNetplay.hasPeerLink(updated.guestUid))) {
           webrtcNetplay.connectToPeer(updated.guestUid, true);
         }
         for (const s of updated.spectators || []) {
-          webrtcNetplay.connectToPeer(s.id, true);
+          if (!webrtcNetplay.hasPeerLink(s.id)) {
+            webrtcNetplay.connectToPeer(s.id, true);
+          }
         }
       } else if (updated.hostUid) {
         // Auto-mark Guest READY when Host changes game while Guest is already waiting in Emulator screen
         if (role === 'guest' && updated.guestUid === playerUid && !updated.guestReady) {
           roomService.toggleReady(updated.id, false, true).catch(() => {});
         }
-        webrtcNetplay.connectToPeer(updated.hostUid, false);
+        if (!webrtcNetplay.hasPeerLink(updated.hostUid)) {
+          webrtcNetplay.connectToPeer(updated.hostUid, false);
+        }
         if (!requestedOfferOnce) {
           requestedOfferOnce = true;
           webrtcNetplay.requestOfferFromHost(updated.hostUid, true).catch(() => {});
@@ -971,7 +978,7 @@ export const EmulatorPage: React.FC<EmulatorPageProps> = ({
       });
 
       // Request fresh Offer from Host on entry & retry periodically while still waiting for video stream
-      if (initialRoom.hostUid) {
+      if (initialRoom.hostUid && !requestedOfferOnce) {
         requestedOfferOnce = true;
         webrtcNetplay.requestOfferFromHost(initialRoom.hostUid, true).catch(() => {});
       }
@@ -1401,6 +1408,34 @@ export const EmulatorPage: React.FC<EmulatorPageProps> = ({
     }
   };
 
+  const triggerRestartGame = () => {
+    if (isNetplayGuestOrSpec) return;
+    if (nostalgistRef.current) {
+      try {
+        if (isPaused) {
+          nostalgistRef.current.resume();
+          setIsPaused(false);
+        }
+        nostalgistRef.current.restart();
+        showToast(netplaySession ? 'Đã khởi động lại game (giữ nguyên phòng)' : 'Đã khởi động lại trò chơi');
+      } catch {
+        try {
+          nostalgistRef.current.sendCommand('RESET');
+          showToast(netplaySession ? 'Đã khởi động lại game (giữ nguyên phòng)' : 'Đã khởi động lại trò chơi');
+        } catch {
+          showToast('Không thể khởi động lại trò chơi lúc này');
+        }
+      }
+    } else if (engineRef.current) {
+      engineRef.current.reset();
+      if (isPaused) {
+        engineRef.current.resume();
+        setIsPaused(false);
+      }
+      showToast(netplaySession ? 'Đã khởi động lại game (giữ nguyên phòng)' : 'Đã khởi động lại trò chơi');
+    }
+  };
+
   const triggerRewind = (seconds: number = 10) => {
     if (nostalgistRef.current) {
       nostalgistRef.current.sendCommand('REWIND');
@@ -1627,8 +1662,8 @@ export const EmulatorPage: React.FC<EmulatorPageProps> = ({
       className={`fixed ${isVirtualRotated ? 'overflow-hidden' : 'inset-0 top-0 left-0 w-screen h-screen'} bg-[#0c0e14] text-[#e2e2eb] flex flex-col z-50 overflow-hidden select-none transition-transform duration-300 ease-out`}
       style={rootStyle}
     >
-      {/* ================= TOP HEADER (Docked - hidden in landscape touch mode for max screen area) ================= */}
-      {!(isHandheldTouchMode && effectiveOrientation === 'landscape') && (
+      {/* ================= TOP HEADER (Hidden for Guest so Guest sees ONLY game screen, and hidden in landscape touch mode) ================= */}
+      {!isNetplayGuestOrSpec && !(isHandheldTouchMode && effectiveOrientation === 'landscape') && (
         <header className="bg-[#0c0e14]/90 backdrop-blur-md w-full px-2 sm:px-4 lg:px-6 flex items-center justify-between h-12 sm:h-14 border-b border-[#494454]/30 z-40 flex-shrink-0 max-w-full overflow-hidden">
           {/* Left Cluster */}
           <div className="flex items-center gap-1.5 sm:gap-4 min-w-0 flex-shrink">
@@ -1781,23 +1816,78 @@ export const EmulatorPage: React.FC<EmulatorPageProps> = ({
         </header>
       )}
 
+      {/* ================= MINIMAL FLOATING GUEST HUD (Game-Only Mode) ================= */}
+      {isNetplayGuestOrSpec && !(isHandheldTouchMode && effectiveOrientation === 'landscape') && (
+        <div className="fixed top-2.5 right-2.5 z-50 flex items-center gap-1.5 px-2 py-1 rounded-full bg-[#0c0e14]/75 hover:bg-[#0c0e14]/95 backdrop-blur-md border border-[#494454]/40 shadow-lg opacity-80 hover:opacity-100 transition-opacity">
+          <span className="flex items-center gap-1.5 px-2 py-0.5 text-[11px] font-mono text-[#4cd7f6] font-bold">
+            <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse"></span>
+            <span>{netplayStats.rttMs > 0 ? `${netplayStats.rttMs}ms` : 'P2'}</span>
+          </span>
+          <button
+            type="button"
+            onClick={() => {
+              const newMute = !isMuted;
+              setIsMuted(newMute);
+              if (remoteVideoRef.current) remoteVideoRef.current.muted = newMute;
+              setNeedsAudioUnlock(false);
+            }}
+            className="p-1.5 rounded-full text-[#cbc3d7] hover:text-[#4cd7f6] hover:bg-white/5 transition-colors cursor-pointer"
+            title={isMuted ? 'Bật âm thanh' : 'Tắt âm thanh'}
+          >
+            <span className="material-symbols-outlined text-base">
+              {isMuted ? 'volume_off' : 'volume_up'}
+            </span>
+          </button>
+          <button
+            type="button"
+            onClick={() => setIsHandheldTouchMode(!isHandheldTouchMode)}
+            className={`p-1.5 rounded-full transition-colors cursor-pointer ${
+              isHandheldTouchMode ? 'text-[#4cd7f6] bg-[#4cd7f6]/15' : 'text-[#cbc3d7] hover:text-white hover:bg-white/5'
+            }`}
+            title="Bật/Tắt tay cầm cảm ứng"
+          >
+            <span className="material-symbols-outlined text-base">sports_esports</span>
+          </button>
+          <button
+            type="button"
+            onClick={toggleFullscreen}
+            className="p-1.5 rounded-full text-[#cbc3d7] hover:text-[#4cd7f6] hover:bg-white/5 transition-colors cursor-pointer"
+            title="Toàn màn hình (F11)"
+          >
+            <span className="material-symbols-outlined text-base">fullscreen</span>
+          </button>
+          <button
+            type="button"
+            onClick={() => (netplaySession ? netplaySession.onLeaveMatch(false) : onExit())}
+            className="p-1.5 rounded-full text-rose-400 hover:bg-rose-500/20 transition-colors cursor-pointer"
+            title="Thoát màn hình game"
+          >
+            <span className="material-symbols-outlined text-base">close</span>
+          </button>
+        </div>
+      )}
+
       {/* ================= MAIN EMULATOR WORKSPACE ================= */}
       <div className="flex-1 flex overflow-hidden relative">
         {/* PRIMARY STAGE (Retro Game Viewport Canvas 4:3) */}
         <section
           className={
             !isHandheldTouchMode
-              ? 'flex-1 relative flex flex-col items-center justify-center p-2 lg:p-4 bg-[#0c0e14] overflow-hidden'
+              ? `flex-1 relative flex flex-col items-center justify-center ${
+                  isNetplayGuestOrSpec ? 'p-1 sm:p-2 bg-black' : 'p-2 lg:p-4 bg-[#0c0e14]'
+                } overflow-hidden`
               : effectiveOrientation === 'landscape'
               ? 'flex-1 w-full h-full relative flex items-center justify-center overflow-hidden bg-black'
               : 'flex-1 w-full h-full flex flex-col justify-between items-center p-0 sm:p-1 bg-[#080a12] overflow-hidden relative max-w-full'
           }
         >
-          {/* Subtle Ambient Glow Backdrop */}
-          <div className="absolute inset-0 flex items-center justify-center pointer-events-none opacity-20 blur-3xl">
-            <div className="w-[500px] h-[380px] bg-[#a078ff] rounded-full mix-blend-screen"></div>
-            <div className="w-[400px] h-[320px] bg-[#4cd7f6] rounded-full mix-blend-screen -ml-32"></div>
-          </div>
+          {/* Subtle Ambient Glow Backdrop (Hidden for pure game-only Guest view) */}
+          {!isNetplayGuestOrSpec && (
+            <div className="absolute inset-0 flex items-center justify-center pointer-events-none opacity-20 blur-3xl">
+              <div className="w-[500px] h-[380px] bg-[#a078ff] rounded-full mix-blend-screen"></div>
+              <div className="w-[400px] h-[320px] bg-[#4cd7f6] rounded-full mix-blend-screen -ml-32"></div>
+            </div>
+          )}
 
           {/* Top Canvas Container Wrapper (ensures un-squashed 4:3 aspect ratio in portrait handheld mode) */}
           <div
@@ -1811,7 +1901,9 @@ export const EmulatorPage: React.FC<EmulatorPageProps> = ({
             <div
               className={
                 !isHandheldTouchMode
-                  ? `relative w-full max-w-[900px] ${aspectRatioClass} max-h-[calc(100vh-11rem)] flex items-center justify-center group rounded-lg overflow-hidden border border-[#494454]/50 bg-black shadow-2xl ${curvatureClass} ${bloomClass}`
+                  ? isNetplayGuestOrSpec
+                    ? `relative w-full max-w-[1200px] ${aspectRatioClass} max-h-[calc(100vh-1rem)] flex items-center justify-center group rounded-lg overflow-hidden bg-black shadow-2xl ${curvatureClass} ${bloomClass}`
+                    : `relative w-full max-w-[900px] ${aspectRatioClass} max-h-[calc(100vh-11rem)] flex items-center justify-center group rounded-lg overflow-hidden border border-[#494454]/50 bg-black shadow-2xl ${curvatureClass} ${bloomClass}`
                   : effectiveOrientation === 'landscape'
                   ? `relative h-full max-h-screen aspect-[4/3] max-w-full flex items-center justify-center bg-black overflow-hidden shadow-2xl ${curvatureClass} ${bloomClass}`
                   : `relative h-full max-h-full aspect-[4/3] max-w-full flex items-center justify-center group rounded-2xl overflow-hidden border-2 sm:border-4 border-[#242735] bg-black shadow-2xl ${curvatureClass} ${bloomClass}`
@@ -2038,22 +2130,24 @@ export const EmulatorPage: React.FC<EmulatorPageProps> = ({
               />
             )}
 
-            {/* Floating Top In-Screen HUD */}
-            <div className="absolute top-0 inset-x-0 p-2.5 bg-gradient-to-b from-black/90 via-black/40 to-transparent flex items-center justify-between opacity-0 group-hover:opacity-100 transition-opacity duration-300">
-              <div className="flex items-center gap-2">
-                <span className="px-2 py-0.5 rounded bg-[#1e1f26]/80 backdrop-blur border border-[#494454]/40 font-mono text-xs text-white">
-                  {game.title}
-                </span>
-                <span className="px-1.5 py-0.5 rounded bg-[#03b5d3]/20 border border-[#03b5d3]/40 text-[#4cd7f6] font-mono text-[10px]">
-                  {game.platform}
-                </span>
+            {/* Floating Top In-Screen HUD (Hidden for Guest so screen stays 100% clean) */}
+            {!isNetplayGuestOrSpec && (
+              <div className="absolute top-0 inset-x-0 p-2.5 bg-gradient-to-b from-black/90 via-black/40 to-transparent flex items-center justify-between opacity-0 group-hover:opacity-100 transition-opacity duration-300">
+                <div className="flex items-center gap-2">
+                  <span className="px-2 py-0.5 rounded bg-[#1e1f26]/80 backdrop-blur border border-[#494454]/40 font-mono text-xs text-white">
+                    {game.title}
+                  </span>
+                  <span className="px-1.5 py-0.5 rounded bg-[#03b5d3]/20 border border-[#03b5d3]/40 text-[#4cd7f6] font-mono text-[10px]">
+                    {game.platform}
+                  </span>
+                </div>
+                <div className="flex items-center gap-2 font-mono text-xs">
+                  {fastForwardSpeed > 1 && (
+                    <span className="text-[#ffb95f]">SPEED: {fastForwardSpeed}x</span>
+                  )}
+                </div>
               </div>
-              <div className="flex items-center gap-2 font-mono text-xs">
-                {fastForwardSpeed > 1 && (
-                  <span className="text-[#ffb95f]">SPEED: {fastForwardSpeed}x</span>
-                )}
-              </div>
-            </div>
+            )}
 
             {/* Paused Overlay */}
             {isPaused && (
@@ -2081,8 +2175,8 @@ export const EmulatorPage: React.FC<EmulatorPageProps> = ({
           </div>
         </div>
 
-          {/* DOCKED FLOATING EMULATOR CONTROL BAR */}
-          {!isHandheldTouchMode && (
+          {/* DOCKED FLOATING EMULATOR CONTROL BAR (Hidden for Guest so screen stays pure game) */}
+          {!isHandheldTouchMode && !isNetplayGuestOrSpec && (
             <div className="w-full max-w-[920px] mt-2.5 px-3 py-2 rounded-xl bg-[#191b22]/90 backdrop-blur-xl border border-[#494454]/30 shadow-2xl flex flex-wrap items-center justify-between gap-2 z-20">
               {/* Left Sub-Cluster */}
               <div className="flex items-center gap-1.5">
@@ -2096,6 +2190,15 @@ export const EmulatorPage: React.FC<EmulatorPageProps> = ({
                       <span className="material-symbols-outlined text-base fill-icon">
                         {isPaused ? 'play_arrow' : 'pause'}
                       </span>
+                    </button>
+
+                    <button
+                      onClick={triggerRestartGame}
+                      className="h-8 px-2.5 rounded-lg bg-amber-500/15 border border-amber-500/40 text-amber-300 hover:bg-amber-500/25 hover:border-amber-400 flex items-center gap-1 active:scale-95 transition-all font-mono text-xs font-bold cursor-pointer"
+                      title="Khởi động lại game hiện tại mà không cần thoát phòng"
+                    >
+                      <span className="material-symbols-outlined text-sm">restart_alt</span>
+                      <span className="hidden sm:inline">Khởi động lại</span>
                     </button>
 
                     <button
@@ -2278,6 +2381,8 @@ export const EmulatorPage: React.FC<EmulatorPageProps> = ({
                   setCurrentSlot(slot);
                   showToast(`Đã chọn Khe lưu Slot #${slot}`);
                 }}
+                onRestartGame={triggerRestartGame}
+                isGuestMode={isNetplayGuestOrSpec}
               />
             </div>
           )}
@@ -2299,7 +2404,7 @@ export const EmulatorPage: React.FC<EmulatorPageProps> = ({
                 currentSlot={currentSlot}
                 rotationAngle={activeRotationDeg}
                 gameTitle={game.title}
-                onExit={onExit}
+                onExit={() => (netplaySession ? netplaySession.onLeaveMatch(false) : onExit())}
                 orientationMode={orientationMode}
                 onCycleOrientation={cycleOrientation}
                 isVirtualRotated={isVirtualRotated}
@@ -2317,13 +2422,15 @@ export const EmulatorPage: React.FC<EmulatorPageProps> = ({
                   setCurrentSlot(slot);
                   showToast(`Đã chọn Khe lưu Slot #${slot}`);
                 }}
+                onRestartGame={triggerRestartGame}
+                isGuestMode={isNetplayGuestOrSpec}
               />
             </div>
           )}
         </section>
 
-        {/* RIGHT AUXILIARY INSPECTOR PANEL (Collapsible Drawer) */}
-        {showInspector && !isHandheldTouchMode && (
+        {/* RIGHT AUXILIARY INSPECTOR PANEL (Hidden for Guest so Guest sees pure game screen) */}
+        {showInspector && !isHandheldTouchMode && !isNetplayGuestOrSpec && (
           <aside className="w-80 lg:w-96 bg-[#191b22] border-l border-[#494454]/30 flex flex-col h-[calc(100vh-3.5rem)] transition-all duration-300 z-30 flex-shrink-0">
             {/* Panel Header Tabs */}
             <div className="flex items-center border-b border-[#494454]/30 bg-[#0c0e14]/60 px-2 pt-2">

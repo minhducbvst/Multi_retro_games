@@ -896,12 +896,83 @@ export const NetPlayLobbyPage: React.FC<NetPlayLobbyPageProps> = ({
 
       {/* Toast */}
       {toastMessage && (
-        <div className="fixed top-20 right-8 z-50 px-4 py-2.5 rounded-lg bg-[#1e1f26] border border-[#4cd7f6] text-[#4cd7f6] font-mono text-xs flex items-center gap-2 shadow-2xl animate-fade-in">
+        <div className="fixed top-6 right-6 z-50 px-4 py-2.5 rounded-lg bg-[#1e1f26] border border-[#4cd7f6] text-[#4cd7f6] font-mono text-xs flex items-center gap-2 shadow-2xl animate-fade-in">
           <span className="material-symbols-outlined text-sm">wifi_channel</span>
           <span>{toastMessage}</span>
         </div>
       )}
 
+      {isInviteLocked && room && !isHost ? (
+        <div className="min-h-screen flex items-center justify-center p-4 bg-[#0c0e14]">
+          <div className="max-w-md w-full bg-[#161821] border border-[#4cd7f6]/35 rounded-2xl p-6 sm:p-8 text-center space-y-5 shadow-2xl">
+            <div className="w-28 h-28 mx-auto rounded-2xl overflow-hidden border border-[#494454]/60 bg-[#0c0e14] shadow-lg">
+              <img
+                src={activeGame.boxArt}
+                alt={room.gameTitle}
+                className="w-full h-full object-cover"
+              />
+            </div>
+
+            <div className="space-y-1.5">
+              <div className="inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-full bg-[#4cd7f6]/10 border border-[#4cd7f6]/30 text-[#4cd7f6] font-mono text-[11px] font-bold">
+                <span className="w-2 h-2 rounded-full bg-emerald-400 animate-pulse"></span>
+                PHÒNG #{room.code} • {room.platform}
+              </div>
+              <h2 className="font-headline font-bold text-xl text-white pt-1">
+                {room.gameTitle}
+              </h2>
+              <p className="text-xs font-mono text-[#958ea0]">
+                Chủ phòng: <span className="text-[#e2e2eb] font-bold">{room.hostName}</span> • {isGuest ? 'Bạn điều khiển Port 2' : 'Khán giả'}
+              </p>
+            </div>
+
+            {room.status === 'playing' || isSpectator ? (
+              <button
+                type="button"
+                onClick={handleJoinActiveMatch}
+                className="w-full py-3.5 px-5 rounded-xl bg-gradient-to-r from-[#4cd7f6] to-[#34d399] text-[#002926] font-mono font-bold text-sm shadow-xl shadow-[#4cd7f6]/25 hover:brightness-110 flex items-center justify-center gap-2 cursor-pointer transition-all"
+              >
+                <span className="material-symbols-outlined text-lg">play_circle</span>
+                <span>{room.status === 'playing' ? 'VÀO MÀN HÌNH CHƠI GAME' : 'VÀO XEM TRẬN ĐẤU'}</span>
+              </button>
+            ) : (
+              <div className="space-y-3">
+                <button
+                  type="button"
+                  onClick={handleToggleReady}
+                  className={`w-full py-3.5 px-5 rounded-xl font-mono font-bold text-sm flex items-center justify-center gap-2 transition-all cursor-pointer ${
+                    room.guestReady
+                      ? 'bg-emerald-500/20 text-emerald-300 border border-emerald-500/50 hover:bg-emerald-500/30'
+                      : 'bg-gradient-to-r from-amber-400 to-[#4cd7f6] text-[#002933] shadow-[0_0_24px_rgba(76,215,246,0.35)] hover:brightness-110'
+                  }`}
+                >
+                  <span className="material-symbols-outlined text-lg">
+                    {room.guestReady ? 'check_circle' : 'sports_esports'}
+                  </span>
+                  <span>
+                    {room.guestReady ? 'ĐÃ SẴN SÀNG (BẤM ĐỂ HỦY)' : 'BẤM SẴN SÀNG VÀO GAME'}
+                  </span>
+                </button>
+                <p className="text-[11px] font-mono text-[#958ea0]">
+                  {room.guestReady
+                    ? 'Đang chờ Chủ phòng nhấn Bắt Đầu Game — màn hình game sẽ tự mở ngay!'
+                    : 'Nhấn Sẵn Sàng để Chủ phòng bắt đầu phát màn hình game cho bạn.'}
+                </p>
+              </div>
+            )}
+
+            <button
+              type="button"
+              onClick={handleLeave}
+              className="w-full py-2 px-4 rounded-xl bg-[#1e1f26] hover:bg-rose-500/15 text-[#958ea0] hover:text-rose-300 border border-[#494454]/40 hover:border-rose-500/40 font-mono text-xs flex items-center justify-center gap-1.5 cursor-pointer transition-colors"
+            >
+              <span className="material-symbols-outlined text-sm">logout</span>
+              <span>Thoát phòng</span>
+            </button>
+          </div>
+        </div>
+      ) : (
+        <>
       {/* 1. Sub-Nav & Live Server Telemetry Strip */}
       <section className="w-full px-4 py-2.5 bg-[#0c0e14]/70 border-b border-[#494454]/20 flex flex-wrap items-center justify-between gap-3 text-xs font-mono text-[#cbc3d7]">
         <div className="flex items-center gap-2 flex-wrap">
@@ -1975,6 +2046,8 @@ export const NetPlayLobbyPage: React.FC<NetPlayLobbyPageProps> = ({
               </div>
             </div>
           </div>
+        </>
+      )}
         </>
       )}
 

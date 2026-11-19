@@ -32,6 +32,8 @@ interface VirtualGamepadProps {
   onToggleFullscreen?: () => void;
   onCycleSlot?: () => void;
   onSelectSlot?: (slot: number) => void;
+  onRestartGame?: () => void;
+  isGuestMode?: boolean;
 }
 
 export const VirtualGamepad: React.FC<VirtualGamepadProps> = ({
@@ -59,6 +61,8 @@ export const VirtualGamepad: React.FC<VirtualGamepadProps> = ({
   onToggleFullscreen,
   onCycleSlot,
   onSelectSlot,
+  onRestartGame,
+  isGuestMode = false,
 }) => {
   // Load persistent gamepad config
   const [config, setConfig] = useState<MobileGamepadConfig>(() => {
@@ -289,38 +293,40 @@ export const VirtualGamepad: React.FC<VirtualGamepadProps> = ({
               </button>
             )}
 
-            <div className="w-px h-3.5 bg-[#494454]/40 shrink-0"></div>
-
-            {/* 2. NÚT CHỌN KHE LƯU (Thay cho nút tạm dừng theo yêu cầu của người dùng) */}
-            {onCycleSlot && (
-              <button
-                type="button"
-                onClick={onCycleSlot}
-                className="h-7 px-2 sm:px-2.5 rounded-full bg-[#1e202e] border border-amber-500/50 text-amber-300 hover:bg-amber-500/20 hover:border-amber-400 flex items-center gap-1 font-mono text-xs font-bold transition-all active:scale-95 shrink-0 shadow-sm"
-                title={`Chạm để đổi khe lưu (Hiện tại: Slot #${currentSlot})`}
-              >
-                <span className="material-symbols-outlined text-sm text-amber-400">bookmark</span>
-                <span>Slot {currentSlot}</span>
-              </button>
+            {/* 2. NÚT CHỌN KHE LƯU (Ẩn với Guest) */}
+            {!isGuestMode && onCycleSlot && (
+              <>
+                <div className="w-px h-3.5 bg-[#494454]/40 shrink-0"></div>
+                <button
+                  type="button"
+                  onClick={onCycleSlot}
+                  className="h-7 px-2 sm:px-2.5 rounded-full bg-[#1e202e] border border-amber-500/50 text-amber-300 hover:bg-amber-500/20 hover:border-amber-400 flex items-center gap-1 font-mono text-xs font-bold transition-all active:scale-95 shrink-0 shadow-sm"
+                  title={`Chạm để đổi khe lưu (Hiện tại: Slot #${currentSlot})`}
+                >
+                  <span className="material-symbols-outlined text-sm text-amber-400">bookmark</span>
+                  <span>Slot {currentSlot}</span>
+                </button>
+              </>
             )}
 
-            <div className="w-px h-3.5 bg-[#494454]/40 shrink-0"></div>
-
-            {/* 3. Quick Save Button (Đưa ra ngoài theo yêu cầu) */}
-            {onTriggerQuickSave && (
-              <button
-                type="button"
-                onClick={onTriggerQuickSave}
-                className="h-7 px-2 sm:px-2.5 rounded-full bg-emerald-500/15 border border-emerald-500/40 text-emerald-300 hover:bg-emerald-500/25 flex items-center gap-1 font-mono text-xs font-bold transition-all active:scale-95 shrink-0"
-                title={`Lưu nhanh trạng thái game vào Khe #${currentSlot}`}
-              >
-                <span className="material-symbols-outlined text-sm text-emerald-400">save</span>
-                <span className="hidden xs:inline">Lưu</span>
-              </button>
+            {/* 3. Quick Save Button (Ẩn với Guest) */}
+            {!isGuestMode && onTriggerQuickSave && (
+              <>
+                <div className="w-px h-3.5 bg-[#494454]/40 shrink-0"></div>
+                <button
+                  type="button"
+                  onClick={onTriggerQuickSave}
+                  className="h-7 px-2 sm:px-2.5 rounded-full bg-emerald-500/15 border border-emerald-500/40 text-emerald-300 hover:bg-emerald-500/25 flex items-center gap-1 font-mono text-xs font-bold transition-all active:scale-95 shrink-0"
+                  title={`Lưu nhanh trạng thái game vào Khe #${currentSlot}`}
+                >
+                  <span className="material-symbols-outlined text-sm text-emerald-400">save</span>
+                  <span className="hidden xs:inline">Lưu</span>
+                </button>
+              </>
             )}
 
-            {/* 4. Quick Load Button (Đưa ra ngoài theo yêu cầu) */}
-            {onTriggerQuickLoad && (
+            {/* 4. Quick Load Button (Ẩn với Guest) */}
+            {!isGuestMode && onTriggerQuickLoad && (
               <button
                 type="button"
                 onClick={onTriggerQuickLoad}
@@ -377,41 +383,43 @@ export const VirtualGamepad: React.FC<VirtualGamepadProps> = ({
                   </div>
 
                   {/* 0. CHỌN KHE LƯU TRỰC TIẾP TRONG MENU */}
-                  <div className="py-1.5 px-2.5 bg-[#1e202e] rounded-xl border border-[#494454]/40 flex flex-col gap-1.5">
-                    <div className="flex items-center justify-between font-mono text-[11px] text-[#cbc3d7]">
-                      <span className="flex items-center gap-1.5">
-                        <span className="material-symbols-outlined text-sm text-amber-400">bookmark</span>
-                        <span>Chọn khe lưu (Save Slot):</span>
-                      </span>
-                      <span className="text-amber-400 font-bold">Slot #{currentSlot}</span>
+                  {!isGuestMode && (
+                    <div className="py-1.5 px-2.5 bg-[#1e202e] rounded-xl border border-[#494454]/40 flex flex-col gap-1.5">
+                      <div className="flex items-center justify-between font-mono text-[11px] text-[#cbc3d7]">
+                        <span className="flex items-center gap-1.5">
+                          <span className="material-symbols-outlined text-sm text-amber-400">bookmark</span>
+                          <span>Chọn khe lưu (Save Slot):</span>
+                        </span>
+                        <span className="text-amber-400 font-bold">Slot #{currentSlot}</span>
+                      </div>
+                      <div className="grid grid-cols-5 gap-1">
+                        {[1, 2, 3, 4, 5].map((s) => (
+                          <button
+                            key={s}
+                            type="button"
+                            onClick={() => {
+                              if (onSelectSlot) {
+                                onSelectSlot(s);
+                              } else if (onCycleSlot) {
+                                onCycleSlot();
+                              }
+                              setIsDropdownOpen(false);
+                            }}
+                            className={`py-1 rounded-lg font-mono text-xs font-bold transition-all active:scale-95 flex items-center justify-center ${
+                              currentSlot === s
+                                ? 'bg-amber-500 text-[#141622] shadow-[0_0_8px_rgba(245,158,11,0.5)]'
+                                : 'bg-[#27293b] text-[#cbc3d7] hover:bg-amber-500/20 hover:text-amber-300 border border-[#494454]/40'
+                            }`}
+                          >
+                            #{s}
+                          </button>
+                        ))}
+                      </div>
                     </div>
-                    <div className="grid grid-cols-5 gap-1">
-                      {[1, 2, 3, 4, 5].map((s) => (
-                        <button
-                          key={s}
-                          type="button"
-                          onClick={() => {
-                            if (onSelectSlot) {
-                              onSelectSlot(s);
-                            } else if (onCycleSlot) {
-                              onCycleSlot();
-                            }
-                            setIsDropdownOpen(false);
-                          }}
-                          className={`py-1 rounded-lg font-mono text-xs font-bold transition-all active:scale-95 flex items-center justify-center ${
-                            currentSlot === s
-                              ? 'bg-amber-500 text-[#141622] shadow-[0_0_8px_rgba(245,158,11,0.5)]'
-                              : 'bg-[#27293b] text-[#cbc3d7] hover:bg-amber-500/20 hover:text-amber-300 border border-[#494454]/40'
-                          }`}
-                        >
-                          #{s}
-                        </button>
-                      ))}
-                    </div>
-                  </div>
+                  )}
 
-                  {/* 0.1 TẠM DỪNG / TIẾP TỤC TRONG MENU */}
-                  {onTogglePause && (
+                  {/* 0.1 TẠM DỪNG / TIẾP TỤC & KHỞI ĐỘNG LẠI GAME TRONG MENU */}
+                  {!isGuestMode && onTogglePause && (
                     <button
                       type="button"
                       onClick={() => {
@@ -429,6 +437,26 @@ export const VirtualGamepad: React.FC<VirtualGamepadProps> = ({
                       </span>
                       <span className="px-2 py-0.5 rounded bg-[#32364a] text-[#d0bcff] font-bold text-[10px]">
                         Space
+                      </span>
+                    </button>
+                  )}
+
+                  {!isGuestMode && onRestartGame && (
+                    <button
+                      type="button"
+                      onClick={() => {
+                        onRestartGame();
+                        setIsDropdownOpen(false);
+                      }}
+                      className="w-full py-1.5 px-2.5 rounded-xl bg-amber-500/10 hover:bg-amber-500/20 border border-amber-500/40 text-amber-300 flex items-center justify-between font-mono text-[11px] font-bold transition-colors"
+                      title="Khởi động lại game hiện tại mà không cần thoát phòng"
+                    >
+                      <span className="flex items-center gap-1.5">
+                        <span className="material-symbols-outlined text-sm">restart_alt</span>
+                        <span>Khởi động lại game</span>
+                      </span>
+                      <span className="px-2 py-0.5 rounded bg-amber-500/20 text-amber-200 font-bold text-[10px]">
+                        Reset
                       </span>
                     </button>
                   )}
@@ -481,38 +509,40 @@ export const VirtualGamepad: React.FC<VirtualGamepadProps> = ({
                     </button>
                   )}
 
-                  {/* 3. NÚT TUA LẠI VỚI TÙY CHỌN 5s, 10s, 15s */}
-                  <div className="py-1.5 px-2.5 bg-[#1e202e] rounded-xl border border-[#494454]/40 flex flex-col gap-1.5">
-                    <div className="flex items-center justify-between font-mono text-[11px] text-[#cbc3d7]">
-                      <span className="flex items-center gap-1.5">
-                        <span className="material-symbols-outlined text-sm text-indigo-400">replay</span>
-                        <span>Tua lại thời gian:</span>
-                      </span>
-                      <span className="text-[10px] text-[#958ea0]">Chọn thời lượng</span>
+                  {/* 3. NÚT TUA LẠI VỚI TÙY CHỌN 5s, 10s, 15s (Ẩn với Guest) */}
+                  {!isGuestMode && (
+                    <div className="py-1.5 px-2.5 bg-[#1e202e] rounded-xl border border-[#494454]/40 flex flex-col gap-1.5">
+                      <div className="flex items-center justify-between font-mono text-[11px] text-[#cbc3d7]">
+                        <span className="flex items-center gap-1.5">
+                          <span className="material-symbols-outlined text-sm text-indigo-400">replay</span>
+                          <span>Tua lại thời gian:</span>
+                        </span>
+                        <span className="text-[10px] text-[#958ea0]">Chọn thời lượng</span>
+                      </div>
+                      <div className="grid grid-cols-3 gap-1.5">
+                        {[5, 10, 15].map((sec) => (
+                          <button
+                            key={sec}
+                            type="button"
+                            onClick={() => {
+                              onTriggerRewind?.(sec);
+                              setIsDropdownOpen(false);
+                            }}
+                            className="py-1.5 px-2 rounded-lg bg-[#27293b] hover:bg-indigo-600/30 border border-[#494454]/40 hover:border-indigo-400 text-indigo-300 font-mono text-[11px] font-bold flex items-center justify-center gap-1 transition-all active:scale-95 shadow-sm"
+                            title={`Tua lại trò chơi ${sec} giây`}
+                          >
+                            <span className="material-symbols-outlined text-xs">
+                              {sec === 5 ? 'replay_5' : sec === 10 ? 'replay_10' : 'replay'}
+                            </span>
+                            <span>{sec}s</span>
+                          </button>
+                        ))}
+                      </div>
                     </div>
-                    <div className="grid grid-cols-3 gap-1.5">
-                      {[5, 10, 15].map((sec) => (
-                        <button
-                          key={sec}
-                          type="button"
-                          onClick={() => {
-                            onTriggerRewind?.(sec);
-                            setIsDropdownOpen(false);
-                          }}
-                          className="py-1.5 px-2 rounded-lg bg-[#27293b] hover:bg-indigo-600/30 border border-[#494454]/40 hover:border-indigo-400 text-indigo-300 font-mono text-[11px] font-bold flex items-center justify-center gap-1 transition-all active:scale-95 shadow-sm"
-                          title={`Tua lại trò chơi ${sec} giây`}
-                        >
-                          <span className="material-symbols-outlined text-xs">
-                            {sec === 5 ? 'replay_5' : sec === 10 ? 'replay_10' : 'replay'}
-                          </span>
-                          <span>{sec}s</span>
-                        </button>
-                      ))}
-                    </div>
-                  </div>
+                  )}
 
                   {/* 4. Speed Cycle */}
-                  {onCycleFastForward && (
+                  {!isGuestMode && onCycleFastForward && (
                     <button
                       type="button"
                       onClick={onCycleFastForward}
@@ -811,8 +841,8 @@ export const VirtualGamepad: React.FC<VirtualGamepadProps> = ({
             <span className="hidden sm:inline">{config.movementType === 'dpad' ? 'D-Pad' : 'Stick'}</span>
           </button>
 
-          {/* Quick Tools Shortcuts */}
-          {config.showQuickTools && (
+          {/* Quick Tools Shortcuts (Ẩn Save/Pause/Restart với Guest) */}
+          {config.showQuickTools && !isGuestMode && (
             <div className="flex items-center gap-0.5 sm:gap-1 border-x border-[#494454]/30 px-0.5 sm:px-1 shrink-0">
               {onTogglePause && (
                 <button
@@ -824,6 +854,16 @@ export const VirtualGamepad: React.FC<VirtualGamepadProps> = ({
                   <span className="material-symbols-outlined text-sm">
                     {isPaused ? 'play_arrow' : 'pause'}
                   </span>
+                </button>
+              )}
+              {onRestartGame && (
+                <button
+                  type="button"
+                  onClick={onRestartGame}
+                  className="h-7 w-7 rounded-lg bg-[#252837] text-amber-400 hover:text-amber-300 flex items-center justify-center transition-colors"
+                  title="Khởi động lại game (Reset)"
+                >
+                  <span className="material-symbols-outlined text-sm">restart_alt</span>
                 </button>
               )}
               {onCycleFastForward && (
