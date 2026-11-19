@@ -4,6 +4,7 @@ import { VirtualJoystick } from './VirtualJoystick';
 import {
   MobileGamepadConfig,
   DEFAULT_GAMEPAD_CONFIG,
+  DEFAULT_TOUCH_OFFSETS,
   MobileGamepadSettingsModal,
 } from './MobileGamepadSettingsModal';
 
@@ -14,6 +15,7 @@ interface VirtualGamepadProps {
   onTriggerQuickSave?: () => void;
   onTriggerQuickLoad?: () => void;
   onTriggerRewind?: (seconds?: number) => void;
+  onToggleFastForward?: () => void;
   onCycleFastForward?: () => void;
   onTogglePause?: () => void;
   isPaused?: boolean;
@@ -47,6 +49,7 @@ export const VirtualGamepad: React.FC<VirtualGamepadProps> = ({
   onTriggerQuickSave,
   onTriggerQuickLoad,
   onTriggerRewind,
+  onToggleFastForward,
   onCycleFastForward,
   onTogglePause,
   isPaused = false,
@@ -72,11 +75,21 @@ export const VirtualGamepad: React.FC<VirtualGamepadProps> = ({
   needsAudioUnlock = false,
   onToggleMute,
 }) => {
-  // Load persistent gamepad config
+  // Load persistent gamepad config with safe nested defaults
   const [config, setConfig] = useState<MobileGamepadConfig>(() => {
     try {
       const saved = localStorage.getItem('retroverse_gamepad_custom_config');
-      if (saved) return { ...DEFAULT_GAMEPAD_CONFIG, ...JSON.parse(saved) };
+      if (saved) {
+        const parsed = JSON.parse(saved);
+        return {
+          ...DEFAULT_GAMEPAD_CONFIG,
+          ...parsed,
+          touchOffsets: {
+            ...DEFAULT_TOUCH_OFFSETS,
+            ...(parsed?.touchOffsets || {}),
+          },
+        };
+      }
     } catch {}
     return DEFAULT_GAMEPAD_CONFIG;
   });
@@ -90,11 +103,19 @@ export const VirtualGamepad: React.FC<VirtualGamepadProps> = ({
   // Active Auto-fire timers
   const autoIntervalsRef = useRef<{ a: number | null; b: number | null }>({ a: null, b: null });
   const [autoActive, setAutoActive] = useState<{ a: boolean; b: boolean }>({ a: false, b: false });
+  const turboLockModeRef = useRef<boolean>(config.turboLockMode);
+  turboLockModeRef.current = config.turboLockMode;
 
   // Save config on change
   const handleUpdateConfig = (updated: Partial<MobileGamepadConfig>) => {
     setConfig((prev) => {
-      const next = { ...prev, ...updated };
+      const next: MobileGamepadConfig = {
+        ...prev,
+        ...updated,
+        touchOffsets: updated.touchOffsets
+          ? { ...DEFAULT_TOUCH_OFFSETS, ...prev.touchOffsets, ...updated.touchOffsets }
+          : prev.touchOffsets,
+      };
       try {
         localStorage.setItem('retroverse_gamepad_custom_config', JSON.stringify(next));
       } catch {}
@@ -103,9 +124,13 @@ export const VirtualGamepad: React.FC<VirtualGamepadProps> = ({
   };
 
   const handleResetConfig = () => {
-    setConfig(DEFAULT_GAMEPAD_CONFIG);
+    const fresh: MobileGamepadConfig = {
+      ...DEFAULT_GAMEPAD_CONFIG,
+      touchOffsets: { ...DEFAULT_TOUCH_OFFSETS },
+    };
+    setConfig(fresh);
     try {
-      localStorage.setItem('retroverse_gamepad_custom_config', JSON.stringify(DEFAULT_GAMEPAD_CONFIG));
+      localStorage.setItem('retroverse_gamepad_custom_config', JSON.stringify(fresh));
     } catch {}
   };
 
@@ -190,15 +215,15 @@ export const VirtualGamepad: React.FC<VirtualGamepadProps> = ({
       e.currentTarget.setPointerCapture(e.pointerId);
     } catch {}
 
-    if (config.turboLockMode) {
-      // Toggle mode
-      if (autoActive[btn]) {
+    if (turboLockModeRef.current) {
+      // Lock/Toggle mode: tap once to lock auto-fire ON, tap again to turn OFF
+      if (autoIntervalsRef.current[btn] !== null) {
         stopAutoFire(btn);
       } else {
         startAutoFire(btn);
       }
     } else {
-      // Hold mode
+      // Hold mode: fires while pressed
       startAutoFire(btn);
     }
   };
@@ -210,10 +235,18 @@ export const VirtualGamepad: React.FC<VirtualGamepadProps> = ({
       e.currentTarget.releasePointerCapture(e.pointerId);
     } catch {}
 
-    if (!config.turboLockMode) {
+    if (!turboLockModeRef.current) {
       stopAutoFire(btn);
     }
   };
+
+  // Stop any locked auto-fire timers if user turns off Lock Mode or disables Auto buttons
+  useEffect(() => {
+    if (!config.turboLockMode || !config.showAutoButtons) {
+      if (autoIntervalsRef.current.a !== null) stopAutoFire('a');
+      if (autoIntervalsRef.current.b !== null) stopAutoFire('b');
+    }
+  }, [config.turboLockMode, config.showAutoButtons, stopAutoFire]);
 
   // Joystick direction change router (stable empty deps)
   const handleJoystickDirections = useCallback(
@@ -241,13 +274,21 @@ export const VirtualGamepad: React.FC<VirtualGamepadProps> = ({
   const isSNES = !isNES && !isGBA && !isGenesis;
   const hasShoulders = isSNES || isGBA;
 
-  // Dynamic Scale multiplier classes
-  const scaleClass =
-    config.scale === 'compact'
-      ? 'scale-90 origin-bottom'
+  const fastForwardHandler = onToggleFastForward || onCycleFastForward;
+  const isFastForwardOn = fastForwardSpeed > 1;
+
+  // Dynamic Scale multipliers (Global + Individual offsets) applied to both Landscape & Portrait
+  const globalScale =
+    typeof config.buttonScale === 'number'
+      ? config.buttonScale
+      : config.scale === 'compact'
+      ? 0.85
       : config.scale === 'large'
-      ? 'scale-105 origin-bottom'
-      : 'scale-100 origin-bottom';
+      ? 1.2
+      : 1.0;
+  const dpadFinalScale = Number((globalScale * (config.touchOffsets?.dpadScale ?? 1)).toFixed(2));
+  const actionFinalScale = Number((globalScale * (config.touchOffsets?.actionScale ?? 1)).toFixed(2));
+  const systemFinalScale = Number((globalScale * (config.touchOffsets?.systemScale ?? 1)).toFixed(2));
 
   // =========================================================================
   // RENDER: LANDSCAPE FLOATING OVERLAY LAYOUT
@@ -274,6 +315,7 @@ export const VirtualGamepad: React.FC<VirtualGamepadProps> = ({
               onPointerDown={(e) => handlePress('l', e)}
               onPointerUp={(e) => handleRelease('l', e)}
               onPointerCancel={(e) => handleRelease('l', e)}
+              style={{ transform: `scale(${systemFinalScale})`, transformOrigin: 'top left' }}
               className={`h-9 px-3.5 sm:px-5 rounded-xl touch-none ${
                 isGBA
                   ? 'bg-gradient-to-b from-[#2d3045] to-[#1c1e2b] border-[#818cf8]/60 text-[#c7d2fe]'
@@ -288,7 +330,7 @@ export const VirtualGamepad: React.FC<VirtualGamepadProps> = ({
           )}
 
           {/* Center: Sleek Unified Floating HUD Capsule with Direct Action Buttons & Dropdown Menu */}
-          <div className="relative flex items-center gap-1 sm:gap-1.5 bg-[#12141c]/90 backdrop-blur-md px-2.5 sm:px-3 py-1 rounded-full border border-[#494454]/50 shadow-xl max-w-[85vw] overflow-visible">
+          <div className="relative flex items-center gap-1 sm:gap-1.5 bg-[#12141c]/90 backdrop-blur-md px-2 sm:px-3 py-1 rounded-full border border-[#494454]/50 shadow-xl max-w-[94%] overflow-visible">
             {/* 1. Back button & Title */}
             {onExit && (
               <button
@@ -349,7 +391,25 @@ export const VirtualGamepad: React.FC<VirtualGamepadProps> = ({
               </button>
             )}
 
-            <div className="w-px h-3.5 bg-[#494454]/40 shrink-0"></div>
+            {/* 4.2 Fast Forward ON/OFF Button directly on main game HUD */}
+            {!isGuestMode && fastForwardHandler && (
+              <>
+                <div className="w-px h-3.5 bg-[#494454]/40 shrink-0"></div>
+                <button
+                  type="button"
+                  onClick={fastForwardHandler}
+                  className={`h-7 px-2 sm:px-2.5 rounded-full border flex items-center gap-1 font-mono text-xs font-bold transition-all active:scale-95 shrink-0 ${
+                    isFastForwardOn
+                      ? 'bg-[#03b5d3]/25 border-[#4cd7f6] text-[#4cd7f6] shadow-[0_0_10px_rgba(76,215,246,0.35)]'
+                      : 'bg-[#1e202e] border-[#494454]/50 text-[#cbc3d7] hover:text-white'
+                  }`}
+                  title={isFastForwardOn ? 'Tắt tua nhanh' : 'Bật tua nhanh'}
+                >
+                  <span className="material-symbols-outlined text-sm">fast_forward</span>
+                  <span className="text-[11px]">{isFastForwardOn ? 'Tua: BẬT' : 'Tua'}</span>
+                </button>
+              </>
+            )}
 
             {/* 4.5 Audio Mute/Unmute & Unlock Button */}
             {onToggleMute && (
@@ -665,20 +725,24 @@ export const VirtualGamepad: React.FC<VirtualGamepadProps> = ({
                     </div>
                   )}
 
-                  {/* 4. Speed Cycle */}
-                  {!isGuestMode && onCycleFastForward && (
+                  {/* 4. Fast Forward Toggle */}
+                  {!isGuestMode && fastForwardHandler && (
                     <button
                       type="button"
-                      onClick={onCycleFastForward}
+                      onClick={fastForwardHandler}
                       className="w-full py-1.5 px-2.5 rounded-xl bg-[#1e202e] border border-[#494454]/40 text-[#cbc3d7] hover:text-[#4cd7f6] flex items-center justify-between font-mono text-[11px] transition-colors active:scale-95"
-                      title="Chỉnh tốc độ tua nhanh game"
+                      title="Bật hoặc tắt chế độ tua nhanh game"
                     >
                       <span className="flex items-center gap-1.5">
                         <span className="material-symbols-outlined text-sm text-[#4cd7f6]">fast_forward</span>
-                        <span>Tốc độ tua nhanh</span>
+                        <span>Tua nhanh (Fast Forward)</span>
                       </span>
-                      <span className="px-2 py-0.5 rounded bg-[#03b5d3]/20 text-[#4cd7f6] font-bold text-[10px]">
-                        {fastForwardSpeed}x
+                      <span className={`px-2 py-0.5 rounded font-bold text-[10px] ${
+                        isFastForwardOn
+                          ? 'bg-[#03b5d3]/25 text-[#4cd7f6]'
+                          : 'bg-[#2a2c3d] text-[#958ea0]'
+                      }`}>
+                        {isFastForwardOn ? 'Đang bật' : 'Đang tắt'}
                       </span>
                     </button>
                   )}
@@ -780,6 +844,7 @@ export const VirtualGamepad: React.FC<VirtualGamepadProps> = ({
               onPointerDown={(e) => handlePress('r', e)}
               onPointerUp={(e) => handleRelease('r', e)}
               onPointerCancel={(e) => handleRelease('r', e)}
+              style={{ transform: `scale(${systemFinalScale})`, transformOrigin: 'top right' }}
               className={`h-9 px-3.5 sm:px-5 rounded-xl touch-none ${
                 isGBA
                   ? 'bg-gradient-to-b from-[#2d3045] to-[#1c1e2b] border-[#818cf8]/60 text-[#c7d2fe]'
@@ -800,7 +865,7 @@ export const VirtualGamepad: React.FC<VirtualGamepadProps> = ({
           <div
             className="pointer-events-auto touch-none flex flex-col items-center transition-transform duration-75"
             style={{
-              transform: `translate(${config.touchOffsets?.dpadOffsetX || 0}px, ${config.touchOffsets?.dpadOffsetY || 0}px) scale(${config.touchOffsets?.dpadScale || 1})`,
+              transform: `translate(${config.touchOffsets?.dpadOffsetX || 0}px, ${config.touchOffsets?.dpadOffsetY || 0}px) scale(${dpadFinalScale})`,
               transformOrigin: 'bottom left',
             }}
           >
@@ -814,7 +879,12 @@ export const VirtualGamepad: React.FC<VirtualGamepadProps> = ({
                     rotationAngle={rotationAngle}
                   />
                 ) : (
-                  <DPadCluster onInput={onInput} onHaptic={triggerHaptic} rotationAngle={rotationAngle} />
+                  <DPadCluster
+                    onInput={onInput}
+                    onHaptic={triggerHaptic}
+                    rotationAngle={rotationAngle}
+                    nesStyle={isNES}
+                  />
                 )}
               </div>
             )}
@@ -822,34 +892,78 @@ export const VirtualGamepad: React.FC<VirtualGamepadProps> = ({
 
           {/* CENTER BOTTOM: SELECT & START PILLS */}
           {config.showSystemButtons && (
-            <div className="pointer-events-auto touch-none flex items-center gap-2.5 sm:gap-4 bg-[#12141c]/90 backdrop-blur-md px-3.5 sm:px-4 py-1.5 rounded-full border border-[#494454]/50 shadow-2xl mb-1">
-              <div className="flex flex-col items-center">
-                <button
-                  type="button"
-                  onPointerDown={(e) => handlePress('select', e)}
-                  onPointerUp={(e) => handleRelease('select', e)}
-                  onPointerCancel={(e) => handleRelease('select', e)}
-                  className="w-11 h-4 sm:w-13 sm:h-4.5 rounded-full bg-[#252733] border border-[#494454]/80 -rotate-12 active:bg-[#4cd7f6] active:scale-95 transition-all shadow-md"
-                  title={isGenesis ? "MODE" : "SELECT"}
-                ></button>
-                <span className="font-mono text-[9px] text-[#958ea0] tracking-wider uppercase mt-1">
-                  {isGenesis ? 'Mode' : 'Select'}
-                </span>
-              </div>
+            <div
+              style={{
+                transform: `scale(${systemFinalScale})`,
+                transformOrigin: 'bottom center',
+              }}
+              className={`pointer-events-auto touch-none flex items-center gap-2.5 sm:gap-3.5 backdrop-blur-md shadow-2xl mb-1 transition-transform duration-75 ${
+                isNES
+                  ? 'bg-[#d4d4dc] px-3.5 sm:px-4 py-1.5 rounded-xl border-2 border-[#7b7c87]'
+                  : 'bg-[#12141c]/90 px-3.5 sm:px-4 py-1.5 rounded-full border border-[#494454]/50'
+              }`}
+            >
+              {isNES ? (
+                <div className="flex items-center gap-3 bg-[#1e2029] px-3 py-1.5 rounded-lg border border-[#494454]/80 shadow-inner">
+                  <div className="flex flex-col items-center">
+                    <button
+                      type="button"
+                      onPointerDown={(e) => handlePress('select', e)}
+                      onPointerUp={(e) => handleRelease('select', e)}
+                      onPointerCancel={(e) => handleRelease('select', e)}
+                      className="w-11 h-3.5 sm:w-12 sm:h-4 rounded-[3px] bg-gradient-to-b from-[#3d404e] to-[#23252f] border border-[#6a6d7d] active:bg-[#ef4444] active:border-[#fca5a5] active:scale-95 transition-all shadow-md"
+                      title="SELECT"
+                    ></button>
+                    <span className="font-mono text-[8px] font-black text-[#ef4444] tracking-widest uppercase mt-1">
+                      Select
+                    </span>
+                  </div>
 
-              <div className="flex flex-col items-center">
-                <button
-                  type="button"
-                  onPointerDown={(e) => handlePress('start', e)}
-                  onPointerUp={(e) => handleRelease('start', e)}
-                  onPointerCancel={(e) => handleRelease('start', e)}
-                  className="w-11 h-4 sm:w-13 sm:h-4.5 rounded-full bg-[#252733] border border-[#4cd7f6]/60 -rotate-12 active:bg-[#4cd7f6] active:scale-95 transition-all shadow-md"
-                  title="START"
-                ></button>
-                <span className="font-mono text-[9px] text-[#4cd7f6] font-bold tracking-wider uppercase mt-1">
-                  Start
-                </span>
-              </div>
+                  <div className="flex flex-col items-center">
+                    <button
+                      type="button"
+                      onPointerDown={(e) => handlePress('start', e)}
+                      onPointerUp={(e) => handleRelease('start', e)}
+                      onPointerCancel={(e) => handleRelease('start', e)}
+                      className="w-11 h-3.5 sm:w-12 sm:h-4 rounded-[3px] bg-gradient-to-b from-[#3d404e] to-[#23252f] border border-[#6a6d7d] active:bg-[#ef4444] active:border-[#fca5a5] active:scale-95 transition-all shadow-md"
+                      title="START"
+                    ></button>
+                    <span className="font-mono text-[8px] font-black text-[#ef4444] tracking-widest uppercase mt-1">
+                      Start
+                    </span>
+                  </div>
+                </div>
+              ) : (
+                <>
+                  <div className="flex flex-col items-center">
+                    <button
+                      type="button"
+                      onPointerDown={(e) => handlePress('select', e)}
+                      onPointerUp={(e) => handleRelease('select', e)}
+                      onPointerCancel={(e) => handleRelease('select', e)}
+                      className="w-11 h-4 sm:w-13 sm:h-4.5 rounded-full bg-[#252733] border border-[#494454]/80 -rotate-12 active:bg-[#4cd7f6] active:scale-95 transition-all shadow-md"
+                      title={isGenesis ? 'MODE' : 'SELECT'}
+                    ></button>
+                    <span className="font-mono text-[9px] text-[#958ea0] tracking-wider uppercase mt-1">
+                      {isGenesis ? 'Mode' : 'Select'}
+                    </span>
+                  </div>
+
+                  <div className="flex flex-col items-center">
+                    <button
+                      type="button"
+                      onPointerDown={(e) => handlePress('start', e)}
+                      onPointerUp={(e) => handleRelease('start', e)}
+                      onPointerCancel={(e) => handleRelease('start', e)}
+                      className="w-11 h-4 sm:w-13 sm:h-4.5 rounded-full bg-[#252733] border border-[#4cd7f6]/60 -rotate-12 active:bg-[#4cd7f6] active:scale-95 transition-all shadow-md"
+                      title="START"
+                    ></button>
+                    <span className="font-mono text-[9px] text-[#4cd7f6] font-bold tracking-wider uppercase mt-1">
+                      Start
+                    </span>
+                  </div>
+                </>
+              )}
             </div>
           )}
 
@@ -857,12 +971,12 @@ export const VirtualGamepad: React.FC<VirtualGamepadProps> = ({
           <div
             className="pointer-events-auto touch-none flex flex-col items-end gap-2 sm:gap-3 transition-transform duration-75"
             style={{
-              transform: `translate(${config.touchOffsets?.actionOffsetX || 0}px, ${config.touchOffsets?.actionOffsetY || 0}px) scale(${config.touchOffsets?.actionScale || 1})`,
+              transform: `translate(${config.touchOffsets?.actionOffsetX || 0}px, ${config.touchOffsets?.actionOffsetY || 0}px) scale(${actionFinalScale})`,
               transformOrigin: 'bottom right',
             }}
           >
-            {/* Auto Buttons Row (Auto-A & Auto-B) */}
-            {config.showAutoButtons && !isGenesis && (
+            {/* External Auto Buttons Row for non-NES systems (NES integrates Turbo B/A into the classic 4-button pad) */}
+            {config.showAutoButtons && !isGenesis && !isNES && (
               <div className="flex items-center gap-2 mb-1">
                 <button
                   onPointerDown={(e) => handleAutoButtonPointerDown('b', e)}
@@ -874,7 +988,9 @@ export const VirtualGamepad: React.FC<VirtualGamepadProps> = ({
                       : 'bg-[#191b24]/90 border-[#4cd7f6]/50 text-[#4cd7f6]'
                   }`}
                 >
-                  <span className="material-symbols-outlined text-[13px]">bolt</span>
+                  <span className="material-symbols-outlined text-[13px]">
+                    {config.turboLockMode && autoActive.b ? 'lock' : 'bolt'}
+                  </span>
                   <span>AUTO B</span>
                 </button>
 
@@ -888,7 +1004,9 @@ export const VirtualGamepad: React.FC<VirtualGamepadProps> = ({
                       : 'bg-[#191b24]/90 border-[#ffb95f]/50 text-[#ffb95f]'
                   }`}
                 >
-                  <span className="material-symbols-outlined text-[13px]">bolt</span>
+                  <span className="material-symbols-outlined text-[13px]">
+                    {config.turboLockMode && autoActive.a ? 'lock' : 'bolt'}
+                  </span>
                   <span>AUTO A</span>
                 </button>
               </div>
@@ -900,6 +1018,11 @@ export const VirtualGamepad: React.FC<VirtualGamepadProps> = ({
                 platform={platform}
                 onPress={handlePress}
                 onRelease={handleRelease}
+                showAutoButtons={config.showAutoButtons}
+                autoActive={autoActive}
+                turboLockMode={config.turboLockMode}
+                onAutoDown={handleAutoButtonPointerDown}
+                onAutoUp={handleAutoButtonPointerUp}
               />
             )}
           </div>
@@ -912,6 +1035,8 @@ export const VirtualGamepad: React.FC<VirtualGamepadProps> = ({
           config={config}
           onChange={handleUpdateConfig}
           onReset={handleResetConfig}
+          isVirtualRotated={isVirtualRotated}
+          rotationAngleDeg={rotationAngleDeg}
         />
       </div>
     );
@@ -922,7 +1047,7 @@ export const VirtualGamepad: React.FC<VirtualGamepadProps> = ({
   return (
     <div
       style={{ opacity: config.opacity / 100 }}
-      className={`w-full flex flex-col justify-between bg-gradient-to-b from-[#181a24] to-[#0c0e14] border-t-2 border-[#494454]/40 rounded-t-3xl pt-2 pb-2.5 px-2 sm:px-4 shadow-[0_-8px_30px_rgba(0,0,0,0.8)] select-none touch-none transition-opacity duration-200 ${scaleClass}`}
+      className="w-full flex flex-col justify-between bg-gradient-to-b from-[#181a24] to-[#0c0e14] border-t-2 border-[#494454]/40 rounded-t-3xl pt-2 pb-2.5 px-2 sm:px-4 shadow-[0_-8px_30px_rgba(0,0,0,0.8)] select-none touch-none transition-opacity duration-200 overflow-visible"
     >
       {/* 1. TOP ROW: Shoulders L/R, Platform Tag & Quick Tools Bar */}
       <div className="flex items-center justify-between gap-1 sm:gap-2 px-0 mb-1 w-full">
@@ -932,6 +1057,7 @@ export const VirtualGamepad: React.FC<VirtualGamepadProps> = ({
             onPointerDown={(e) => handlePress('l', e)}
             onPointerUp={(e) => handleRelease('l', e)}
             onPointerCancel={(e) => handleRelease('l', e)}
+            style={{ transform: `scale(${systemFinalScale})`, transformOrigin: 'center left' }}
             className={`h-8 sm:h-9 px-2 sm:px-3 rounded-xl ${
               isGBA
                 ? 'bg-gradient-to-b from-[#2d3045] to-[#1c1e2b] border-[#818cf8]/60 text-[#c7d2fe]'
@@ -946,7 +1072,7 @@ export const VirtualGamepad: React.FC<VirtualGamepadProps> = ({
         )}
 
         {/* Center: Quick Tools & Controller Config Button */}
-        <div className="flex-1 flex items-center justify-center gap-0.5 sm:gap-1 bg-[#12131b] px-1 sm:px-2 py-0.5 rounded-xl border border-[#494454]/40 shadow-inner min-w-0 max-w-[240px] sm:max-w-[270px] mx-0.5">
+        <div className="flex-1 flex items-center justify-center gap-0.5 sm:gap-1 bg-[#12131b] px-1 sm:px-2 py-0.5 rounded-xl border border-[#494454]/40 shadow-inner min-w-0 max-w-[290px] sm:max-w-[340px] mx-0.5 overflow-x-auto">
           {/* Movement Mode Switcher Button */}
           <button
             type="button"
@@ -964,6 +1090,23 @@ export const VirtualGamepad: React.FC<VirtualGamepadProps> = ({
             </span>
             <span className="hidden sm:inline">{config.movementType === 'dpad' ? 'D-Pad' : 'Stick'}</span>
           </button>
+
+          {/* Always-Accessible Fast Forward ON/OFF Button directly on main screen */}
+          {!isGuestMode && fastForwardHandler && (
+            <button
+              type="button"
+              onClick={fastForwardHandler}
+              className={`h-7 px-2 rounded-lg border font-mono text-[10px] font-bold flex items-center gap-1 transition-all active:scale-95 shrink-0 ${
+                isFastForwardOn
+                  ? 'bg-[#03b5d3]/25 border-[#4cd7f6] text-[#4cd7f6] shadow-[0_0_8px_rgba(76,215,246,0.35)]'
+                  : 'bg-[#252837] border-[#494454]/50 text-[#cbc3d7]'
+              }`}
+              title={isFastForwardOn ? 'Tắt tua nhanh' : 'Bật tua nhanh'}
+            >
+              <span className="material-symbols-outlined text-xs">fast_forward</span>
+              <span>{isFastForwardOn ? 'Tua: BẬT' : 'Tua'}</span>
+            </button>
+          )}
 
           {/* Quick Tools Shortcuts (Ẩn Save/Pause/Restart với Guest) */}
           {config.showQuickTools && !isGuestMode && (
@@ -988,21 +1131,6 @@ export const VirtualGamepad: React.FC<VirtualGamepadProps> = ({
                   title="Khởi động lại game (Reset)"
                 >
                   <span className="material-symbols-outlined text-sm">restart_alt</span>
-                </button>
-              )}
-              {onCycleFastForward && (
-                <button
-                  type="button"
-                  onClick={onCycleFastForward}
-                  className={`h-7 px-1.5 rounded-lg border font-mono text-[10px] flex items-center gap-0.5 transition-colors ${
-                    fastForwardSpeed > 1
-                      ? 'bg-[#03b5d3]/20 border-[#4cd7f6] text-[#4cd7f6]'
-                      : 'bg-[#252837] border-transparent text-[#958ea0]'
-                  }`}
-                  title="Tua nhanh"
-                >
-                  <span className="material-symbols-outlined text-xs">fast_forward</span>
-                  <span>{fastForwardSpeed}x</span>
                 </button>
               )}
               {onTriggerQuickSave && (
@@ -1065,6 +1193,7 @@ export const VirtualGamepad: React.FC<VirtualGamepadProps> = ({
             onPointerDown={(e) => handlePress('r', e)}
             onPointerUp={(e) => handleRelease('r', e)}
             onPointerCancel={(e) => handleRelease('r', e)}
+            style={{ transform: `scale(${systemFinalScale})`, transformOrigin: 'center right' }}
             className={`h-8 sm:h-9 px-2 sm:px-3 rounded-xl ${
               isGBA
                 ? 'bg-gradient-to-b from-[#2d3045] to-[#1c1e2b] border-[#818cf8]/60 text-[#c7d2fe]'
@@ -1079,8 +1208,8 @@ export const VirtualGamepad: React.FC<VirtualGamepadProps> = ({
         )}
       </div>
 
-      {/* 2. AUTO-FIRE BUTTONS ROW (Auto A & Auto B) */}
-      {config.showAutoButtons && !isGenesis && (
+      {/* 2. AUTO-FIRE BUTTONS ROW (Non-NES; NES embeds Turbo B/A directly in its 4-button pad) */}
+      {config.showAutoButtons && !isGenesis && !isNES && (
         <div className="flex items-center justify-center gap-2 sm:gap-3 px-1 py-0.5 mb-1">
           <div className="flex items-center gap-1.5 sm:gap-2 bg-[#12141d]/90 px-2.5 py-0.5 rounded-full border border-[#494454]/40 shadow-inner">
             <span className="text-[10px] font-mono text-[#958ea0] uppercase tracking-wider flex items-center gap-0.5">
@@ -1099,6 +1228,9 @@ export const VirtualGamepad: React.FC<VirtualGamepadProps> = ({
                   : 'bg-[#20222f] border-[#4cd7f6]/50 text-[#4cd7f6] active:scale-95'
               }`}
             >
+              {config.turboLockMode && autoActive.b && (
+                <span className="material-symbols-outlined text-[12px]">lock</span>
+              )}
               <span>Auto B</span>
               {autoActive.b && <span className="h-1.5 w-1.5 rounded-full bg-[#003641] animate-ping"></span>}
             </button>
@@ -1114,6 +1246,9 @@ export const VirtualGamepad: React.FC<VirtualGamepadProps> = ({
                   : 'bg-[#20222f] border-[#ffb95f]/50 text-[#ffb95f] active:scale-95'
               }`}
             >
+              {config.turboLockMode && autoActive.a && (
+                <span className="material-symbols-outlined text-[12px]">lock</span>
+              )}
               <span>Auto A</span>
               {autoActive.a && <span className="h-1.5 w-1.5 rounded-full bg-[#2a1700] animate-ping"></span>}
             </button>
@@ -1122,12 +1257,12 @@ export const VirtualGamepad: React.FC<VirtualGamepadProps> = ({
       )}
 
       {/* 3. MAIN CONTROLS ROW: Left (Movement), Center (Select/Start), Right (Face Buttons) */}
-      <div className="flex items-center justify-between px-0 sm:px-1 py-0.5 w-full max-w-full">
+      <div className="flex items-center justify-between px-0 sm:px-1 py-1 w-full max-w-full">
         {/* Left Side: D-Pad or Joystick */}
         <div
           className="flex-1 flex justify-start items-center min-w-0 transition-transform duration-75"
           style={{
-            transform: `translate(${config.touchOffsets?.dpadOffsetX || 0}px, ${config.touchOffsets?.dpadOffsetY || 0}px) scale(${config.touchOffsets?.dpadScale || 1})`,
+            transform: `translate(${config.touchOffsets?.dpadOffsetX || 0}px, ${config.touchOffsets?.dpadOffsetY || 0}px) scale(${dpadFinalScale})`,
             transformOrigin: 'center left',
           }}
         >
@@ -1140,7 +1275,12 @@ export const VirtualGamepad: React.FC<VirtualGamepadProps> = ({
                 rotationAngle={rotationAngle}
               />
             ) : (
-              <DPadCluster onInput={onInput} onHaptic={triggerHaptic} rotationAngle={rotationAngle} />
+              <DPadCluster
+                onInput={onInput}
+                onHaptic={triggerHaptic}
+                rotationAngle={rotationAngle}
+                nesStyle={isNES}
+              />
             )
           ) : (
             <div className="w-[116px] h-[116px] sm:w-32 sm:h-32"></div>
@@ -1148,50 +1288,89 @@ export const VirtualGamepad: React.FC<VirtualGamepadProps> = ({
         </div>
 
         {/* Center Console Area: Select / Start Buttons */}
-        <div className="flex flex-col items-center justify-center px-0.5 space-y-1.5 shrink-0">
+        <div
+          style={{
+            transform: `scale(${systemFinalScale})`,
+            transformOrigin: 'center',
+          }}
+          className="flex flex-col items-center justify-center px-0.5 space-y-1.5 shrink-0 transition-transform duration-75"
+        >
           {/* Faux Handheld Speaker Vents */}
-          <div className="hidden xs:flex flex-col gap-0.5 items-center opacity-30">
-            <div className="w-6 h-0.5 bg-[#494454] rounded-full"></div>
-            <div className="w-4 h-0.5 bg-[#494454] rounded-full"></div>
-          </div>
-
-          {/* Select & Start Buttons */}
-          {config.showSystemButtons && (
-            <div className="flex items-center gap-1.5 sm:gap-2 pt-0.5">
-              <div className="flex flex-col items-center">
-                <button
-                  onPointerDown={(e) => handlePress('select', e)}
-                  onPointerUp={(e) => handleRelease('select', e)}
-                  onPointerCancel={(e) => handleRelease('select', e)}
-                  className="w-8 h-3.5 sm:w-10 sm:h-4 rounded-full bg-[#2a2d3b] border border-[#494454]/80 -rotate-12 active:bg-[#4cd7f6] active:scale-90 transition-all shadow-inner"
-                  title={isGenesis ? "MODE" : "SELECT"}
-                ></button>
-                <span className="font-mono text-[8px] sm:text-[9px] tracking-wider text-[#958ea0] uppercase mt-0.5">
-                  {isGenesis ? 'Mode' : 'Select'}
-                </span>
-              </div>
-
-              <div className="flex flex-col items-center">
-                <button
-                  onPointerDown={(e) => handlePress('start', e)}
-                  onPointerUp={(e) => handleRelease('start', e)}
-                  onPointerCancel={(e) => handleRelease('start', e)}
-                  className="w-8 h-3.5 sm:w-10 sm:h-4 rounded-full bg-[#2a2d3b] border border-[#4cd7f6]/60 -rotate-12 active:bg-[#4cd7f6] active:scale-90 transition-all shadow-inner"
-                  title="START"
-                ></button>
-                <span className="font-mono text-[8px] sm:text-[9px] tracking-wider text-[#4cd7f6] font-bold uppercase mt-0.5">
-                  Start
-                </span>
-              </div>
+          {!isNES && (
+            <div className="hidden xs:flex flex-col gap-0.5 items-center opacity-30">
+              <div className="w-6 h-0.5 bg-[#494454] rounded-full"></div>
+              <div className="w-4 h-0.5 bg-[#494454] rounded-full"></div>
             </div>
           )}
+
+          {/* Select & Start Buttons */}
+          {config.showSystemButtons &&
+            (isNES ? (
+              <div className="bg-[#d4d4dc] p-1 rounded-lg border-2 border-[#7b7c87] shadow-md">
+                <div className="flex items-center gap-1.5 bg-[#1e2029] px-2 py-1 rounded border border-[#494454]/80">
+                  <div className="flex flex-col items-center">
+                    <button
+                      onPointerDown={(e) => handlePress('select', e)}
+                      onPointerUp={(e) => handleRelease('select', e)}
+                      onPointerCancel={(e) => handleRelease('select', e)}
+                      className="w-8 h-3 sm:w-9 sm:h-3.5 rounded-[3px] bg-gradient-to-b from-[#3d404e] to-[#23252f] border border-[#6a6d7d] active:bg-[#ef4444] active:scale-90 transition-all shadow-inner"
+                      title="SELECT"
+                    ></button>
+                    <span className="font-mono text-[7px] sm:text-[8px] font-black tracking-wider text-[#ef4444] uppercase mt-0.5">
+                      Select
+                    </span>
+                  </div>
+
+                  <div className="flex flex-col items-center">
+                    <button
+                      onPointerDown={(e) => handlePress('start', e)}
+                      onPointerUp={(e) => handleRelease('start', e)}
+                      onPointerCancel={(e) => handleRelease('start', e)}
+                      className="w-8 h-3 sm:w-9 sm:h-3.5 rounded-[3px] bg-gradient-to-b from-[#3d404e] to-[#23252f] border border-[#6a6d7d] active:bg-[#ef4444] active:scale-90 transition-all shadow-inner"
+                      title="START"
+                    ></button>
+                    <span className="font-mono text-[7px] sm:text-[8px] font-black tracking-wider text-[#ef4444] uppercase mt-0.5">
+                      Start
+                    </span>
+                  </div>
+                </div>
+              </div>
+            ) : (
+              <div className="flex items-center gap-1.5 sm:gap-2 pt-0.5">
+                <div className="flex flex-col items-center">
+                  <button
+                    onPointerDown={(e) => handlePress('select', e)}
+                    onPointerUp={(e) => handleRelease('select', e)}
+                    onPointerCancel={(e) => handleRelease('select', e)}
+                    className="w-8 h-3.5 sm:w-10 sm:h-4 rounded-full bg-[#2a2d3b] border border-[#494454]/80 -rotate-12 active:bg-[#4cd7f6] active:scale-90 transition-all shadow-inner"
+                    title={isGenesis ? 'MODE' : 'SELECT'}
+                  ></button>
+                  <span className="font-mono text-[8px] sm:text-[9px] tracking-wider text-[#958ea0] uppercase mt-0.5">
+                    {isGenesis ? 'Mode' : 'Select'}
+                  </span>
+                </div>
+
+                <div className="flex flex-col items-center">
+                  <button
+                    onPointerDown={(e) => handlePress('start', e)}
+                    onPointerUp={(e) => handleRelease('start', e)}
+                    onPointerCancel={(e) => handleRelease('start', e)}
+                    className="w-8 h-3.5 sm:w-10 sm:h-4 rounded-full bg-[#2a2d3b] border border-[#4cd7f6]/60 -rotate-12 active:bg-[#4cd7f6] active:scale-90 transition-all shadow-inner"
+                    title="START"
+                  ></button>
+                  <span className="font-mono text-[8px] sm:text-[9px] tracking-wider text-[#4cd7f6] font-bold uppercase mt-0.5">
+                    Start
+                  </span>
+                </div>
+              </div>
+            ))}
         </div>
 
         {/* Right Side: Action Face Buttons */}
         <div
           className="flex-1 flex justify-end items-center min-w-0 pr-0 sm:pr-0.5 transition-transform duration-75"
           style={{
-            transform: `translate(${config.touchOffsets?.actionOffsetX || 0}px, ${config.touchOffsets?.actionOffsetY || 0}px) scale(${config.touchOffsets?.actionScale || 1})`,
+            transform: `translate(${config.touchOffsets?.actionOffsetX || 0}px, ${config.touchOffsets?.actionOffsetY || 0}px) scale(${actionFinalScale})`,
             transformOrigin: 'center right',
           }}
         >
@@ -1200,6 +1379,11 @@ export const VirtualGamepad: React.FC<VirtualGamepadProps> = ({
               platform={platform}
               onPress={handlePress}
               onRelease={handleRelease}
+              showAutoButtons={config.showAutoButtons}
+              autoActive={autoActive}
+              turboLockMode={config.turboLockMode}
+              onAutoDown={handleAutoButtonPointerDown}
+              onAutoUp={handleAutoButtonPointerUp}
             />
           ) : (
             <div className="w-[116px] h-[116px] sm:w-32 sm:h-32"></div>
@@ -1243,6 +1427,8 @@ export const VirtualGamepad: React.FC<VirtualGamepadProps> = ({
         config={config}
         onChange={handleUpdateConfig}
         onReset={handleResetConfig}
+        isVirtualRotated={isVirtualRotated}
+        rotationAngleDeg={rotationAngleDeg}
       />
     </div>
   );
@@ -1255,9 +1441,15 @@ interface DPadClusterProps {
   onInput: (btn: keyof EmulatorInputState, pressed: boolean) => void;
   onHaptic?: (ms: number) => void;
   rotationAngle?: number;
+  nesStyle?: boolean;
 }
 
-const DPadCluster: React.FC<DPadClusterProps> = ({ onInput, onHaptic, rotationAngle = 0 }) => {
+const DPadCluster: React.FC<DPadClusterProps> = ({
+  onInput,
+  onHaptic,
+  rotationAngle = 0,
+  nesStyle = false,
+}) => {
   const containerRef = useRef<HTMLDivElement | null>(null);
   const activePointerIdRef = useRef<number | null>(null);
   const activeDirsRef = useRef<{ up: boolean; down: boolean; left: boolean; right: boolean }>({
@@ -1380,7 +1572,11 @@ const DPadCluster: React.FC<DPadClusterProps> = ({ onInput, onHaptic, rotationAn
       onPointerMove={handlePointerMove}
       onPointerUp={handlePointerUp}
       onPointerCancel={handlePointerUp}
-      className="relative w-[122px] h-[122px] sm:w-34 sm:h-34 rounded-full bg-[#0c0e14]/95 p-1 flex items-center justify-center border-2 border-[#494454]/60 shadow-[0_4px_24px_rgba(0,0,0,0.8)] backdrop-blur-md select-none shrink-0 touch-none cursor-pointer"
+      className={`relative w-[124px] h-[124px] sm:w-36 sm:h-36 p-1 flex items-center justify-center shadow-[0_6px_24px_rgba(0,0,0,0.85)] backdrop-blur-md select-none shrink-0 touch-none cursor-pointer ${
+        nesStyle
+          ? 'rounded-2xl bg-gradient-to-b from-[#2c2e3a] to-[#1a1c24] border-2 border-[#d4d4dc]/80 ring-2 ring-[#111319]/80'
+          : 'rounded-full bg-[#0c0e14]/95 border-2 border-[#494454]/60'
+      }`}
       title="Cụm D-Pad 8 hướng cảm ứng (chạm hoặc trượt ngón tay để di chuyển chéo)"
     >
       {/* 4 Diagonal Guide Indicators in Background */}
@@ -1488,54 +1684,149 @@ interface ActionButtonsClusterProps {
   platform: string;
   onPress: (btn: keyof EmulatorInputState, e: React.PointerEvent) => void;
   onRelease: (btn: keyof EmulatorInputState, e: React.PointerEvent) => void;
+  showAutoButtons?: boolean;
+  autoActive?: { a: boolean; b: boolean };
+  turboLockMode?: boolean;
+  onAutoDown?: (btn: 'a' | 'b', e: React.PointerEvent) => void;
+  onAutoUp?: (btn: 'a' | 'b', e: React.PointerEvent) => void;
 }
 
 const ActionButtonsCluster: React.FC<ActionButtonsClusterProps> = ({
   platform,
   onPress,
   onRelease,
+  showAutoButtons = true,
+  autoActive = { a: false, b: false },
+  turboLockMode = false,
+  onAutoDown,
+  onAutoUp,
 }) => {
   const upperPlat = (platform || 'SNES').toUpperCase();
   const isNES = upperPlat === 'NES';
   const isGBA = upperPlat === 'GBA' || upperPlat.includes('ADVANCE') || upperPlat === 'GB' || upperPlat === 'GBC';
   const isGenesis = upperPlat === 'GENESIS' || upperPlat === 'MEGADRIVE' || upperPlat === 'SEGA';
 
-  // 1. NES AUTHENTIC DUAL BUTTON CLUSTER (CLASSIC HORIZONTAL B & A)
+  // 1. NES CLASSIC 4-BUTTON CONTROLLER CLUSTER (AUTO B/A TOP + CLASSIC SQUARE-HOUSED B/A BOTTOM)
   if (isNES) {
     return (
-      <div className="relative w-[126px] h-[122px] sm:w-36 sm:h-34 rounded-2xl bg-gradient-to-b from-[#1a1c24] to-[#0c0e14] p-2 flex flex-col items-center justify-between border-2 border-[#d9383a]/60 shadow-[0_4px_24px_rgba(0,0,0,0.8)] backdrop-blur-md select-none shrink-0">
-        <div className="w-full flex items-center justify-between px-1">
-          <span className="text-[9px] font-mono font-bold tracking-widest text-[#d9383a] uppercase">NES PAD</span>
-          <span className="text-[8px] font-mono text-[#958ea0]">DUAL ACTION</span>
-        </div>
-
-        <div className="flex items-center justify-center gap-3 my-auto -rotate-6">
-          {/* Button B (Left - Crimson) */}
-          <div className="flex flex-col items-center">
-            <button
-              onPointerDown={(e) => onPress('b', e)}
-              onPointerUp={(e) => onRelease('b', e)}
-              onPointerCancel={(e) => onRelease('b', e)}
-              className="w-11 h-11 sm:w-12 sm:h-12 rounded-full bg-gradient-to-b from-[#e74c3c] to-[#992d22] border-2 border-[#ff7979] text-white font-mono font-black text-sm sm:text-base flex items-center justify-center shadow-lg active:scale-90 active:from-[#ff7675] active:to-[#d63031] transition-all"
-              title="NES Nút B"
-            >
-              B
-            </button>
-            <span className="font-mono text-[9px] text-[#ff7979] font-bold mt-1 uppercase">Run / Atk</span>
+      <div
+        className={`relative rounded-2xl bg-[#d4d4dc] p-1 border-2 border-[#7b7c87] shadow-[0_6px_26px_rgba(0,0,0,0.85)] select-none shrink-0 ${
+          showAutoButtons ? 'w-[138px] sm:w-[154px]' : 'w-[134px] sm:w-[148px]'
+        }`}
+      >
+        <div className="w-full rounded-xl bg-gradient-to-b from-[#282a36] to-[#1a1c24] px-2 py-1.5 flex flex-col items-center gap-1.5 border border-[#111319] shadow-inner">
+          {/* Classic NES Red Header Strip */}
+          <div className="w-full flex items-center justify-between px-0.5 border-b border-[#dc2626]/30 pb-0.5">
+            <span className="text-[8px] font-mono font-black tracking-widest text-[#ef4444] uppercase">
+              NES 4-BTN
+            </span>
+            <span className="text-[7px] font-mono font-bold text-[#958ea0] uppercase">
+              {showAutoButtons ? 'TURBO + AB' : 'CLASSIC'}
+            </span>
           </div>
 
-          {/* Button A (Right - Crimson) */}
-          <div className="flex flex-col items-center">
-            <button
-              onPointerDown={(e) => onPress('a', e)}
-              onPointerUp={(e) => onRelease('a', e)}
-              onPointerCancel={(e) => onRelease('a', e)}
-              className="w-11 h-11 sm:w-12 sm:h-12 rounded-full bg-gradient-to-b from-[#e74c3c] to-[#992d22] border-2 border-[#ff7979] text-white font-mono font-black text-sm sm:text-base flex items-center justify-center shadow-lg active:scale-90 active:from-[#ff7675] active:to-[#d63031] transition-all"
-              title="NES Nút A"
-            >
-              A
-            </button>
-            <span className="font-mono text-[9px] text-[#ff7979] font-bold mt-1 uppercase">Jump / OK</span>
+          {/* 2x2 Classic Grid: Top = Auto B & Auto A (4-button style), Bottom = B & A */}
+          <div className="w-full flex flex-col gap-1.5">
+            {showAutoButtons && onAutoDown && onAutoUp && (
+              <div className="grid grid-cols-2 gap-2 w-full">
+                {/* AUTO B (Top-Left above B) */}
+                <div className="flex flex-col items-center">
+                  <div className="w-12 h-10 sm:w-13 sm:h-11 rounded-md bg-[#dcdce4] border border-[#8e8f9b] shadow-inner flex items-center justify-center p-0.5">
+                    <button
+                      type="button"
+                      onPointerDown={(e) => onAutoDown('b', e)}
+                      onPointerUp={(e) => onAutoUp('b', e)}
+                      onPointerCancel={(e) => onAutoUp('b', e)}
+                      className={`relative w-8 h-8 sm:w-9 sm:h-9 rounded-full border-2 font-mono font-black text-[11px] flex items-center justify-center transition-all shadow-md ${
+                        autoActive.b
+                          ? 'bg-gradient-to-b from-[#4cd7f6] to-[#0284c7] border-[#bae6fd] text-[#002b36] scale-95 shadow-[0_0_12px_#4cd7f6]'
+                          : 'bg-gradient-to-b from-[#7f1d1d] to-[#450a0a] border-[#f87171]/70 text-[#fecaca] active:scale-90'
+                      }`}
+                      title="Nút bắn liên thanh Auto B"
+                    >
+                      <span>B⚡</span>
+                      {turboLockMode && autoActive.b && (
+                        <span className="material-symbols-outlined text-[10px] absolute -top-1 -right-1 bg-[#0e1118] text-[#4cd7f6] rounded-full p-0.5 border border-[#4cd7f6]">
+                          lock
+                        </span>
+                      )}
+                    </button>
+                  </div>
+                  <span className="font-mono text-[8px] font-extrabold text-[#4cd7f6] tracking-wide uppercase mt-0.5">
+                    AUTO B
+                  </span>
+                </div>
+
+                {/* AUTO A (Top-Right above A) */}
+                <div className="flex flex-col items-center">
+                  <div className="w-12 h-10 sm:w-13 sm:h-11 rounded-md bg-[#dcdce4] border border-[#8e8f9b] shadow-inner flex items-center justify-center p-0.5">
+                    <button
+                      type="button"
+                      onPointerDown={(e) => onAutoDown('a', e)}
+                      onPointerUp={(e) => onAutoUp('a', e)}
+                      onPointerCancel={(e) => onAutoUp('a', e)}
+                      className={`relative w-8 h-8 sm:w-9 sm:h-9 rounded-full border-2 font-mono font-black text-[11px] flex items-center justify-center transition-all shadow-md ${
+                        autoActive.a
+                          ? 'bg-gradient-to-b from-[#ffb95f] to-[#d97706] border-[#fef08a] text-[#2a1700] scale-95 shadow-[0_0_12px_#ffb95f]'
+                          : 'bg-gradient-to-b from-[#7f1d1d] to-[#450a0a] border-[#f87171]/70 text-[#fecaca] active:scale-90'
+                      }`}
+                      title="Nút bắn liên thanh Auto A"
+                    >
+                      <span>A⚡</span>
+                      {turboLockMode && autoActive.a && (
+                        <span className="material-symbols-outlined text-[10px] absolute -top-1 -right-1 bg-[#0e1118] text-[#ffb95f] rounded-full p-0.5 border border-[#ffb95f]">
+                          lock
+                        </span>
+                      )}
+                    </button>
+                  </div>
+                  <span className="font-mono text-[8px] font-extrabold text-[#ffb95f] tracking-wide uppercase mt-0.5">
+                    AUTO A
+                  </span>
+                </div>
+              </div>
+            )}
+
+            {/* Bottom Row: Classic Iconic Square-Bezel Crimson B & A */}
+            <div className="grid grid-cols-2 gap-2 w-full">
+              {/* Button B (Bottom-Left - Classic NES Crimson in Light-Gray Square Frame) */}
+              <div className="flex flex-col items-center">
+                <div className="w-12 h-12 sm:w-14 sm:h-14 rounded-md bg-[#e2e2ea] border border-[#9697a3] shadow-inner flex items-center justify-center">
+                  <button
+                    type="button"
+                    onPointerDown={(e) => onPress('b', e)}
+                    onPointerUp={(e) => onRelease('b', e)}
+                    onPointerCancel={(e) => onRelease('b', e)}
+                    className="w-9 h-9 sm:w-11 sm:h-11 rounded-full bg-gradient-to-b from-[#ef4444] via-[#dc2626] to-[#991b1b] border-2 border-[#fca5a5]/70 text-white font-mono font-black text-sm sm:text-base flex items-center justify-center shadow-[0_3px_0_#7f1d1d] active:translate-y-0.5 active:shadow-none active:from-[#f87171] active:to-[#dc2626] transition-all"
+                    title="NES Nút B"
+                  >
+                    B
+                  </button>
+                </div>
+                <span className="font-mono text-[10px] text-[#ef4444] font-black mt-0.5 tracking-widest">
+                  B
+                </span>
+              </div>
+
+              {/* Button A (Bottom-Right - Classic NES Crimson in Light-Gray Square Frame) */}
+              <div className="flex flex-col items-center">
+                <div className="w-12 h-12 sm:w-14 sm:h-14 rounded-md bg-[#e2e2ea] border border-[#9697a3] shadow-inner flex items-center justify-center">
+                  <button
+                    type="button"
+                    onPointerDown={(e) => onPress('a', e)}
+                    onPointerUp={(e) => onRelease('a', e)}
+                    onPointerCancel={(e) => onRelease('a', e)}
+                    className="w-9 h-9 sm:w-11 sm:h-11 rounded-full bg-gradient-to-b from-[#ef4444] via-[#dc2626] to-[#991b1b] border-2 border-[#fca5a5]/70 text-white font-mono font-black text-sm sm:text-base flex items-center justify-center shadow-[0_3px_0_#7f1d1d] active:translate-y-0.5 active:shadow-none active:from-[#f87171] active:to-[#dc2626] transition-all"
+                    title="NES Nút A"
+                  >
+                    A
+                  </button>
+                </div>
+                <span className="font-mono text-[10px] text-[#ef4444] font-black mt-0.5 tracking-widest">
+                  A
+                </span>
+              </div>
+            </div>
           </div>
         </div>
       </div>

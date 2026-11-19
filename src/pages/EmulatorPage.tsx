@@ -1318,7 +1318,7 @@ export const EmulatorPage: React.FC<EmulatorPageProps> = ({
         return;
       } else if (!isNetplayGuestOrSpec && e.code === 'Tab') {
         e.preventDefault();
-        cycleFastForward();
+        toggleFastForward();
         return;
       } else if (e.code === 'F8') {
         e.preventDefault();
@@ -1354,7 +1354,7 @@ export const EmulatorPage: React.FC<EmulatorPageProps> = ({
           return;
         }
         if (!isNetplayGuestOrSpec && customAction === 'fastForward') {
-          cycleFastForward();
+          toggleFastForward();
           e.preventDefault();
           return;
         }
@@ -1445,7 +1445,7 @@ export const EmulatorPage: React.FC<EmulatorPageProps> = ({
       if (action === 'save') triggerQuickSave();
       else if (action === 'load') triggerQuickLoad();
       else if (action === 'rewind') triggerRewind();
-      else if (action === 'fastforward') cycleFastForward();
+      else if (action === 'fastforward') toggleFastForward();
       else if (action === 'pause') togglePlayPause();
     });
 
@@ -1559,13 +1559,29 @@ export const EmulatorPage: React.FC<EmulatorPageProps> = ({
     }
   };
 
-  const cycleFastForward = () => {
-    const nextSpeed = fastForwardSpeed === 1 ? 2 : fastForwardSpeed === 2 ? 4 : fastForwardSpeed === 4 ? 8 : 1;
+  const toggleFastForward = () => {
+    const nextSpeed = fastForwardSpeed > 1 ? 1 : 2;
     setFastForwardSpeed(nextSpeed);
     if (nostalgistRef.current) {
-      nostalgistRef.current.sendCommand('FAST_FORWARD');
+      try {
+        nostalgistRef.current.sendCommand('FAST_FORWARD');
+      } catch {}
     }
-    showToast(`Tua nhanh: ${nextSpeed}x`);
+    showToast(nextSpeed > 1 ? 'Đã bật tua nhanh' : 'Đã tắt tua nhanh');
+  };
+
+  const cycleFastForward = () => {
+    const nextSpeed = fastForwardSpeed === 1 ? 2 : fastForwardSpeed === 2 ? 4 : fastForwardSpeed === 4 ? 8 : 1;
+    // RetroArch FAST_FORWARD is a binary toggle, so only dispatch when entering or leaving fast-forward
+    if ((fastForwardSpeed === 1 && nextSpeed > 1) || (fastForwardSpeed > 1 && nextSpeed === 1)) {
+      if (nostalgistRef.current) {
+        try {
+          nostalgistRef.current.sendCommand('FAST_FORWARD');
+        } catch {}
+      }
+    }
+    setFastForwardSpeed(nextSpeed);
+    showToast(nextSpeed > 1 ? `Đã bật tua nhanh (${nextSpeed}x)` : 'Đã tắt tua nhanh');
   };
 
   const triggerQuickSave = async () => {
@@ -2325,16 +2341,16 @@ export const EmulatorPage: React.FC<EmulatorPageProps> = ({
                     </button>
 
                     <button
-                      onClick={cycleFastForward}
-                      className={`h-8 px-2.5 rounded-lg border font-mono text-xs flex items-center gap-1 active:scale-95 transition-all ${
+                      onClick={toggleFastForward}
+                      className={`h-8 px-2.5 rounded-lg border font-mono text-xs font-bold flex items-center gap-1 active:scale-95 transition-all cursor-pointer ${
                         fastForwardSpeed > 1
-                          ? 'bg-[#03b5d3]/20 border-[#4cd7f6] text-[#4cd7f6] glow-cyan'
-                          : 'bg-[#1e1f26] border-[#494454]/30 text-[#cbc3d7]'
+                          ? 'bg-[#03b5d3]/25 border-[#4cd7f6] text-[#4cd7f6] glow-cyan'
+                          : 'bg-[#1e1f26] border-[#494454]/30 text-[#cbc3d7] hover:text-white hover:border-[#4cd7f6]/50'
                       }`}
-                      title="Fast Forward (Tab)"
+                      title={fastForwardSpeed > 1 ? 'Tắt tua nhanh (Tab)' : 'Bật tua nhanh (Tab)'}
                     >
                       <span className="material-symbols-outlined text-sm">fast_forward</span>
-                      <span>{fastForwardSpeed}x</span>
+                      <span>{fastForwardSpeed > 1 ? 'Tua: BẬT' : 'Tua nhanh'}</span>
                     </button>
 
                     <div className="h-4 w-px bg-[#494454]/30 mx-1"></div>
@@ -2480,6 +2496,7 @@ export const EmulatorPage: React.FC<EmulatorPageProps> = ({
                 onTriggerQuickSave={triggerQuickSave}
                 onTriggerQuickLoad={triggerQuickLoad}
                 onTriggerRewind={triggerRewind}
+                onToggleFastForward={toggleFastForward}
                 onCycleFastForward={cycleFastForward}
                 onTogglePause={togglePlayPause}
                 isPaused={isPaused}
@@ -2510,6 +2527,7 @@ export const EmulatorPage: React.FC<EmulatorPageProps> = ({
                 onTriggerQuickSave={triggerQuickSave}
                 onTriggerQuickLoad={triggerQuickLoad}
                 onTriggerRewind={triggerRewind}
+                onToggleFastForward={toggleFastForward}
                 onCycleFastForward={cycleFastForward}
                 onTogglePause={togglePlayPause}
                 isPaused={isPaused}
