@@ -34,6 +34,10 @@ interface VirtualGamepadProps {
   onSelectSlot?: (slot: number) => void;
   onRestartGame?: () => void;
   isGuestMode?: boolean;
+  maxMenuHeight?: number;
+  isMuted?: boolean;
+  needsAudioUnlock?: boolean;
+  onToggleMute?: () => void;
 }
 
 export const VirtualGamepad: React.FC<VirtualGamepadProps> = ({
@@ -63,6 +67,10 @@ export const VirtualGamepad: React.FC<VirtualGamepadProps> = ({
   onSelectSlot,
   onRestartGame,
   isGuestMode = false,
+  maxMenuHeight,
+  isMuted = false,
+  needsAudioUnlock = false,
+  onToggleMute,
 }) => {
   // Load persistent gamepad config
   const [config, setConfig] = useState<MobileGamepadConfig>(() => {
@@ -75,6 +83,9 @@ export const VirtualGamepad: React.FC<VirtualGamepadProps> = ({
 
   const [isSettingsOpen, setIsSettingsOpen] = useState<boolean>(false);
   const [isDropdownOpen, setIsDropdownOpen] = useState<boolean>(false);
+  const menuScrollRef = useRef<HTMLDivElement | null>(null);
+  const menuTouchRef = useRef<{ lastX: number; lastY: number; moved: boolean } | null>(null);
+  const suppressNextMenuClickRef = useRef<boolean>(false);
 
   // Active Auto-fire timers
   const autoIntervalsRef = useRef<{ a: number | null; b: number | null }>({ a: null, b: null });
@@ -263,7 +274,7 @@ export const VirtualGamepad: React.FC<VirtualGamepadProps> = ({
               onPointerDown={(e) => handlePress('l', e)}
               onPointerUp={(e) => handleRelease('l', e)}
               onPointerCancel={(e) => handleRelease('l', e)}
-              className={`h-9 px-3.5 sm:px-5 rounded-xl ${
+              className={`h-9 px-3.5 sm:px-5 rounded-xl touch-none ${
                 isGBA
                   ? 'bg-gradient-to-b from-[#2d3045] to-[#1c1e2b] border-[#818cf8]/60 text-[#c7d2fe]'
                   : 'bg-[#171922]/90 border-[#494454]/70 text-white'
@@ -340,6 +351,34 @@ export const VirtualGamepad: React.FC<VirtualGamepadProps> = ({
 
             <div className="w-px h-3.5 bg-[#494454]/40 shrink-0"></div>
 
+            {/* 4.5 Audio Mute/Unmute & Unlock Button */}
+            {onToggleMute && (
+              <>
+                <div className="w-px h-3.5 bg-[#494454]/40 shrink-0"></div>
+                <button
+                  type="button"
+                  onClick={onToggleMute}
+                  className={`h-7 px-2 sm:px-2.5 rounded-full border flex items-center gap-1 font-mono text-xs font-bold transition-colors shrink-0 ${
+                    needsAudioUnlock
+                      ? 'bg-amber-400 text-[#1b1200] border-amber-300 animate-pulse'
+                      : isMuted
+                      ? 'bg-rose-500/15 border-rose-500/40 text-rose-300'
+                      : 'bg-emerald-500/15 border-emerald-500/40 text-emerald-300'
+                  }`}
+                  title={isMuted || needsAudioUnlock ? 'Bấm để bật âm thanh game' : 'Tắt âm thanh game'}
+                >
+                  <span className="material-symbols-outlined text-sm">
+                    {isMuted || needsAudioUnlock ? 'volume_off' : 'volume_up'}
+                  </span>
+                  <span className="hidden xs:inline text-[11px]">
+                    {needsAudioUnlock ? 'Bật tiếng' : isMuted ? 'Tắt' : 'Loa'}
+                  </span>
+                </button>
+              </>
+            )}
+
+            <div className="w-px h-3.5 bg-[#494454]/40 shrink-0"></div>
+
             {/* 5. Fullscreen Mode Button (Đưa ra ngoài theo yêu cầu) */}
             {onToggleFullscreen && (
               <button
@@ -376,11 +415,96 @@ export const VirtualGamepad: React.FC<VirtualGamepadProps> = ({
 
               {/* DROPDOWN MENU LIST POPUP */}
               {isDropdownOpen && (
-                <div className="absolute top-9 right-0 sm:right-auto sm:left-1/2 sm:-translate-x-1/2 w-72 bg-[#141622]/95 backdrop-blur-xl border border-[#494454]/60 rounded-2xl shadow-2xl p-2.5 z-50 flex flex-col gap-1.5 text-xs select-none max-h-[82vh] overflow-y-auto">
-                  <div className="text-[10px] font-mono uppercase text-[#958ea0] px-1 pb-1 border-b border-[#494454]/30 flex items-center justify-between">
+                <div
+                  ref={menuScrollRef}
+                  style={{
+                    maxHeight: maxMenuHeight ? `${Math.max(170, maxMenuHeight)}px` : 'calc(100vh - 5.5rem)',
+                    WebkitOverflowScrolling: 'touch',
+                    touchAction: isVirtualRotated ? 'none' : 'pan-y',
+                  }}
+                  onPointerDown={(e) => e.stopPropagation()}
+                  onTouchStart={(e) => {
+                    e.stopPropagation();
+                    const t = e.touches[0];
+                    if (t) {
+                      menuTouchRef.current = { lastX: t.clientX, lastY: t.clientY, moved: false };
+                      suppressNextMenuClickRef.current = false;
+                    }
+                  }}
+                  onTouchMove={(e) => {
+                    e.stopPropagation();
+                    const st = menuTouchRef.current;
+                    const el = menuScrollRef.current;
+                    const t = e.touches[0];
+                    if (!st || !el || !t) return;
+                    const dx = t.clientX - st.lastX;
+                    const dy = t.clientY - st.lastY;
+                    const deltaLocalY = isVirtualRotated
+                      ? rotationAngleDeg === -90
+                        ? -dx
+                        : dx
+                      : -dy;
+                    if (Math.abs(deltaLocalY) > 2) {
+                      st.moved = true;
+                      suppressNextMenuClickRef.current = true;
+                    }
+                    if (isVirtualRotated && deltaLocalY !== 0) {
+                      el.scrollTop += deltaLocalY;
+                    }
+                    st.lastX = t.clientX;
+                    st.lastY = t.clientY;
+                  }}
+                  onTouchEnd={(e) => {
+                    e.stopPropagation();
+                    if (menuTouchRef.current?.moved) {
+                      setTimeout(() => {
+                        suppressNextMenuClickRef.current = false;
+                      }, 120);
+                    }
+                    menuTouchRef.current = null;
+                  }}
+                  onClickCapture={(e) => {
+                    if (suppressNextMenuClickRef.current) {
+                      e.preventDefault();
+                      e.stopPropagation();
+                      suppressNextMenuClickRef.current = false;
+                    }
+                  }}
+                  onWheel={(e) => e.stopPropagation()}
+                  className="absolute top-9 right-0 sm:right-auto sm:left-1/2 sm:-translate-x-1/2 w-72 bg-[#141622]/95 backdrop-blur-xl border border-[#494454]/60 rounded-2xl shadow-2xl p-2.5 z-50 flex flex-col gap-1.5 text-xs select-none overflow-y-auto overscroll-contain [&>*]:shrink-0"
+                >
+                  <div className="text-[10px] font-mono uppercase text-[#958ea0] px-1 pb-1 border-b border-[#494454]/30 flex items-center justify-between shrink-0">
                     <span>Công cụ & Cài đặt</span>
-                    <span className="text-amber-400 font-bold">Slot #{currentSlot}</span>
+                    {!isGuestMode ? (
+                      <span className="text-amber-400 font-bold">Slot #{currentSlot}</span>
+                    ) : (
+                      <span className="text-[#4cd7f6] font-bold">Port 2</span>
+                    )}
                   </div>
+
+                  {onToggleMute && (
+                    <button
+                      type="button"
+                      onClick={() => {
+                        onToggleMute();
+                      }}
+                      className={`w-full py-1.5 px-2.5 rounded-xl border flex items-center justify-between font-mono text-[11px] transition-colors shrink-0 ${
+                        isMuted || needsAudioUnlock
+                          ? 'bg-amber-500/15 border-amber-500/40 text-amber-300'
+                          : 'bg-emerald-500/10 border-emerald-500/40 text-emerald-300'
+                      }`}
+                    >
+                      <span className="flex items-center gap-1.5">
+                        <span className="material-symbols-outlined text-sm">
+                          {isMuted || needsAudioUnlock ? 'volume_off' : 'volume_up'}
+                        </span>
+                        <span>Âm thanh trò chơi</span>
+                      </span>
+                      <span className="px-2 py-0.5 rounded bg-black/30 font-bold text-[10px]">
+                        {needsAudioUnlock ? 'Chạm để bật' : isMuted ? 'Đang tắt' : 'Đang bật'}
+                      </span>
+                    </button>
+                  )}
 
                   {/* 0. CHỌN KHE LƯU TRỰC TIẾP TRONG MENU */}
                   {!isGuestMode && (
@@ -656,7 +780,7 @@ export const VirtualGamepad: React.FC<VirtualGamepadProps> = ({
               onPointerDown={(e) => handlePress('r', e)}
               onPointerUp={(e) => handleRelease('r', e)}
               onPointerCancel={(e) => handleRelease('r', e)}
-              className={`h-9 px-3.5 sm:px-5 rounded-xl ${
+              className={`h-9 px-3.5 sm:px-5 rounded-xl touch-none ${
                 isGBA
                   ? 'bg-gradient-to-b from-[#2d3045] to-[#1c1e2b] border-[#818cf8]/60 text-[#c7d2fe]'
                   : 'bg-[#171922]/90 border-[#494454]/70 text-white'
@@ -671,10 +795,10 @@ export const VirtualGamepad: React.FC<VirtualGamepadProps> = ({
         </div>
 
         {/* Bottom Clusters: Left Thumb (Movement), Center Bottom (Select & Start), Right Thumb (Actions) */}
-        <div className="w-full flex items-end justify-between px-4 sm:px-6 pb-3 sm:pb-4 pointer-events-none">
+        <div className="w-full flex items-end justify-between px-4 sm:px-6 pb-3 sm:pb-4 pointer-events-none relative z-30">
           {/* LEFT THUMB ZONE */}
           <div
-            className="pointer-events-auto flex flex-col items-center transition-transform duration-75"
+            className="pointer-events-auto touch-none flex flex-col items-center transition-transform duration-75"
             style={{
               transform: `translate(${config.touchOffsets?.dpadOffsetX || 0}px, ${config.touchOffsets?.dpadOffsetY || 0}px) scale(${config.touchOffsets?.dpadScale || 1})`,
               transformOrigin: 'bottom left',
@@ -690,7 +814,7 @@ export const VirtualGamepad: React.FC<VirtualGamepadProps> = ({
                     rotationAngle={rotationAngle}
                   />
                 ) : (
-                  <DPadCluster onInput={onInput} onHaptic={triggerHaptic} />
+                  <DPadCluster onInput={onInput} onHaptic={triggerHaptic} rotationAngle={rotationAngle} />
                 )}
               </div>
             )}
@@ -698,7 +822,7 @@ export const VirtualGamepad: React.FC<VirtualGamepadProps> = ({
 
           {/* CENTER BOTTOM: SELECT & START PILLS */}
           {config.showSystemButtons && (
-            <div className="pointer-events-auto flex items-center gap-2.5 sm:gap-4 bg-[#12141c]/90 backdrop-blur-md px-3.5 sm:px-4 py-1.5 rounded-full border border-[#494454]/50 shadow-2xl mb-1">
+            <div className="pointer-events-auto touch-none flex items-center gap-2.5 sm:gap-4 bg-[#12141c]/90 backdrop-blur-md px-3.5 sm:px-4 py-1.5 rounded-full border border-[#494454]/50 shadow-2xl mb-1">
               <div className="flex flex-col items-center">
                 <button
                   type="button"
@@ -731,7 +855,7 @@ export const VirtualGamepad: React.FC<VirtualGamepadProps> = ({
 
           {/* RIGHT THUMB ZONE */}
           <div
-            className="pointer-events-auto flex flex-col items-end gap-2 sm:gap-3 transition-transform duration-75"
+            className="pointer-events-auto touch-none flex flex-col items-end gap-2 sm:gap-3 transition-transform duration-75"
             style={{
               transform: `translate(${config.touchOffsets?.actionOffsetX || 0}px, ${config.touchOffsets?.actionOffsetY || 0}px) scale(${config.touchOffsets?.actionScale || 1})`,
               transformOrigin: 'bottom right',
@@ -904,6 +1028,26 @@ export const VirtualGamepad: React.FC<VirtualGamepadProps> = ({
             </div>
           )}
 
+          {/* Portrait Sound Toggle */}
+          {onToggleMute && (
+            <button
+              type="button"
+              onClick={onToggleMute}
+              className={`h-7 w-7 rounded-lg flex items-center justify-center transition-colors shrink-0 ${
+                needsAudioUnlock
+                  ? 'bg-amber-400 text-[#1b1200] animate-pulse'
+                  : isMuted
+                  ? 'bg-rose-500/20 text-rose-300'
+                  : 'bg-[#252837] text-emerald-300'
+              }`}
+              title={isMuted || needsAudioUnlock ? 'Bật âm thanh' : 'Tắt âm thanh'}
+            >
+              <span className="material-symbols-outlined text-sm">
+                {isMuted || needsAudioUnlock ? 'volume_off' : 'volume_up'}
+              </span>
+            </button>
+          )}
+
           {/* Settings Trigger */}
           <button
             type="button"
@@ -996,7 +1140,7 @@ export const VirtualGamepad: React.FC<VirtualGamepadProps> = ({
                 rotationAngle={rotationAngle}
               />
             ) : (
-              <DPadCluster onInput={onInput} onHaptic={triggerHaptic} />
+              <DPadCluster onInput={onInput} onHaptic={triggerHaptic} rotationAngle={rotationAngle} />
             )
           ) : (
             <div className="w-[116px] h-[116px] sm:w-32 sm:h-32"></div>
@@ -1110,10 +1254,12 @@ export const VirtualGamepad: React.FC<VirtualGamepadProps> = ({
 interface DPadClusterProps {
   onInput: (btn: keyof EmulatorInputState, pressed: boolean) => void;
   onHaptic?: (ms: number) => void;
+  rotationAngle?: number;
 }
 
-const DPadCluster: React.FC<DPadClusterProps> = ({ onInput, onHaptic }) => {
+const DPadCluster: React.FC<DPadClusterProps> = ({ onInput, onHaptic, rotationAngle = 0 }) => {
   const containerRef = useRef<HTMLDivElement | null>(null);
+  const activePointerIdRef = useRef<number | null>(null);
   const activeDirsRef = useRef<{ up: boolean; down: boolean; left: boolean; right: boolean }>({
     up: false,
     down: false,
@@ -1127,6 +1273,9 @@ const DPadCluster: React.FC<DPadClusterProps> = ({ onInput, onHaptic }) => {
     right: false,
   });
 
+  const onInputRef = useRef(onInput);
+  onInputRef.current = onInput;
+
   const updateDirections = useCallback(
     (dirs: { up: boolean; down: boolean; left: boolean; right: boolean }) => {
       const current = activeDirsRef.current;
@@ -1135,7 +1284,7 @@ const DPadCluster: React.FC<DPadClusterProps> = ({ onInput, onHaptic }) => {
       (['up', 'down', 'left', 'right'] as const).forEach((d) => {
         if (current[d] !== dirs[d]) {
           current[d] = dirs[d];
-          onInput(d, dirs[d]);
+          onInputRef.current(d, dirs[d]);
           changed = true;
         }
       });
@@ -1147,7 +1296,7 @@ const DPadCluster: React.FC<DPadClusterProps> = ({ onInput, onHaptic }) => {
         }
       }
     },
-    [onInput, onHaptic]
+    [onHaptic]
   );
 
   const resolvePointer = useCallback(
@@ -1156,12 +1305,23 @@ const DPadCluster: React.FC<DPadClusterProps> = ({ onInput, onHaptic }) => {
       const rect = containerRef.current.getBoundingClientRect();
       const centerX = rect.left + rect.width / 2;
       const centerY = rect.top + rect.height / 2;
-      const dx = clientX - centerX;
-      const dy = clientY - centerY;
+      const screenDx = clientX - centerX;
+      const screenDy = clientY - centerY;
+
+      let dx = screenDx;
+      let dy = screenDy;
+      if (rotationAngle) {
+        const rad = (rotationAngle * Math.PI) / 180;
+        const cos = Math.cos(rad);
+        const sin = Math.sin(rad);
+        dx = screenDx * cos + screenDy * sin;
+        dy = -screenDx * sin + screenDy * cos;
+      }
+
       const dist = Math.hypot(dx, dy);
 
-      // Deadzone threshold (under 12px from center counts as released)
-      if (dist < 12) {
+      // Deadzone threshold (under 10px from center counts as released)
+      if (dist < 10) {
         updateDirections({ up: false, down: false, left: false, right: false });
         return;
       }
@@ -1182,12 +1342,13 @@ const DPadCluster: React.FC<DPadClusterProps> = ({ onInput, onHaptic }) => {
 
       updateDirections({ up, down, left, right });
     },
-    [updateDirections]
+    [updateDirections, rotationAngle]
   );
 
   const handlePointerDown = (e: React.PointerEvent) => {
     e.preventDefault();
     e.stopPropagation();
+    activePointerIdRef.current = e.pointerId;
     try {
       e.currentTarget.setPointerCapture(e.pointerId);
     } catch {}
@@ -1195,16 +1356,17 @@ const DPadCluster: React.FC<DPadClusterProps> = ({ onInput, onHaptic }) => {
   };
 
   const handlePointerMove = (e: React.PointerEvent) => {
+    if (activePointerIdRef.current !== e.pointerId) return;
     e.preventDefault();
     e.stopPropagation();
-    if (e.buttons > 0 || e.pressure > 0) {
-      resolvePointer(e.clientX, e.clientY);
-    }
+    resolvePointer(e.clientX, e.clientY);
   };
 
   const handlePointerUp = (e: React.PointerEvent) => {
+    if (activePointerIdRef.current !== e.pointerId && activePointerIdRef.current !== null) return;
     e.preventDefault();
     e.stopPropagation();
+    activePointerIdRef.current = null;
     try {
       e.currentTarget.releasePointerCapture(e.pointerId);
     } catch {}

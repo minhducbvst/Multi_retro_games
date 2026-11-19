@@ -412,7 +412,7 @@ export const NetPlayLobbyPage: React.FC<NetPlayLobbyPageProps> = ({
       prevLobbyGuestUidRef.current = null;
       return;
     }
-    const myUid = playerProfile.uid;
+    const myUid = currentUser?.uid || auth.currentUser?.uid || playerProfile.uid;
     const role: 'host' | 'guest' | 'spectator' =
       room.hostUid === myUid ? 'host' : room.guestUid === myUid ? 'guest' : 'spectator';
 
@@ -435,7 +435,7 @@ export const NetPlayLobbyPage: React.FC<NetPlayLobbyPageProps> = ({
       // Guest prepares peer link (polite peer waits for Host's offer)
       webrtcNetplay.connectToPeer(room.hostUid, false);
     }
-  }, [room?.id, room?.hostUid, room?.guestUid, room?.spectators?.length, playerProfile.uid]);
+  }, [room?.id, room?.hostUid, room?.guestUid, room?.spectators?.length, currentUser?.uid, playerProfile.uid]);
 
   // Auto-scroll chat
   useEffect(() => {
@@ -1428,12 +1428,12 @@ export const NetPlayLobbyPage: React.FC<NetPlayLobbyPageProps> = ({
         /* ACTIVE IN-ROOM CHAMBER VIEW */
         <>
           <div className="bg-[#191b22] rounded-xl p-5 border border-[#494454]/30 shadow-2xl relative overflow-hidden backdrop-blur-md">
-            <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-5 relative z-10">
+            <div className="flex flex-col xl:flex-row xl:items-center justify-between gap-4 relative z-10">
               {/* Room Code & Invite Link */}
-              <div className="flex flex-wrap items-center gap-3">
-                <div className="flex items-center bg-[#0c0e14] border border-[#494454]/60 rounded-lg p-1 pl-3.5 pr-2 gap-2.5 shadow-inner">
-                  <span className="text-[#958ea0] font-mono text-[11px]">MÃ PHÒNG:</span>
-                  <span className="font-mono text-sm tracking-widest text-[#4cd7f6] font-bold">
+              <div className="flex flex-wrap items-center gap-2.5 min-w-0 flex-1">
+                <div className="flex items-center bg-[#0c0e14] border border-[#494454]/60 rounded-lg p-1 pl-3.5 pr-2 gap-2.5 shadow-inner shrink-0">
+                  <span className="text-[#958ea0] font-mono text-[11px] whitespace-nowrap">MÃ PHÒNG:</span>
+                  <span className="font-mono text-sm tracking-widest text-[#4cd7f6] font-bold whitespace-nowrap">
                     {room.code}
                   </span>
                   <button
@@ -1447,7 +1447,7 @@ export const NetPlayLobbyPage: React.FC<NetPlayLobbyPageProps> = ({
                   </button>
                   <button
                     onClick={handleCopyInviteLink}
-                    className="px-2 py-1 rounded bg-[#4cd7f6]/15 hover:bg-[#4cd7f6]/25 text-[#4cd7f6] font-mono text-[11px] font-bold flex items-center gap-1 transition-colors cursor-pointer"
+                    className="px-2 py-1 rounded bg-[#4cd7f6]/15 hover:bg-[#4cd7f6]/25 text-[#4cd7f6] font-mono text-[11px] font-bold flex items-center gap-1 transition-colors cursor-pointer whitespace-nowrap"
                     title="Sao chép đường link mời trực tiếp"
                   >
                     <span className="material-symbols-outlined text-xs">
@@ -1464,7 +1464,7 @@ export const NetPlayLobbyPage: React.FC<NetPlayLobbyPageProps> = ({
                     onClick={handleToggleVisibility}
                     disabled={isUpdatingSettings}
                     title="Bấm để chuyển đổi giữa Công khai (hiện ở sảnh) và Riêng tư (chỉ vào bằng Mã/Link)"
-                    className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg border text-xs font-mono transition-colors cursor-pointer ${
+                    className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg border text-xs font-mono transition-colors cursor-pointer whitespace-nowrap shrink-0 ${
                       room.isPublic
                         ? 'bg-emerald-500/10 border-emerald-500/40 text-emerald-300 hover:bg-emerald-500/20'
                         : 'bg-amber-500/10 border-amber-500/40 text-amber-300 hover:bg-amber-500/20'
@@ -1477,7 +1477,7 @@ export const NetPlayLobbyPage: React.FC<NetPlayLobbyPageProps> = ({
                     <span className="material-symbols-outlined text-[12px] opacity-70">swap_horiz</span>
                   </button>
                 ) : (
-                  <div className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-[#0c0e14] border border-[#494454]/40 text-xs font-mono">
+                  <div className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-[#0c0e14] border border-[#494454]/40 text-xs font-mono whitespace-nowrap shrink-0">
                     <span className="material-symbols-outlined text-xs text-[#4cd7f6]">
                       {room.isPublic ? 'public' : 'lock'}
                     </span>
@@ -1486,9 +1486,9 @@ export const NetPlayLobbyPage: React.FC<NetPlayLobbyPageProps> = ({
                 )}
 
                 {/* Real Transport & Latency Diagnostics */}
-                <div className="flex items-center gap-2 px-3 py-1.5 rounded-lg bg-[#1e1f26] border border-[#494454]/40 text-xs font-mono">
+                <div className="flex items-center gap-2 px-3 py-1.5 rounded-lg bg-[#1e1f26] border border-[#494454]/40 text-xs font-mono whitespace-nowrap max-w-full">
                   <span
-                    className={`w-2 h-2 rounded-full ${
+                    className={`w-2 h-2 rounded-full shrink-0 ${
                       rtcStats.dataChannelState === 'open'
                         ? 'bg-emerald-400 animate-pulse'
                         : rtcStats.transportMode === 'ws-relay'
@@ -1496,22 +1496,22 @@ export const NetPlayLobbyPage: React.FC<NetPlayLobbyPageProps> = ({
                         : 'bg-sky-400 animate-pulse'
                     }`}
                   ></span>
-                  <span className="text-white font-bold">
+                  <span className="text-white font-bold tabular-nums min-w-[36px] text-right">
                     {liveLatencyMs > 0 ? `${liveLatencyMs}ms` : `${serverRttMs}ms`}
                   </span>
                   <span className="text-[#494454]">|</span>
-                  <span className="text-[#cbc3d7]">{transportLabel}</span>
+                  <span className="text-[#cbc3d7] truncate">{transportLabel}</span>
                 </div>
               </div>
 
               {/* Ready, Close Room & Launch CTAs */}
-              <div className="flex flex-wrap items-center gap-2.5">
+              <div className="flex flex-wrap sm:flex-nowrap items-center justify-start xl:justify-end gap-2.5 shrink-0">
                 {isHost && (
                   <button
                     type="button"
                     onClick={handleDeleteActiveRoom}
                     title="Đóng và xóa phòng ngay lập tức"
-                    className="px-3 py-2 rounded-lg bg-rose-500/10 hover:bg-rose-500/25 text-rose-300 border border-rose-500/35 font-mono text-xs font-bold flex items-center gap-1.5 transition-colors cursor-pointer"
+                    className="px-3 py-2 rounded-lg bg-rose-500/10 hover:bg-rose-500/25 text-rose-300 border border-rose-500/35 font-mono text-xs font-bold flex items-center gap-1.5 transition-colors cursor-pointer whitespace-nowrap shrink-0"
                   >
                     <span className="material-symbols-outlined text-sm">delete_forever</span>
                     <span>Đóng &amp; Xóa Phòng</span>
@@ -1520,8 +1520,9 @@ export const NetPlayLobbyPage: React.FC<NetPlayLobbyPageProps> = ({
 
                 {!isSpectator && (
                   <button
+                    type="button"
                     onClick={handleToggleReady}
-                    className={`px-4 py-2 rounded-lg font-mono text-xs font-bold transition-all flex items-center gap-2 shadow-lg cursor-pointer ${
+                    className={`px-4 py-2 min-w-[164px] justify-center rounded-lg font-mono text-xs font-bold transition-colors flex items-center gap-2 shadow-lg cursor-pointer whitespace-nowrap shrink-0 ${
                       (isHost ? room.hostReady : room.guestReady)
                         ? 'bg-emerald-500/20 text-emerald-400 border border-emerald-500/40 hover:bg-emerald-500/30'
                         : isGuest
@@ -1532,7 +1533,7 @@ export const NetPlayLobbyPage: React.FC<NetPlayLobbyPageProps> = ({
                     <span className="material-symbols-outlined text-base">
                       {(isHost ? room.hostReady : room.guestReady) ? 'check_circle' : 'radio_button_unchecked'}
                     </span>
-                    {(isHost ? room.hostReady : room.guestReady) ? 'ĐÃ SẴN SÀNG' : 'BẤM ĐỂ SẴN SÀNG'}
+                    <span>{(isHost ? room.hostReady : room.guestReady) ? 'ĐÃ SẴN SÀNG' : 'BẤM ĐỂ SẴN SÀNG'}</span>
                   </button>
                 )}
 
@@ -1550,23 +1551,24 @@ export const NetPlayLobbyPage: React.FC<NetPlayLobbyPageProps> = ({
                         ? 'Chờ Port 2 nhấn nút Sẵn Sàng để nút Bắt Đầu Game sáng lên'
                         : 'Hãy bật Sẵn Sàng để bắt đầu game'
                     }
-                    className={`px-5 py-2.5 rounded-lg font-mono font-bold text-xs flex items-center gap-2 transition-all ${
+                    className={`px-5 py-2 min-w-[176px] justify-center rounded-lg border font-mono font-bold text-xs flex items-center gap-2 transition-colors whitespace-nowrap shrink-0 ${
                       room.status === 'playing'
-                        ? 'bg-emerald-400 hover:bg-emerald-300 text-[#00291c] shadow-lg shadow-emerald-400/30 cursor-pointer'
+                        ? 'bg-emerald-400 hover:bg-emerald-300 border-emerald-300 text-[#00291c] shadow-lg shadow-emerald-400/30 cursor-pointer'
                         : bothPlayersReady
-                        ? 'bg-gradient-to-r from-[#4cd7f6] via-[#5ae6c6] to-[#34d399] text-[#00312d] shadow-[0_0_25px_rgba(76,215,246,0.55)] ring-2 ring-[#4cd7f6]/80 hover:brightness-110 hover:scale-[1.03] cursor-pointer'
-                        : 'bg-[#22242d] text-[#7c7689] border border-[#494454]/40 opacity-55 cursor-not-allowed shadow-none'
+                        ? 'bg-gradient-to-r from-[#4cd7f6] via-[#5ae6c6] to-[#34d399] border-[#4cd7f6] text-[#00312d] shadow-[0_0_24px_rgba(76,215,246,0.5)] hover:brightness-110 cursor-pointer'
+                        : 'bg-[#22242d] text-[#7c7689] border-[#494454]/40 opacity-55 cursor-not-allowed shadow-none'
                     }`}
                   >
                     <span className="material-symbols-outlined text-base">
                       {bothPlayersReady || room.status === 'playing' ? 'play_arrow' : 'sports_esports'}
                     </span>
-                    {room.status === 'playing' ? 'QUAY LẠI MÀN HÌNH CHƠI' : 'BẮT ĐẦU GAME'}
+                    <span>{room.status === 'playing' ? 'QUAY LẠI MÀN HÌNH CHƠI' : 'BẮT ĐẦU GAME'}</span>
                   </button>
                 ) : room.status === 'playing' || isSpectator ? (
                   <button
+                    type="button"
                     onClick={handleJoinActiveMatch}
-                    className={`px-5 py-2 rounded-lg font-mono font-bold text-xs flex items-center gap-2 transition-all cursor-pointer ${
+                    className={`px-5 py-2 rounded-lg border border-transparent font-mono font-bold text-xs flex items-center gap-2 transition-colors cursor-pointer whitespace-nowrap shrink-0 ${
                       room.status === 'playing'
                         ? 'bg-emerald-400 hover:bg-emerald-300 text-[#00291c] shadow-xl animate-pulse'
                         : 'bg-[#4cd7f6] hover:bg-[#70e0f8] text-[#003641] shadow-lg shadow-[#4cd7f6]/20'
@@ -1575,11 +1577,11 @@ export const NetPlayLobbyPage: React.FC<NetPlayLobbyPageProps> = ({
                     <span className="material-symbols-outlined text-base">
                       {room.status === 'playing' ? 'play_circle' : 'visibility'}
                     </span>
-                    {room.status === 'playing' ? 'VÀO TRẬN ĐẤU ĐANG DIỄN RA' : 'VÀO XEM TRẬN ĐẤU'}
+                    <span>{room.status === 'playing' ? 'VÀO TRẬN ĐẤU ĐANG DIỄN RA' : 'VÀO XEM TRẬN ĐẤU'}</span>
                   </button>
                 ) : (
                   <div
-                    className={`px-4 py-2 rounded-lg font-mono font-bold text-xs flex items-center gap-2 border ${
+                    className={`px-4 py-2 rounded-lg font-mono font-bold text-xs flex items-center gap-2 border whitespace-nowrap shrink-0 ${
                       room.guestReady
                         ? 'bg-[#4cd7f6]/10 border-[#4cd7f6]/40 text-[#4cd7f6]'
                         : 'bg-[#22242d] border-[#494454]/40 text-[#958ea0]'

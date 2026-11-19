@@ -63,10 +63,13 @@ export const EmulatorPage: React.FC<EmulatorPageProps> = ({
 }) => {
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
   const remoteVideoRef = useRef<HTMLVideoElement | null>(null);
+  const remoteAudioRef = useRef<HTMLAudioElement | null>(null);
   const engineRef = useRef<RetroEmulatorEngine | null>(null);
   const nostalgistRef = useRef<Nostalgist | null>(null);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
   const capturedAudioStreamRef = useRef<MediaStream | null>(null);
+  const audioTapRestoreRef = useRef<(() => void) | null>(null);
+  const tappedAudioContextsRef = useRef<Set<AudioContext>>(new Set());
 
   const isNetplayHost = netplaySession?.role === 'host';
   const isNetplayGuestOrSpec = Boolean(netplaySession && netplaySession.role !== 'host');
@@ -273,6 +276,10 @@ export const EmulatorPage: React.FC<EmulatorPageProps> = ({
     if (!canvasRef.current) return;
     setLoadError(null);
     setIsLoadingCore(false);
+    if (audioTapRestoreRef.current) {
+      audioTapRestoreRef.current();
+      audioTapRestoreRef.current = null;
+    }
     if (nostalgistRef.current) {
       try { nostalgistRef.current.exit({ removeCanvas: false }); } catch {}
       nostalgistRef.current = null;
@@ -344,8 +351,13 @@ export const EmulatorPage: React.FC<EmulatorPageProps> = ({
         ? new Blob([existingSramBytes as unknown as BlobPart])
         : undefined;
 
-      // Install scoped WebAudio output tap when Host is in NetPlay so game sound streams over WebRTC
-      let restoreAudioTap: (() => void) | null = null;
+      // Install persistent WebAudio output tap when Host is in NetPlay so every per-frame AudioBufferSourceNode streams over WebRTC
+      if (audioTapRestoreRef.current) {
+        audioTapRestoreRef.current();
+        audioTapRestoreRef.current = null;
+      }
+      tappedAudioContextsRef.current.clear();
+      capturedAudioStreamRef.current = null;
       if (isNetplayHost && typeof AudioNode !== 'undefined') {
         try {
           const origConnect = AudioNode.prototype.connect;
@@ -359,21 +371,26 @@ export const EmulatorPage: React.FC<EmulatorPageProps> = ({
                 destination instanceof AudioDestinationNode &&
                 this.context instanceof AudioContext
               ) {
+                tappedAudioContextsRef.current.add(this.context);
+                if (this.context.state === 'suspended') {
+                  this.context.resume().catch(() => {});
+                }
                 let tapDest = tappedContexts.get(this.context);
                 if (!tapDest && typeof this.context.createMediaStreamDestination === 'function') {
                   tapDest = this.context.createMediaStreamDestination();
                   tappedContexts.set(this.context, tapDest);
                   capturedAudioStreamRef.current = tapDest.stream;
                 }
-                if (tapDest) {
+                if (tapDest && destination !== (tapDest as any)) {
                   (origConnect as any).call(this, tapDest);
                 }
               }
             } catch {}
             return result;
           };
-          restoreAudioTap = () => {
+          audioTapRestoreRef.current = () => {
             AudioNode.prototype.connect = origConnect;
+            tappedAudioContextsRef.current.clear();
           };
         } catch {}
       }
@@ -392,6 +409,7 @@ export const EmulatorPage: React.FC<EmulatorPageProps> = ({
           fileContent: romData,
         },
         retroarchConfig: {
+          input_autodetect_enable: false,
           input_max_users: 2,
           input_libretro_device_p1: 1,
           input_libretro_device_p2: 1,
@@ -460,10 +478,6 @@ export const EmulatorPage: React.FC<EmulatorPageProps> = ({
         instance = await Promise.race([launchPromise, timeoutPromise]);
       } finally {
         setTimeout(restoreCanvasGetContext, 800);
-        if (restoreAudioTap) {
-          // Restore AudioNode prototype shortly after core audio initialization settles
-          setTimeout(restoreAudioTap, 1200);
-        }
       }
 
       // Patch Nostalgist emulator's internal fireKeyboardEvent to provide fully-formed mock events
@@ -512,6 +526,8 @@ export const EmulatorPage: React.FC<EmulatorPageProps> = ({
                   keyCode: mapped.keyCode,
                   which: mapped.keyCode,
                   charCode: 0,
+                  char: '',
+                  locale: '',
                   location: 0,
                   ctrlKey: false,
                   shiftKey: false,
@@ -651,10 +667,26 @@ export const EmulatorPage: React.FC<EmulatorPageProps> = ({
       }
     };
 
+    const resumeHostAudio = () => {
+      tappedAudioContextsRef.current.forEach((ctx) => {
+        if (ctx.state === 'suspended') {
+          ctx.resume().catch(() => {});
+        }
+      });
+    };
+    window.addEventListener('pointerdown', resumeHostAudio, { passive: true });
+    window.addEventListener('keydown', resumeHostAudio, { passive: true });
+
     initRom();
 
     return () => {
       isCancelled = true;
+      window.removeEventListener('pointerdown', resumeHostAudio);
+      window.removeEventListener('keydown', resumeHostAudio);
+      if (audioTapRestoreRef.current) {
+        audioTapRestoreRef.current();
+        audioTapRestoreRef.current = null;
+      }
       if (nostalgistRef.current) {
         try {
           nostalgistRef.current.exit({ removeCanvas: false });
@@ -699,51 +731,122 @@ export const EmulatorPage: React.FC<EmulatorPageProps> = ({
     liveRoomRef.current = liveRoom;
   }, [liveRoom]);
 
-  // Attach remote MediaStream to <video> whenever stream or <video> mount state changes (autoplay-safe)
-  useEffect(() => {
-    if (!isNetplayGuestOrSpec || relayFrameUrl) return;
-    const videoEl = remoteVideoRef.current;
-    if (!videoEl || !remoteStreamObj) return;
+  const handleToggleMute = useCallback((forceUnmute?: boolean) => {
+    const nextMuted = forceUnmute === true ? false : needsAudioUnlock ? false : !isMuted;
+    setIsMuted(nextMuted);
 
-    if (videoEl.srcObject !== remoteStreamObj) {
-      videoEl.srcObject = remoteStreamObj;
+    // Synchronously unlock WebAudio inside user gesture for strict iOS/Android browsers
+    if (!nextMuted && typeof window !== 'undefined') {
+      try {
+        const AudioCtx = window.AudioContext || (window as any).webkitAudioContext;
+        if (AudioCtx) {
+          const ctx = new AudioCtx();
+          if (ctx.state === 'suspended') {
+            ctx.resume().catch(() => {});
+          }
+          const osc = ctx.createOscillator();
+          const gain = ctx.createGain();
+          gain.gain.value = 0.0001;
+          osc.connect(gain);
+          gain.connect(ctx.destination);
+          osc.start(0);
+          osc.stop(ctx.currentTime + 0.02);
+          setTimeout(() => {
+            ctx.close().catch(() => {});
+          }, 100);
+        }
+      } catch {}
     }
 
-    const markVideoReady = () => {
-      if (remoteStreamObj.getVideoTracks().length > 0 && (videoEl.readyState >= 2 || videoEl.videoWidth > 0)) {
-        setHasRemoteVideo(true);
-        if (!blackVideoDetectedRef.current) {
-          webrtcNetplay.setFrameFallbackNeeded(false);
+    if (engineRef.current) {
+      engineRef.current.setMute(nextMuted);
+    }
+
+    tappedAudioContextsRef.current.forEach((ctx) => {
+      if (!nextMuted && ctx.state === 'suspended') {
+        ctx.resume().catch(() => {});
+      }
+    });
+
+    const audioEl = remoteAudioRef.current;
+    if (audioEl) {
+      audioEl.muted = nextMuted;
+      audioEl.volume = nextMuted ? 0 : Math.max(0.05, Math.min(1, volume / 100));
+      if (!nextMuted) {
+        audioEl
+          .play()
+          .then(() => {
+            setNeedsAudioUnlock(false);
+          })
+          .catch(() => {
+            setNeedsAudioUnlock(true);
+          });
+      } else {
+        setNeedsAudioUnlock(false);
+      }
+    } else {
+      setNeedsAudioUnlock(false);
+    }
+
+    showToast(nextMuted ? 'Đã tắt âm thanh' : 'Đã bật âm thanh trận đấu');
+  }, [isMuted, needsAudioUnlock, volume]);
+
+  // Attach remote MediaStream to muted <video> and dedicated <audio> (so relay video mode never kills sound!)
+  useEffect(() => {
+    if (!isNetplayGuestOrSpec || !remoteStreamObj) return;
+
+    const videoEl = remoteVideoRef.current;
+    if (videoEl) {
+      if (videoEl.srcObject !== remoteStreamObj) {
+        videoEl.srcObject = remoteStreamObj;
+      }
+      videoEl.muted = true;
+      const markVideoReady = () => {
+        if (remoteStreamObj.getVideoTracks().length > 0 && (videoEl.readyState >= 2 || videoEl.videoWidth > 0)) {
+          setHasRemoteVideo(true);
+          if (!blackVideoDetectedRef.current) {
+            webrtcNetplay.setFrameFallbackNeeded(false);
+          }
         }
+      };
+      videoEl.addEventListener('canplay', markVideoReady);
+      videoEl.addEventListener('loadeddata', markVideoReady);
+      videoEl.play().then(markVideoReady).catch(() => {});
+    }
+
+    const syncAudioStream = () => {
+      const audioEl = remoteAudioRef.current;
+      if (!audioEl) return;
+      const audioTracks = remoteStreamObj.getAudioTracks();
+      if (audioTracks.length === 0) return;
+
+      const currentAudioStream = audioEl.srcObject as MediaStream | null;
+      const currentIds = currentAudioStream ? currentAudioStream.getAudioTracks().map((t) => t.id).join(',') : '';
+      const nextIds = audioTracks.map((t) => t.id).join(',');
+      if (currentIds !== nextIds) {
+        audioEl.srcObject = new MediaStream(audioTracks);
       }
+
+      audioEl.muted = isMuted;
+      audioEl.volume = Math.max(0, Math.min(1, volume / 100));
+
+      audioEl
+        .play()
+        .then(() => {
+          if (!isMuted) setNeedsAudioUnlock(false);
+        })
+        .catch(() => {
+          if (!isMuted) setNeedsAudioUnlock(true);
+        });
     };
 
-    const tryPlay = async () => {
-      videoEl.muted = isMuted;
-      videoEl.volume = Math.max(0, Math.min(1, volume / 100));
-      try {
-        await videoEl.play();
-        markVideoReady();
-      } catch {
-        // Browser autoplay policy blocked unmuted playback -> start muted & offer 1-click sound unlock
-        videoEl.muted = true;
-        setNeedsAudioUnlock(true);
-        try {
-          await videoEl.play();
-          markVideoReady();
-        } catch {}
-      }
-    };
-
-    videoEl.addEventListener('canplay', markVideoReady);
-    videoEl.addEventListener('loadeddata', markVideoReady);
-    tryPlay();
+    syncAudioStream();
+    remoteStreamObj.addEventListener('addtrack', syncAudioStream);
 
     return () => {
-      videoEl.removeEventListener('canplay', markVideoReady);
-      videoEl.removeEventListener('loadeddata', markVideoReady);
+      remoteStreamObj.removeEventListener('addtrack', syncAudioStream);
     };
-  }, [isNetplayGuestOrSpec, remoteStreamObj, relayFrameUrl, isMuted, volume]);
+  }, [isNetplayGuestOrSpec, remoteStreamObj, isMuted, volume]);
 
   // Real-Time NetPlay Synchronization Loop (WebRTC 60fps Video/Audio + Port 2 Inputs + Relay Fallback)
   useEffect(() => {
@@ -847,12 +950,17 @@ export const EmulatorPage: React.FC<EmulatorPageProps> = ({
               engineRef.current.setPlayer2Input(btn, pressed);
             }
             if (nostalgistRef.current) {
+              const retroBtn = RETRO_KEY_MAPPING[btn]?.retroButton || btn;
+              const p2Code = emu?.getKeyboardCode?.(retroBtn, 2);
               try {
-                const retroBtn = RETRO_KEY_MAPPING[btn]?.retroButton || btn;
-                if (pressed) {
-                  nostalgistRef.current.pressDown({ button: retroBtn, player: 2 });
-                } else {
-                  nostalgistRef.current.pressUp({ button: retroBtn, player: 2 });
+                if (p2Code) {
+                  if (pressed) {
+                    nostalgistRef.current.pressDown({ button: retroBtn, player: 2 });
+                  } else {
+                    nostalgistRef.current.pressUp({ button: retroBtn, player: 2 });
+                  }
+                } else if (emu && typeof emu.fireKeyboardEvent === 'function') {
+                  emu.fireKeyboardEvent(pressed ? 'keydown' : 'keyup', PORT2_KEY_MAPPING[btn]);
                 }
               } catch {
                 if (emu && typeof emu.fireKeyboardEvent === 'function') {
@@ -1659,6 +1767,17 @@ export const EmulatorPage: React.FC<EmulatorPageProps> = ({
 
   return (
     <div
+      onPointerDownCapture={() => {
+        if (isNetplayGuestOrSpec && !isMuted && needsAudioUnlock && remoteAudioRef.current) {
+          const audioEl = remoteAudioRef.current;
+          audioEl.muted = false;
+          audioEl.volume = Math.max(0.05, Math.min(1, volume / 100));
+          audioEl
+            .play()
+            .then(() => setNeedsAudioUnlock(false))
+            .catch(() => {});
+        }
+      }}
       className={`fixed ${isVirtualRotated ? 'overflow-hidden' : 'inset-0 top-0 left-0 w-screen h-screen'} bg-[#0c0e14] text-[#e2e2eb] flex flex-col z-50 overflow-hidden select-none transition-transform duration-300 ease-out`}
       style={rootStyle}
     >
@@ -1825,17 +1944,16 @@ export const EmulatorPage: React.FC<EmulatorPageProps> = ({
           </span>
           <button
             type="button"
-            onClick={() => {
-              const newMute = !isMuted;
-              setIsMuted(newMute);
-              if (remoteVideoRef.current) remoteVideoRef.current.muted = newMute;
-              setNeedsAudioUnlock(false);
-            }}
-            className="p-1.5 rounded-full text-[#cbc3d7] hover:text-[#4cd7f6] hover:bg-white/5 transition-colors cursor-pointer"
-            title={isMuted ? 'Bật âm thanh' : 'Tắt âm thanh'}
+            onClick={() => handleToggleMute()}
+            className={`p-1.5 rounded-full transition-colors cursor-pointer ${
+              needsAudioUnlock
+                ? 'text-amber-300 bg-amber-500/20 animate-pulse'
+                : 'text-[#cbc3d7] hover:text-[#4cd7f6] hover:bg-white/5'
+            }`}
+            title={isMuted || needsAudioUnlock ? 'Bật âm thanh' : 'Tắt âm thanh'}
           >
             <span className="material-symbols-outlined text-base">
-              {isMuted ? 'volume_off' : 'volume_up'}
+              {isMuted || needsAudioUnlock ? 'volume_off' : 'volume_up'}
             </span>
           </button>
           <button
@@ -1912,35 +2030,39 @@ export const EmulatorPage: React.FC<EmulatorPageProps> = ({
             {/* Real Canvas Display (Host / Local) OR Remote WebRTC Video Stream (Guest / Spectator) */}
             {isNetplayGuestOrSpec ? (
               <div className="w-full h-full relative flex items-center justify-center bg-black">
-                {relayFrameUrl ? (
+                <audio ref={remoteAudioRef} autoPlay playsInline className="hidden" />
+                {relayFrameUrl && (
                   <img
                     src={relayFrameUrl}
                     alt="NetPlay Stream"
                     className={`w-full h-full object-contain ${visualSettings.filter === 'Pixelated' ? 'filter-pixelated' : '[image-rendering:pixelated]'}`}
                     style={colorTintStyle}
                   />
-                ) : (
-                  <video
-                    ref={remoteVideoRef}
-                    autoPlay
-                    muted={isMuted || needsAudioUnlock}
-                    playsInline
-                    onLoadedData={() => {
-                      setHasRemoteVideo(true);
-                      if (!blackVideoDetectedRef.current) {
-                        webrtcNetplay.setFrameFallbackNeeded(false);
-                      }
-                    }}
-                    onPlaying={() => {
-                      setHasRemoteVideo(true);
-                      if (!blackVideoDetectedRef.current) {
-                        webrtcNetplay.setFrameFallbackNeeded(false);
-                      }
-                    }}
-                    className={`w-full h-full object-contain outline-none ${visualSettings.filter === 'Pixelated' ? 'filter-pixelated' : '[image-rendering:pixelated]'}`}
-                    style={colorTintStyle}
-                  />
                 )}
+                <video
+                  ref={remoteVideoRef}
+                  autoPlay
+                  muted
+                  playsInline
+                  onLoadedData={() => {
+                    setHasRemoteVideo(true);
+                    if (!blackVideoDetectedRef.current) {
+                      webrtcNetplay.setFrameFallbackNeeded(false);
+                    }
+                  }}
+                  onPlaying={() => {
+                    setHasRemoteVideo(true);
+                    if (!blackVideoDetectedRef.current) {
+                      webrtcNetplay.setFrameFallbackNeeded(false);
+                    }
+                  }}
+                  className={
+                    relayFrameUrl
+                      ? 'opacity-0 pointer-events-none absolute w-px h-px'
+                      : `w-full h-full object-contain outline-none ${visualSettings.filter === 'Pixelated' ? 'filter-pixelated' : '[image-rendering:pixelated]'}`
+                  }
+                  style={relayFrameUrl ? undefined : colorTintStyle}
+                />
 
                 {((liveRoom && liveRoom.status !== 'playing') || (!hasRemoteVideo && !relayFrameUrl)) && (
                   <div className="absolute inset-0 bg-[#0c0e14]/92 flex flex-col items-center justify-center gap-3 z-20 p-6 text-center">
@@ -1975,15 +2097,7 @@ export const EmulatorPage: React.FC<EmulatorPageProps> = ({
 
                 {needsAudioUnlock && (
                   <button
-                    onClick={() => {
-                      if (remoteVideoRef.current) {
-                        remoteVideoRef.current.muted = false;
-                        remoteVideoRef.current.volume = Math.max(0.1, volume / 100);
-                        remoteVideoRef.current.play().catch(() => {});
-                      }
-                      setIsMuted(false);
-                      setNeedsAudioUnlock(false);
-                    }}
+                    onClick={() => handleToggleMute(true)}
                     className="absolute bottom-4 right-4 z-30 px-3.5 py-2 rounded-lg bg-[#4cd7f6] text-[#003641] font-mono font-bold text-xs shadow-xl flex items-center gap-1.5 animate-bounce cursor-pointer"
                   >
                     <span className="material-symbols-outlined text-sm">volume_up</span>
@@ -2300,17 +2414,11 @@ export const EmulatorPage: React.FC<EmulatorPageProps> = ({
                 {/* Volume slider */}
                 <div className="flex items-center gap-1 bg-[#1e1f26] px-2 py-0.5 rounded-lg border border-[#494454]/30">
                   <button
-                    onClick={() => {
-                      const newMute = !isMuted;
-                      setIsMuted(newMute);
-                      if (engineRef.current) engineRef.current.setMute(newMute);
-                      if (remoteVideoRef.current) remoteVideoRef.current.muted = newMute;
-                      showToast(newMute ? "Audio Muted" : "Audio Unmuted");
-                    }}
+                    onClick={() => handleToggleMute()}
                     className="text-[#cbc3d7] hover:text-white"
                   >
                     <span className="material-symbols-outlined text-base">
-                      {isMuted ? 'volume_off' : 'volume_up'}
+                      {isMuted || needsAudioUnlock ? 'volume_off' : 'volume_up'}
                     </span>
                   </button>
                   <input
@@ -2322,13 +2430,15 @@ export const EmulatorPage: React.FC<EmulatorPageProps> = ({
                       const v = Number(e.target.value);
                       setVolume(v);
                       setIsMuted(false);
+                      setNeedsAudioUnlock(false);
                       if (engineRef.current) {
                         engineRef.current.setMute(false);
                         engineRef.current.setVolume(v / 100);
                       }
-                      if (remoteVideoRef.current) {
-                        remoteVideoRef.current.muted = false;
-                        remoteVideoRef.current.volume = v / 100;
+                      if (remoteAudioRef.current) {
+                        remoteAudioRef.current.muted = false;
+                        remoteAudioRef.current.volume = v / 100;
+                        remoteAudioRef.current.play().catch(() => {});
                       }
                     }}
                     className="w-14 h-1 accent-[#4cd7f6] cursor-pointer"
@@ -2383,6 +2493,9 @@ export const EmulatorPage: React.FC<EmulatorPageProps> = ({
                 }}
                 onRestartGame={triggerRestartGame}
                 isGuestMode={isNetplayGuestOrSpec}
+                isMuted={isMuted}
+                needsAudioUnlock={needsAudioUnlock}
+                onToggleMute={() => handleToggleMute()}
               />
             </div>
           )}
@@ -2424,6 +2537,10 @@ export const EmulatorPage: React.FC<EmulatorPageProps> = ({
                 }}
                 onRestartGame={triggerRestartGame}
                 isGuestMode={isNetplayGuestOrSpec}
+                maxMenuHeight={Math.max(170, (isVirtualRotated ? windowDimensions.width : windowDimensions.height) - 96)}
+                isMuted={isMuted}
+                needsAudioUnlock={needsAudioUnlock}
+                onToggleMute={() => handleToggleMute()}
               />
             </div>
           )}

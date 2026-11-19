@@ -547,6 +547,13 @@ export class WebRTCNetplayManager {
           const rtt = Math.max(1, Math.round(performance.now() - data.t));
           this.updateStats({ rttMs: rtt });
           roomService.reportPing(rtt);
+        } else if (data.type === 'input_mask' && this.role === 'host' && typeof data.mask === 'number') {
+          const seq = typeof data.seq === 'number' ? data.seq : 0;
+          const diff = (seq - this.lastRecvSeq + 65536) % 65536;
+          if (this.lastRecvSeq === -1 || (diff > 0 && diff < 32768)) {
+            this.lastRecvSeq = seq;
+            this.remoteInputListeners.forEach((cb) => cb(data.mask, peerUid));
+          }
         } else if (data.type === 'request_offer' && this.role === 'host') {
           if (this.localStream) {
             this.syncTracksOnPeer(link);
@@ -612,12 +619,10 @@ export class WebRTCNetplayManager {
         if ('jitterBufferTarget' in rx) rx.jitterBufferTarget = 0;
       } catch {}
 
-      if (!this.remoteStream) {
-        this.remoteStream = new MediaStream();
-      }
-      if (!this.remoteStream.getTracks().some((t) => t.id === ev.track.id)) {
-        this.remoteStream.addTrack(ev.track);
-      }
+      const existingTracks = this.remoteStream
+        ? this.remoteStream.getTracks().filter((t) => t.id !== ev.track.id && t.readyState !== 'ended')
+        : [];
+      this.remoteStream = new MediaStream([...existingTracks, ev.track]);
       this.remoteStreamListeners.forEach((cb) => cb(this.remoteStream!));
     };
 
@@ -759,6 +764,11 @@ export class WebRTCNetplayManager {
       if (peer.inputChannel.readyState === 'open') {
         try {
           peer.inputChannel.send(packet.buffer);
+          sentP2P = true;
+        } catch {}
+      } else if (peer.controlChannel.readyState === 'open') {
+        try {
+          peer.controlChannel.send(JSON.stringify({ type: 'input_mask', mask, seq: this.inputSeq }));
           sentP2P = true;
         } catch {}
       }

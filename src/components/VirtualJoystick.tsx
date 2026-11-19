@@ -152,7 +152,7 @@ export const VirtualJoystick: React.FC<VirtualJoystickProps> = ({
   };
 
   const handlePointerMove = (e: React.PointerEvent<HTMLDivElement>) => {
-    if (!isDragging || activePointerIdRef.current !== e.pointerId) return;
+    if (activePointerIdRef.current !== e.pointerId) return;
     e.preventDefault();
     e.stopPropagation();
 
