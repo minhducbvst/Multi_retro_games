@@ -183,9 +183,9 @@ export default function App() {
 
   const handleCustomRomLoaded = (customGame: Game, romData: Uint8Array) => {
     cleanupHostedRoomIfActive();
-    romStorage.saveRom(customGame.id, customGame.title, customGame.platform, romData);
-    libraryStore.addGame(customGame);
-    setSelectedGameId(customGame.id);
+    const saved = libraryStore.addGame(customGame);
+    romStorage.saveRom(saved.id, saved.romFilename || saved.title, saved.platform, romData);
+    setSelectedGameId(saved.id);
     setActiveView('emulator');
   };
 
@@ -210,11 +210,13 @@ export default function App() {
       batterySave: headerInfo.hasBattery,
       source: 'local',
       romFilename: headerInfo.filename,
+      crc32: headerInfo.crc32,
+      md5: headerInfo.md5,
       compatibilityScore: 100
     };
-    romStorage.saveRom(customGame.id, headerInfo.filename, plat, romData);
-    libraryStore.addGame(customGame);
-    setSelectedGameId(customGame.id);
+    const saved = libraryStore.addGame(customGame);
+    romStorage.saveRom(saved.id, headerInfo.filename, plat, romData);
+    setSelectedGameId(saved.id);
     setActiveView('emulator');
   };
 

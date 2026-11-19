@@ -1,31 +1,39 @@
 import { useState, useEffect } from 'react';
 import { Game, Platform } from '../../types';
+import { romStorage } from '../roms/romStorage';
 
 const STORAGE_KEY = 'retroverse_user_games';
+
+function stripRomExtension(name: string): string {
+  return name.replace(/\.(nes|sfc|smc|gba|gb|gbc|md|gen|smd|bin|zip)$/i, '');
+}
+
+function normalizeIdentityText(val?: string): string {
+  if (!val) return '';
+  return stripRomExtension(val)
+    .trim()
+    .toLowerCase()
+    .replace(/[\s_.-]+/g, ' ')
+    .trim();
+}
+
+function isSvgBoxArt(boxArt?: string): boolean {
+  return Boolean(boxArt && boxArt.startsWith('data:image/svg+xml'));
+}
 
 // Helper for generating dynamic SVG retro cartridge cover art
 export function getCartridgeCoverArt(title: string, platform: Platform | string): string {
   const plat = (platform || 'NES').toUpperCase();
-  let bgGradient = 'from-emerald-950 via-slate-900 to-black';
   let accentColor = '#4cd7f6';
-  let badgeColor = 'bg-cyan-500/20 text-cyan-300 border-cyan-400/40';
 
   if (plat.includes('SNES')) {
-    bgGradient = 'from-indigo-950 via-slate-900 to-black';
     accentColor = '#a078ff';
-    badgeColor = 'bg-indigo-500/20 text-indigo-300 border-indigo-400/40';
   } else if (plat.includes('GBA')) {
-    bgGradient = 'from-sky-950 via-slate-900 to-black';
     accentColor = '#38bdf8';
-    badgeColor = 'bg-sky-500/20 text-sky-300 border-sky-400/40';
   } else if (plat.includes('NES')) {
-    bgGradient = 'from-rose-950 via-slate-900 to-black';
     accentColor = '#fb7185';
-    badgeColor = 'bg-rose-500/20 text-rose-300 border-rose-400/40';
   } else if (plat.includes('GENESIS') || plat.includes('SEGA') || plat.includes('MEGA')) {
-    bgGradient = 'from-emerald-950 via-slate-900 to-black';
     accentColor = '#34d399';
-    badgeColor = 'bg-emerald-500/20 text-emerald-300 border-emerald-400/40';
   }
 
   // Generate SVG data URL for crisp retro cartridge artwork
@@ -127,6 +135,132 @@ class LibraryStore {
     this.snapshot = [...this.games];
   }
 
+  private isDuplicateRecord(a: Partial<Game>, b: Partial<Game>): boolean {
+    if (!a || !b) return false;
+    if (a.id && b.id && a.id === b.id) return true;
+    if (a.driveFileId && b.driveFileId && a.driveFileId === b.driveFileId) return true;
+
+    const platA = String(a.platform || '').toUpperCase();
+    const platB = String(b.platform || '').toUpperCase();
+    if (platA !== platB) return false;
+
+    if (a.crc32 && b.crc32) {
+      return a.crc32.toLowerCase() === b.crc32.toLowerCase();
+    }
+    if (a.md5 && b.md5) {
+      return a.md5.toLowerCase() === b.md5.toLowerCase();
+    }
+
+    const fileA = normalizeIdentityText(a.romFilename);
+    const fileB = normalizeIdentityText(b.romFilename);
+    if (fileA && fileB) {
+      return fileA === fileB;
+    }
+
+    const titleA = normalizeIdentityText(a.title);
+    const titleB = normalizeIdentityText(b.title);
+    if (titleA && titleB && titleA === titleB) {
+      return true;
+    }
+
+    return false;
+  }
+
+  private mergeDuplicateRecords(existing: Game, incoming: Game): Game {
+    const existingHasLocal = Boolean(romStorage.getRom(existing.id));
+    const incomingHasLocal = Boolean(romStorage.getRom(incoming.id));
+
+    // Prefer keeping the record whose ID already owns local IndexedDB/memory ROM data, or custom local ID
+    const keepIncomingId =
+      (!existingHasLocal && incomingHasLocal) ||
+      (!existingHasLocal &&
+        existing.id.startsWith('drive-') &&
+        incoming.id.startsWith('custom-'));
+
+    const canonicalId = keepIncomingId ? incoming.id : existing.id;
+    const droppedId = canonicalId === existing.id ? incoming.id : existing.id;
+
+    // If the dropped ID holds cached bytes in memory while canonical ID does not, migrate them cleanly
+    if (droppedId !== canonicalId && !romStorage.getRom(canonicalId)) {
+      const droppedRom = romStorage.getRom(droppedId);
+      if (droppedRom) {
+        romStorage.saveRom(canonicalId, droppedRom.filename, droppedRom.platform, droppedRom.data);
+        romStorage.clear(droppedId);
+      }
+    }
+
+    const cleanTitle =
+      incoming.title && !/\.(nes|sfc|smc|gba|gb|gbc|md|gen|smd|zip)$/i.test(incoming.title)
+        ? incoming.title
+        : existing.title || incoming.title;
+
+    const mergedPlatform = existing.platform || incoming.platform;
+    const hasCustomArt =
+      (incoming.boxArt && !incoming.boxArt.includes('unsplash') && !isSvgBoxArt(incoming.boxArt)) ||
+      (existing.boxArt && !existing.boxArt.includes('unsplash') && !isSvgBoxArt(existing.boxArt));
+
+    const resolvedBoxArt = hasCustomArt
+      ? (!isSvgBoxArt(incoming.boxArt) && !incoming.boxArt?.includes('unsplash')
+          ? incoming.boxArt
+          : existing.boxArt)
+      : getCartridgeCoverArt(cleanTitle, mergedPlatform);
+
+    const hasDrive = Boolean(existing.driveFileId || incoming.driveFileId || existing.source === 'drive' || incoming.source === 'drive');
+    const hasLocal = Boolean(
+      existingHasLocal ||
+      incomingHasLocal ||
+      existing.source === 'local' ||
+      incoming.source === 'local' ||
+      existing.crc32 ||
+      incoming.crc32
+    );
+
+    const merged: Game = {
+      ...existing,
+      ...incoming,
+      id: canonicalId,
+      title: cleanTitle,
+      platform: mergedPlatform,
+      boxArt: resolvedBoxArt,
+      romFilename: incoming.romFilename || existing.romFilename,
+      crc32: incoming.crc32 || existing.crc32,
+      md5: incoming.md5 || existing.md5,
+      sramSize: incoming.sramSize ?? existing.sramSize,
+      batterySave: incoming.batterySave ?? existing.batterySave,
+      driveFileId: incoming.driveFileId || existing.driveFileId,
+      driveFolderId: incoming.driveFolderId || existing.driveFolderId,
+      driveSubfolderName: incoming.driveSubfolderName || existing.driveSubfolderName,
+      uploadedAt: incoming.uploadedAt || existing.uploadedAt,
+      source: hasLocal ? 'local' : hasDrive ? 'drive' : existing.source,
+      developer:
+        hasLocal && hasDrive
+          ? 'Máy tính & Google Drive'
+          : existing.developer || incoming.developer,
+    };
+
+    return merged;
+  }
+
+  private deduplicateList(list: Game[]): Game[] {
+    const result: Game[] = [];
+    for (const item of list) {
+      const normalizedItem: Game = {
+        ...item,
+        boxArt:
+          !item.boxArt || item.boxArt.includes('unsplash') || isSvgBoxArt(item.boxArt)
+            ? getCartridgeCoverArt(item.title, item.platform)
+            : item.boxArt,
+      };
+      const dupIdx = result.findIndex((existing) => this.isDuplicateRecord(existing, normalizedItem));
+      if (dupIdx >= 0) {
+        result[dupIdx] = this.mergeDuplicateRecords(result[dupIdx], normalizedItem);
+      } else {
+        result.push(normalizedItem);
+      }
+    }
+    return result;
+  }
+
   private loadFromStorage(): void {
     try {
       const saved = localStorage.getItem(STORAGE_KEY);
@@ -141,7 +275,7 @@ class LibraryStore {
             'fire-emblem'
           ];
 
-          this.games = parsed.filter((g: any) => {
+          const sanitized = parsed.filter((g: any) => {
             if (!g || !g.id) return false;
             const idLower = String(g.id).toLowerCase();
             const titleLower = String(g.title || '').toLowerCase();
@@ -173,7 +307,9 @@ class LibraryStore {
               idLower.startsWith('drive-')
             );
           });
-          // Persist the sanitized library list
+
+          this.games = this.deduplicateList(sanitized);
+          // Persist the sanitized and deduplicated library list
           localStorage.setItem(STORAGE_KEY, JSON.stringify(this.games));
         } else {
           this.games = [];
@@ -204,34 +340,48 @@ class LibraryStore {
     return this.games.find((g) => g.id === id);
   }
 
-  public addGame(game: Game): void {
-    // If boxArt is empty or missing, provide retro cartridge art
-    if (!game.boxArt || game.boxArt.includes('unsplash')) {
-      game.boxArt = getCartridgeCoverArt(game.title, game.platform);
-    }
-
-    const existingIdx = this.games.findIndex((g) => g.id === game.id);
-    if (existingIdx >= 0) {
-      this.games[existingIdx] = game;
-    } else {
-      this.games.unshift(game);
-    }
-    this.saveToStorage();
+  public findDuplicate(candidate: Partial<Game>): Game | undefined {
+    return this.games.find((g) => this.isDuplicateRecord(g, candidate));
   }
 
-  public addGames(newGames: Game[]): void {
-    newGames.forEach((game) => {
-      if (!game.boxArt || game.boxArt.includes('unsplash')) {
-        game.boxArt = getCartridgeCoverArt(game.title, game.platform);
-      }
-      const idx = this.games.findIndex((item) => item.id === game.id);
-      if (idx >= 0) {
-        this.games[idx] = game;
-      } else {
-        this.games.push(game);
-      }
-    });
+  private upsertInternal(game: Game, prependIfNew: boolean): Game {
+    const prepared: Game = {
+      ...game,
+      boxArt:
+        !game.boxArt || game.boxArt.includes('unsplash') || isSvgBoxArt(game.boxArt)
+          ? getCartridgeCoverArt(game.title, game.platform)
+          : game.boxArt,
+    };
+
+    const existingIdx = this.games.findIndex((g) => this.isDuplicateRecord(g, prepared));
+    if (existingIdx >= 0) {
+      const merged = this.mergeDuplicateRecords(this.games[existingIdx], prepared);
+      this.games[existingIdx] = merged;
+      // Remove any extra stray duplicates if present
+      this.games = this.games.filter(
+        (g, i) => i === existingIdx || !this.isDuplicateRecord(g, merged)
+      );
+      return merged;
+    }
+
+    if (prependIfNew) {
+      this.games.unshift(prepared);
+    } else {
+      this.games.push(prepared);
+    }
+    return prepared;
+  }
+
+  public addGame(game: Game): Game {
+    const saved = this.upsertInternal(game, true);
     this.saveToStorage();
+    return saved;
+  }
+
+  public addGames(newGames: Game[]): Game[] {
+    const savedList = newGames.map((game) => this.upsertInternal(game, false));
+    this.saveToStorage();
+    return savedList;
   }
 
   public removeGame(id: string): void {

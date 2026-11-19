@@ -116,6 +116,17 @@ export const EmulatorPage: React.FC<EmulatorPageProps> = ({
   const [isPaused, setIsPaused] = useState<boolean>(false);
   const [currentSlot, setCurrentSlot] = useState<number>(initialSlot);
   const [fastForwardSpeed, setFastForwardSpeed] = useState<number>(1);
+
+  // Rolling Time-Machine Rewind ring buffer & serialized Nostalgist state I/O lock
+  const rewindHistoryRef = useRef<Array<{ playTimeMs: number; state: Blob }>>([]);
+  const playTimeMsRef = useRef<number>(0);
+  const lastSnapshotPlayTimeRef = useRef<number>(-2000);
+  const isPausedRef = useRef<boolean>(false);
+  const isLoadingCoreRef = useRef<boolean>(false);
+  const activeStateOpRef = useRef<Promise<unknown> | null>(null);
+  const rewindBusyRef = useRef<boolean>(false);
+  isPausedRef.current = isPaused;
+  isLoadingCoreRef.current = isLoadingCore;
   const [volume, setVolume] = useState<number>(80);
   const [isMuted, setIsMuted] = useState<boolean>(false);
   const [showInspector, setShowInspector] = useState<boolean>(true);
@@ -409,6 +420,8 @@ export const EmulatorPage: React.FC<EmulatorPageProps> = ({
           fileContent: romData,
         },
         retroarchConfig: {
+          savestate_thumbnail_enable: false,
+          notification_show_save_state: false,
           input_autodetect_enable: false,
           input_max_users: 2,
           input_libretro_device_p1: 1,
@@ -444,6 +457,11 @@ export const EmulatorPage: React.FC<EmulatorPageProps> = ({
           input_player2_select: 'b',
         },
       };
+
+      // Reset rolling rewind history whenever a fresh ROM boots
+      rewindHistoryRef.current = [];
+      playTimeMsRef.current = 0;
+      lastSnapshotPlayTimeRef.current = -2000;
 
       if (sramBlob) {
         launchConfig.sram = sramBlob;
@@ -576,18 +594,22 @@ export const EmulatorPage: React.FC<EmulatorPageProps> = ({
       const header = parseRom(bytes, file.name);
       const detectedPlatform = header.platform === 'UNKNOWN' ? game.platform : header.platform;
 
+      const nextTitle = header.internalTitle || file.name.replace(/\.[^/.]+$/, '');
       const updatedGame: Game = {
         ...game,
-        id: game.id === 'custom-unloaded' ? `custom-${Date.now()}` : game.id,
-        title: header.internalTitle || file.name,
+        id: `custom-${Date.now()}`,
+        title: nextTitle,
         platform: detectedPlatform,
         romFilename: file.name,
+        crc32: header.crc32,
+        md5: header.md5,
+        boxArt: '',
         source: 'local',
       };
 
-      romStorage.saveRom(updatedGame.id, file.name, detectedPlatform, bytes);
-      libraryStore.addGame(updatedGame);
-      setGame(updatedGame);
+      const saved = libraryStore.addGame(updatedGame);
+      romStorage.saveRom(saved.id, file.name, detectedPlatform, bytes);
+      setGame(saved);
 
       await launchRealEmulator(bytes, file.name, detectedPlatform);
     } catch (err: any) {
@@ -699,8 +721,63 @@ export const EmulatorPage: React.FC<EmulatorPageProps> = ({
         engineRef.current.dispose();
         engineRef.current = null;
       }
+      rewindHistoryRef.current = [];
+      playTimeMsRef.current = 0;
+      lastSnapshotPlayTimeRef.current = -2000;
     };
   }, [gameId, isNetplayGuestOrSpec, isNetplayHost]);
+
+  const runExclusiveStateOp = useCallback(async <T,>(fn: () => Promise<T>): Promise<T> => {
+    while (activeStateOpRef.current) {
+      try {
+        await activeStateOpRef.current;
+      } catch {}
+    }
+    const op = fn();
+    activeStateOpRef.current = op;
+    try {
+      return await op;
+    } finally {
+      if (activeStateOpRef.current === op) {
+        activeStateOpRef.current = null;
+      }
+    }
+  }, []);
+
+  // Rolling Rewind History Capture Loop (captures lightweight savestate every 2s up to ~60s)
+  useEffect(() => {
+    if (isNetplayGuestOrSpec) return;
+
+    const tickInterval = window.setInterval(() => {
+      if (!nostalgistRef.current || isPausedRef.current || isLoadingCoreRef.current || rewindBusyRef.current) {
+        return;
+      }
+      playTimeMsRef.current += 500;
+
+      const currentPlay = playTimeMsRef.current;
+      if (currentPlay - lastSnapshotPlayTimeRef.current < 2000) return;
+      if (activeStateOpRef.current) return;
+
+      lastSnapshotPlayTimeRef.current = currentPlay;
+      const instance = nostalgistRef.current;
+      runExclusiveStateOp(async () => {
+        if (!nostalgistRef.current || nostalgistRef.current !== instance) return;
+        if (isPausedRef.current || isLoadingCoreRef.current || rewindBusyRef.current) return;
+        const { state } = await instance.saveState();
+        if (!state || state.size === 0) return;
+        const history = rewindHistoryRef.current;
+        history.push({ playTimeMs: currentPlay, state });
+        // Keep up to 30 snapshots (~60s of active gameplay)
+        if (history.length > 30) {
+          history.splice(0, history.length - 30);
+        }
+      }).catch(() => {});
+    }, 500);
+
+    return () => {
+      clearInterval(tickInterval);
+    };
+  }, [isNetplayGuestOrSpec, runExclusiveStateOp]);
 
   // Port 2 RetroArch keyboard mapping table
   const PORT2_KEY_MAPPING: Record<keyof EmulatorInputState, string> = {
@@ -1518,6 +1595,9 @@ export const EmulatorPage: React.FC<EmulatorPageProps> = ({
 
   const triggerRestartGame = () => {
     if (isNetplayGuestOrSpec) return;
+    rewindHistoryRef.current = [];
+    playTimeMsRef.current = 0;
+    lastSnapshotPlayTimeRef.current = -2000;
     if (nostalgistRef.current) {
       try {
         if (isPaused) {
@@ -1544,18 +1624,76 @@ export const EmulatorPage: React.FC<EmulatorPageProps> = ({
     }
   };
 
-  const triggerRewind = (seconds: number = 10) => {
+  const triggerRewind = async (seconds: number = 10) => {
+    if (isNetplayGuestOrSpec) return;
+
     if (nostalgistRef.current) {
-      nostalgistRef.current.sendCommand('REWIND');
-      const pulses = seconds <= 5 ? 2 : seconds <= 10 ? 4 : 7;
-      for (let i = 1; i < pulses; i++) {
-        setTimeout(() => {
-          try { nostalgistRef.current?.sendCommand('REWIND'); } catch {}
-        }, i * 140);
+      if (rewindBusyRef.current) return;
+
+      const history = rewindHistoryRef.current;
+      const nowPlay = playTimeMsRef.current;
+
+      // Pick snapshots meaningfully older than the current gameplay timestamp
+      const candidates = history
+        .map((entry, idx) => ({ entry, idx }))
+        .filter(({ entry }) => nowPlay - entry.playTimeMs >= 400);
+
+      if (candidates.length === 0) {
+        showToast('Chưa đủ lịch sử để tua lại — hãy chơi thêm vài giây');
+        return;
       }
+
+      const targetPlayTime = Math.max(0, nowPlay - seconds * 1000);
+      let chosen = candidates[0];
+      let bestDiff = Math.abs(chosen.entry.playTimeMs - targetPlayTime);
+
+      for (const candidate of candidates) {
+        const diff = Math.abs(candidate.entry.playTimeMs - targetPlayTime);
+        if (
+          diff < bestDiff ||
+          (diff === bestDiff && candidate.entry.playTimeMs <= targetPlayTime)
+        ) {
+          chosen = candidate;
+          bestDiff = diff;
+        }
+      }
+
+      rewindBusyRef.current = true;
+      try {
+        await runExclusiveStateOp(async () => {
+          const instance = nostalgistRef.current;
+          if (!instance) return;
+          if (isPausedRef.current) {
+            instance.resume();
+            setIsPaused(false);
+          }
+          await instance.loadState(chosen.entry.state);
+        });
+
+        const rewoundSeconds = Math.max(
+          1,
+          Math.round((nowPlay - chosen.entry.playTimeMs) / 1000)
+        );
+        // Trim snapshots taken after the restored point so repeated rewinds step further back
+        rewindHistoryRef.current = rewindHistoryRef.current.slice(0, chosen.idx + 1);
+        playTimeMsRef.current = chosen.entry.playTimeMs;
+        lastSnapshotPlayTimeRef.current = chosen.entry.playTimeMs;
+
+        gamepadService.vibrate(0.25, 0.5, 120);
+        showToast(`Đã tua lại ${rewoundSeconds} giây`);
+      } catch (err) {
+        console.error('Rewind loadState failed:', err);
+        showToast('Không thể tua lại trạng thái lúc này');
+      } finally {
+        rewindBusyRef.current = false;
+      }
+      return;
+    }
+
+    if (engineRef.current) {
+      engineRef.current.rewindSeconds(seconds);
+      gamepadService.vibrate(0.25, 0.5, 120);
       showToast(`Đã tua lại ${seconds} giây`);
-    } else {
-      showToast(`Tua lại ${seconds} giây`);
     }
   };
 
@@ -1587,7 +1725,7 @@ export const EmulatorPage: React.FC<EmulatorPageProps> = ({
   const triggerQuickSave = async () => {
     if (nostalgistRef.current) {
       try {
-        const { state } = await nostalgistRef.current.saveState();
+        const { state } = await runExclusiveStateOp(() => nostalgistRef.current!.saveState());
         const reader = new FileReader();
         reader.onloadend = () => {
           const base64 = reader.result as string;
@@ -1625,7 +1763,7 @@ export const EmulatorPage: React.FC<EmulatorPageProps> = ({
         try {
           const res = await fetch(match.rawBase64Data);
           const blob = await res.blob();
-          await nostalgistRef.current.loadState(blob);
+          await runExclusiveStateOp(() => nostalgistRef.current!.loadState(blob));
           gamepadService.vibrate(0.5, 0.8, 180);
           showToast(`Đã nạp lại bản lưu Slot #${currentSlot}`);
         } catch (e) {

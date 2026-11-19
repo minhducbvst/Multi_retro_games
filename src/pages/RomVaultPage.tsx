@@ -174,18 +174,23 @@ export const RomVaultPage: React.FC<RomVaultPageProps> = ({
       romFilename: analyzedRom.info.filename,
     };
 
-    romStorage.saveRom(customGame.id, analyzedRom.info.filename, plat, analyzedRom.bytes);
-    libraryStore.addGame(customGame);
+    const isDup = Boolean(libraryStore.findDuplicate(customGame));
+    const saved = libraryStore.addGame(customGame);
+    romStorage.saveRom(saved.id, analyzedRom.info.filename, plat, analyzedRom.bytes);
 
     if (onAddCustomGame) {
-      onAddCustomGame(customGame, analyzedRom.bytes);
+      onAddCustomGame(saved, analyzedRom.bytes);
     }
-    showToast(`Đã lưu "${customGame.title}" vào thư viện!`);
+    showToast(
+      isDup
+        ? `Đã cập nhật tệp ROM cho "${saved.title}" trong thư viện!`
+        : `Đã lưu "${saved.title}" vào thư viện!`
+    );
   };
 
   const handleSaveAllToLibrary = () => {
     if (detectedFolderRoms.length === 0) return;
-    const gamesToAdd: Game[] = [];
+    const rawGames: Array<{ game: Game; bytes: Uint8Array; filename: string; plat: string }> = [];
 
     detectedFolderRoms.forEach((rom) => {
       const plat = rom.info.platform === 'UNKNOWN' ? 'NES' : rom.info.platform;
@@ -206,14 +211,20 @@ export const RomVaultPage: React.FC<RomVaultPageProps> = ({
         source: 'local',
         romFilename: rom.filename,
         crc32: rom.info.crc32,
+        md5: rom.info.md5,
       };
 
-      gamesToAdd.push(game);
-      romStorage.saveRom(game.id, rom.filename, plat, rom.bytes);
+      rawGames.push({ game, bytes: rom.bytes, filename: rom.filename, plat });
     });
 
-    libraryStore.addGames(gamesToAdd);
-    showToast(`Đã thêm thành công ${gamesToAdd.length} tựa game vào thư viện!`);
+    const savedGames = libraryStore.addGames(rawGames.map((r) => r.game));
+    savedGames.forEach((saved, i) => {
+      const src = rawGames[i];
+      if (src) {
+        romStorage.saveRom(saved.id, src.filename, src.plat, src.bytes);
+      }
+    });
+    showToast(`Đã đồng bộ ${savedGames.length} tựa game vào thư viện (tự động gộp trùng lặp)!`);
   };
 
   return (

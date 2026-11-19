@@ -521,13 +521,13 @@ export const NetPlayLobbyPage: React.FC<NetPlayLobbyPageProps> = ({
         romFilename: file.name,
         crc32: header.crc32,
       };
-      romStorage.saveRom(customGame.id, file.name, plat, bytes);
-      libraryStore.addGame(customGame);
-      setCreateGameId(customGame.id);
+      const saved = libraryStore.addGame(customGame);
+      romStorage.saveRom(saved.id, file.name, plat, bytes);
+      setCreateGameId(saved.id);
       setCreatePlatform(plat);
 
       if (room && room.hostUid === playerProfile.uid) {
-        await roomService.updateRoomGame(room.id, customGame.id, customGame.title, plat);
+        await roomService.updateRoomGame(room.id, saved.id, saved.title, plat);
         setShowChangeCartridgeModal(false);
       }
       showToast(`Đã nạp ROM "${title}" (${plat}) sẵn sàng tạo phòng!`);

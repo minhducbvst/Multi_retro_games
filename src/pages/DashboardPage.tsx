@@ -104,6 +104,7 @@ export const DashboardPage: React.FC<DashboardPageProps> = ({
     if (e.target.files && e.target.files.length > 0) {
       const files = Array.from(e.target.files);
       let added = 0;
+      let updated = 0;
       for (const file of files) {
         try {
           const buffer = await file.arrayBuffer();
@@ -126,17 +127,27 @@ export const DashboardPage: React.FC<DashboardPageProps> = ({
             features: ['Local Storage Verified', 'Direct Load', 'Battery Save Ready'],
             source: 'local',
             romFilename: file.name,
+            crc32: header.crc32,
+            md5: header.md5,
+            batterySave: header.hasBattery,
+            sramSize: header.sramSize,
           };
 
-          romStorage.saveRom(newGame.id, file.name, plat, bytes);
-          libraryStore.addGame(newGame);
-          added++;
+          const isDup = Boolean(libraryStore.findDuplicate(newGame));
+          const saved = libraryStore.addGame(newGame);
+          romStorage.saveRom(saved.id, file.name, plat, bytes);
+          if (isDup) updated++;
+          else added++;
         } catch (err) {
           console.error('Error importing ROM:', err);
         }
       }
-      if (added > 0) {
+      if (added > 0 && updated > 0) {
+        showToast(`Đã thêm ${added} game mới và cập nhật ${updated} tệp đã có (không trùng lặp).`);
+      } else if (added > 0) {
         showToast(`Đã thêm thành công ${added} tựa game mới vào thư viện!`);
+      } else if (updated > 0) {
+        showToast(`Đã cập nhật ${updated} tựa game đã có trong thư viện (bỏ qua trùng lặp).`);
       }
       e.target.value = '';
     }
@@ -150,6 +161,7 @@ export const DashboardPage: React.FC<DashboardPageProps> = ({
     if (e.dataTransfer.files && e.dataTransfer.files.length > 0) {
       const files = Array.from(e.dataTransfer.files);
       let added = 0;
+      let updated = 0;
 
       for (const file of files) {
         try {
@@ -175,18 +187,25 @@ export const DashboardPage: React.FC<DashboardPageProps> = ({
             source: 'local',
             romFilename: file.name,
             crc32: header.crc32,
+            md5: header.md5,
           };
 
-          romStorage.saveRom(newGame.id, file.name, plat, bytes);
-          libraryStore.addGame(newGame);
-          added++;
+          const isDup = Boolean(libraryStore.findDuplicate(newGame));
+          const saved = libraryStore.addGame(newGame);
+          romStorage.saveRom(saved.id, file.name, plat, bytes);
+          if (isDup) updated++;
+          else added++;
         } catch (err) {
           console.error('Error importing dropped ROM', err);
         }
       }
 
-      if (added > 0) {
+      if (added > 0 && updated > 0) {
+        showToast(`Đã thêm ${added} game mới và cập nhật ${updated} tệp đã có (không trùng lặp).`);
+      } else if (added > 0) {
         showToast(`Đã thêm thành công ${added} tựa game vào thư viện!`);
+      } else if (updated > 0) {
+        showToast(`Đã cập nhật ${updated} tựa game đã có trong thư viện (bỏ qua trùng lặp).`);
       }
     }
   };
@@ -730,12 +749,20 @@ export const DashboardPage: React.FC<DashboardPageProps> = ({
                     {/* Source Origin Badge */}
                     <span className="absolute bottom-2 left-2 px-1.5 py-0.5 rounded font-mono text-[9px] bg-black/80 border border-[#494454]/40 text-[#4cd7f6] flex items-center gap-1">
                       <span className="material-symbols-outlined text-[10px]">
-                        {game.driveFileId || game.source === 'drive' ? 'cloud' : 'computer'}
+                        {game.source === 'local' && game.driveFileId
+                          ? 'cloud_done'
+                          : game.driveFileId || game.source === 'drive'
+                          ? 'cloud'
+                          : 'computer'}
                       </span>
                       <span>
-                        {game.driveSubfolderName
+                        {game.source === 'local' && game.driveFileId
+                          ? game.driveSubfolderName
+                            ? `Máy & Drive/${game.driveSubfolderName}`
+                            : 'Máy & Drive'
+                          : game.driveSubfolderName
                           ? `Drive/${game.driveSubfolderName}`
-                          : game.source === 'drive'
+                          : game.driveFileId || game.source === 'drive'
                           ? 'Drive'
                           : 'Máy'}
                       </span>
